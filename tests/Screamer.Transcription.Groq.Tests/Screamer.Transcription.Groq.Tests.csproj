@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Screamer.Transcription.Groq\Screamer.Transcription.Groq.csproj" />
+  </ItemGroup>
+</Project>

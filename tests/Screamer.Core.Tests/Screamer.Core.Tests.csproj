@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Screamer.Core\Screamer.Core.csproj" />
+  </ItemGroup>
+</Project>
