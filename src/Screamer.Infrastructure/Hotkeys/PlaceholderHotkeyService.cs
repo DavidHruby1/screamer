@@ -6,8 +6,6 @@ public sealed class PlaceholderHotkeyService : IHotkeyService
 {
     public event EventHandler? DictationStarted;
 
-    public event EventHandler? DictationStopped;
-
     public Task StartAsync(CancellationToken cancellationToken)
     {
         return Task.CompletedTask;
@@ -19,6 +17,4 @@ public sealed class PlaceholderHotkeyService : IHotkeyService
     }
 
     public void RaiseStart() => DictationStarted?.Invoke(this, EventArgs.Empty);
-
-    public void RaiseStop() => DictationStopped?.Invoke(this, EventArgs.Empty);
 }

@@ -9,20 +9,67 @@ public sealed class DictationSessionCoordinator(
     ITranscriptionProvider transcriptionProvider,
     ITextInjector textInjector)
 {
-    public DictationState State { get; private set; } = DictationState.Idle;
+    private readonly object _lock = new();
+    private bool _isRunning;
+    private DictationState _state = DictationState.Idle;
+
+    public DictationState State
+    {
+        get => _state;
+        private set
+        {
+            if (_state == value) return;
+            _state = value;
+            StateChanged?.Invoke(value);
+        }
+    }
+
+    public event Action<DictationState>? StateChanged;
 
     public async Task<TranscriptResult> RunOnceAsync(CancellationToken cancellationToken)
     {
-        State = DictationState.Capturing;
-        var audio = await audioCaptureService.CaptureOnceAsync(cancellationToken);
+        lock (_lock)
+        {
+            if (_isRunning)
+                throw new InvalidOperationException("A dictation session is already in progress.");
+            _isRunning = true;
+        }
 
-        State = DictationState.Transcribing;
-        var transcript = await transcriptionProvider.TranscribeOnceAsync(audio, cancellationToken);
+        try
+        {
+            State = DictationState.Capturing;
+            var audio = await audioCaptureService.CaptureOnceAsync(cancellationToken);
 
-        State = DictationState.Injecting;
-        await textInjector.InjectAsync(transcript.Text, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
 
-        State = DictationState.Idle;
-        return transcript;
+            State = DictationState.Transcribing;
+            var transcript = await transcriptionProvider.TranscribeOnceAsync(audio, cancellationToken);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            State = DictationState.Injecting;
+            await textInjector.InjectAsync(transcript.Text, cancellationToken);
+
+            State = DictationState.Idle;
+            return transcript;
+        }
+        catch (OperationCanceledException)
+        {
+            State = DictationState.Idle;
+            throw;
+        }
+        catch
+        {
+            State = DictationState.Error;
+            State = DictationState.Idle;
+            throw;
+        }
+        finally
+        {
+            lock (_lock)
+            {
+                _isRunning = false;
+            }
+        }
     }
 }

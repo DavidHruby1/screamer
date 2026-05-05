@@ -1,12 +1,168 @@
 <Window x:Class="Screamer.Desktop.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:conv="clr-namespace:Screamer.Desktop.Converters"
         Title="Screamer"
-        Height="240"
-        Width="420">
-    <Grid>
-        <TextBlock HorizontalAlignment="Center"
-                   VerticalAlignment="Center"
-                   Text="Screamer" />
+        Height="400"
+        Width="440"
+        Background="#1e1e1e"
+        Foreground="#cccccc"
+        FontFamily="Segoe UI"
+        FontSize="13"
+        WindowStartupLocation="CenterScreen"
+        TextOptions.TextFormattingMode="Display">
+    <Window.Resources>
+        <conv:InverseBooleanConverter x:Key="InverseBool" />
+        <conv:StringNotEmptyToVisibilityConverter x:Key="StringNotEmpty" />
+
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#333333" />
+            <Setter Property="Foreground" Value="#cccccc" />
+            <Setter Property="BorderBrush" Value="#555555" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#444444" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Background" Value="#555555" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Background" Value="#2a2a2a" />
+                                <Setter Property="Foreground" Value="#666666" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="#2a2a2a" Padding="8" Margin="0,0,0,6" CornerRadius="3">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="State:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1" Text="{Binding StateText}" Margin="8,0,0,0" VerticalAlignment="Center" FontWeight="Bold">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="#4ec9b0" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding StateText}" Value="Error">
+                                    <Setter Property="Foreground" Value="#f44747" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding StateText}" Value="Capturing...">
+                                    <Setter Property="Foreground" Value="#dcdcaa" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding StateText}" Value="Transcribing...">
+                                    <Setter Property="Foreground" Value="#dcdcaa" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding StateText}" Value="Injecting...">
+                                    <Setter Property="Foreground" Value="#dcdcaa" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+                <TextBlock Grid.Column="2" Text="{Binding HotkeyText, StringFormat='Hotkey: {0}'}" Foreground="#888888" VerticalAlignment="Center" FontSize="12" />
+            </Grid>
+        </Border>
+
+        <WrapPanel Grid.Row="1" Margin="0,0,0,6">
+            <Button Command="{Binding RunTestDictationCommand}"
+                    IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}"
+                    Padding="12,6"
+                    Margin="0,0,6,0">
+                <TextBlock Text="Run Test Dictation" FontWeight="SemiBold" />
+            </Button>
+            <Button Command="{Binding ClearErrorCommand}" Padding="12,6">
+                Clear Error
+            </Button>
+        </WrapPanel>
+
+        <Border Grid.Row="2" Background="#2a2a2a" Padding="8" Margin="0,0,0,6" CornerRadius="3">
+            <StackPanel>
+                <TextBlock Text="Last Transcript" FontSize="11" Foreground="#888888" Margin="0,0,0,3" />
+                <TextBlock Text="{Binding LastTranscript}"
+                           FontFamily="Consolas"
+                           FontSize="13"
+                           TextWrapping="Wrap"
+                           MaxHeight="40"
+                           TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+        </Border>
+
+        <Border Grid.Row="3" Background="#2a2a2a" Padding="8" Margin="0,0,0,6" CornerRadius="3"
+                Visibility="{Binding LastError, Converter={StaticResource StringNotEmpty}}">
+            <StackPanel>
+                <TextBlock Text="Error" FontSize="11" Foreground="#f44747" Margin="0,0,0,3" />
+                <TextBlock Text="{Binding LastError}"
+                           FontFamily="Consolas"
+                           FontSize="13"
+                           TextWrapping="Wrap"
+                           Foreground="#f44747"
+                           MaxHeight="40"
+                           TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+        </Border>
+
+        <Border Grid.Row="4" Background="#2a2a2a" Padding="8" Margin="0,0,0,6" CornerRadius="3">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <TextBlock Grid.Row="0" Text="Diagnostics" FontSize="11" Foreground="#888888" Margin="0,0,0,3" />
+                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding DiagnosticsLog}"
+                                  FontFamily="Consolas"
+                                  FontSize="11"
+                                  Foreground="#999999">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" TextWrapping="NoWrap" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Grid>
+        </Border>
+
+        <WrapPanel Grid.Row="5" HorizontalAlignment="Right">
+            <Button Command="{Binding HideCommand}" Padding="14,6" Margin="0,0,6,0">
+                Hide To Tray
+            </Button>
+            <Button Command="{Binding ExitCommand}" Padding="14,6" Background="#3a1a1a" BorderBrush="#663333">
+                <TextBlock Text="Exit" Foreground="#f44747" />
+            </Button>
+        </WrapPanel>
     </Grid>
 </Window>
