@@ -1,6 +1,5 @@
 # Python
 __pycache__/
-*.py[cod]
 *.egg-info/
 dist/
 build/
@@ -33,3 +32,4 @@ Thumbs.db
 *.wav
 *.exe
 screamer.spec
+icon_*.png
