@@ -227,6 +227,14 @@ def load_config() -> AppConfig:
             # Coerce types to match dataclass fields.
             if isinstance(current, bool):
                 val = str(val).lower() in ("true", "1", "yes")
+            elif key == "audio_device_id":
+                if val in (None, ""):
+                    val = None
+                else:
+                    try:
+                        val = int(val)
+                    except (ValueError, TypeError):
+                        continue
             elif isinstance(current, int) and val is not None:
                 try:
                     val = int(val)

@@ -376,6 +376,8 @@ class _TrayApp(QObject):
         )
         self._settings_dlg = dlg
         result = dlg.exec()
+        if result == SettingsDialog.DialogCode.Accepted:
+            save_config(dlg.get_config())
         self._settings_dlg = None
 
         # Always reload from disk — Apply may have written new values,

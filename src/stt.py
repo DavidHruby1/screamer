@@ -76,7 +76,7 @@ def _call_stt(
     custom_headers: str,
     audio_wav: bytes,
 ) -> str | None:
-    """POST to an OpenAI-compatible STT endpoint. Returns text or None if no speech detected."""
+    """POST to an OpenAI-compatible STT endpoint. Returns text, or None if unconfigured."""
     if not api_key:
         return None
 
@@ -107,11 +107,11 @@ def _call_stt(
         has_speech = any(seg.get("no_speech_prob", 0.0) < _NO_SPEECH_THRESHOLD for seg in segments)
         if not has_speech:
             log.debug("All segments above no_speech_prob threshold; filtering out")
-            return None
+            raise ScreamerError(AppError.NO_SPEECH)
 
     text = (result.get("text") or "").strip()
     if not text:
-        return None
+        raise ScreamerError(AppError.NO_SPEECH)
 
     log.debug("STT result: %s", text[:80])
     return text

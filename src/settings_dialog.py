@@ -379,6 +379,13 @@ class SettingsDialog(QDialog):
         cfg.llm_fallback_model = self._llm_fb_model.text().strip()
         cfg.llm_fallback_custom_headers = self._llm_fb_headers.text().strip()
 
+        # Audio
+        cfg.audio_device_id = self._device_combo.currentData()
+        cfg.audio_device_name = ""
+        if cfg.audio_device_id is not None:
+            text = self._device_combo.currentText()
+            cfg.audio_device_name = text.split("] ", 1)[1] if "] " in text else text
+
     # ------------------------------------------------------------------
     # Audio tab helpers
     # ------------------------------------------------------------------
@@ -444,6 +451,53 @@ class SettingsDialog(QDialog):
             )
             self._tabs.setCurrentIndex(1)  # Switch to STT tab.
             return
+
+        if cfg.stt_api_key and (not cfg.stt_base_url or not cfg.stt_model):
+            QMessageBox.warning(
+                self,
+                "Missing STT Configuration",
+                "Primary STT requires an API key, base URL, and model.",
+            )
+            self._tabs.setCurrentIndex(1)
+            return
+
+        if cfg.stt_fallback_enabled and (
+            not cfg.stt_fallback_api_key or not cfg.stt_fallback_base_url or not cfg.stt_fallback_model
+        ):
+            QMessageBox.warning(
+                self,
+                "Missing STT Fallback Configuration",
+                "Fallback STT requires an API key, base URL, and model.",
+            )
+            self._tabs.setCurrentIndex(1)
+            return
+
+        if cfg.llm_enabled:
+            has_primary_llm = bool(cfg.llm_api_key and cfg.llm_base_url and cfg.llm_model)
+            has_partial_primary_llm = bool(cfg.llm_api_key or cfg.llm_base_url or cfg.llm_model)
+            has_fallback_llm = bool(
+                cfg.llm_fallback_enabled
+                and cfg.llm_fallback_api_key
+                and cfg.llm_fallback_base_url
+                and cfg.llm_fallback_model
+            )
+            if has_partial_primary_llm and not has_primary_llm:
+                QMessageBox.warning(
+                    self,
+                    "Missing LLM Configuration",
+                    "Primary LLM requires an API key, base URL, and model.",
+                )
+                self._tabs.setCurrentIndex(2)
+                return
+
+            if not has_primary_llm and not has_fallback_llm:
+                QMessageBox.warning(
+                    self,
+                    "Missing LLM Configuration",
+                    "AI rewrite requires a complete primary or fallback LLM provider.",
+                )
+                self._tabs.setCurrentIndex(2)
+                return
 
         super().accept()
 
