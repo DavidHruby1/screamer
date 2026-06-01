@@ -6,7 +6,6 @@ build/
 *.egg
 .eggs/
 *.manifest
-*.spec
 
 # Virtual environments
 venv/
@@ -31,5 +30,4 @@ Thumbs.db
 # Project artifacts
 *.wav
 *.exe
-screamer.spec
 icon_*.png
