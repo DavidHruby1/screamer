@@ -156,59 +156,49 @@ class _TrayApp(QObject):
         self._tray.activated.connect(self._on_tray_activated)
         self._tray.show()
 
+    def _add_choice_submenu(
+        self,
+        title: str,
+        options: list[tuple[str, str]],
+        current: str,
+        on_select: Any,
+    ) -> None:
+        """Add a submenu of mutually-exclusive checkable actions, one per (key, label)."""
+        submenu = self._menu.addMenu(title)
+        for key, label in options:
+            act = submenu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(key == current)
+            act.triggered.connect(lambda checked, k=key: on_select(k))
+
     def _rebuild_menu(self) -> None:
         """Rebuild the context menu from current config."""
         self._menu.clear()
         c = self._config
 
         # Enabled toggle.
-        self._act_enabled = self._menu.addAction("Enabled")
-        self._act_enabled.setCheckable(True)
-        self._act_enabled.setChecked(self._enabled)
-        self._act_enabled.triggered.connect(self._toggle_enabled)
+        act_enabled = self._menu.addAction("Enabled")
+        act_enabled.setCheckable(True)
+        act_enabled.setChecked(self._enabled)
+        act_enabled.triggered.connect(self._toggle_enabled)
 
         self._menu.addSeparator()
 
-        # Record Mode submenu.
-        mode_menu = self._menu.addMenu("Record Mode")
-        self._act_hold = mode_menu.addAction("Hold to talk")
-        self._act_hold.setCheckable(True)
-        self._act_hold.setChecked(c.recording_mode == "hold")
-        self._act_hold.triggered.connect(lambda: self._set_recording_mode("hold"))
-
-        self._act_toggle = mode_menu.addAction("Toggle")
-        self._act_toggle.setCheckable(True)
-        self._act_toggle.setChecked(c.recording_mode == "toggle")
-        self._act_toggle.triggered.connect(lambda: self._set_recording_mode("toggle"))
-
-        # Hotkey submenu.
-        hotkey_menu = self._menu.addMenu("Hotkey")
-
-        self._hotkey_actions: dict[str, Any] = {}
-        for key, label in HOTKEY_OPTIONS:
-            act = hotkey_menu.addAction(label)
-            act.setCheckable(True)
-            act.setChecked(key == c.hotkey)
-            act.triggered.connect(lambda checked, k=key: self._set_hotkey(k))
-            self._hotkey_actions[key] = act
-
-        # Post-type Key submenu.
-        post_menu = self._menu.addMenu("Post-type Key")
-
-        self._post_actions: dict[str, Any] = {}
-        for key, label in POST_KEY_OPTIONS:
-            act = post_menu.addAction(label)
-            act.setCheckable(True)
-            act.setChecked(key == c.post_type_key)
-            act.triggered.connect(lambda checked, k=key: self._set_post_key(k))
-            self._post_actions[key] = act
+        self._add_choice_submenu(
+            "Record Mode",
+            [("hold", "Hold to talk"), ("toggle", "Toggle")],
+            c.recording_mode,
+            self._set_recording_mode,
+        )
+        self._add_choice_submenu("Hotkey", HOTKEY_OPTIONS, c.hotkey, self._set_hotkey)
+        self._add_choice_submenu("Post-type Key", POST_KEY_OPTIONS, c.post_type_key, self._set_post_key)
 
         # AI Rewrite toggle.
         self._menu.addSeparator()
-        self._act_rewrite = self._menu.addAction("AI Rewrite")
-        self._act_rewrite.setCheckable(True)
-        self._act_rewrite.setChecked(c.llm_enabled)
-        self._act_rewrite.triggered.connect(self._toggle_rewrite)
+        act_rewrite = self._menu.addAction("AI Rewrite")
+        act_rewrite.setCheckable(True)
+        act_rewrite.setChecked(c.llm_enabled)
+        act_rewrite.triggered.connect(self._toggle_rewrite)
 
         # Settings / Exit.
         self._menu.addSeparator()
@@ -219,19 +209,21 @@ class _TrayApp(QObject):
     # Hotkey
     # ------------------------------------------------------------------
 
-    def _build_hotkey(self) -> None:
+    def _make_listener(self) -> None:
+        """Create and start a HotkeyListener from current config, storing it on self."""
         mode = HotkeyMode.TOGGLE if self._config.recording_mode == "toggle" else HotkeyMode.HOLD
         self._hotkey = HotkeyListener(self._config.hotkey, mode, self._bridge)
+        self._hotkey.start()
+
+    def _build_hotkey(self) -> None:
         self._bridge.hotkey_pressed.connect(self._on_hotkey_pressed)
         self._bridge.hotkey_released.connect(self._on_hotkey_released)
         self._bridge.error_occurred.connect(self._on_error)
-        self._hotkey.start()
+        self._make_listener()
 
     def _restart_hotkey(self) -> None:
         self._hotkey.stop()
-        mode = HotkeyMode.TOGGLE if self._config.recording_mode == "toggle" else HotkeyMode.HOLD
-        self._hotkey = HotkeyListener(self._config.hotkey, mode, self._bridge)
-        self._hotkey.start()
+        self._make_listener()
 
     # ------------------------------------------------------------------
     # State machine

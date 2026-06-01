@@ -183,7 +183,6 @@ class SettingsDialog(QDialog):
 
         # --- Fallback ---
         self._stt_fb_check = QCheckBox("Enable fallback STT provider")
-        self._stt_fb_check.toggled.connect(self._on_stt_fallback_toggled)
         form.addRow(self._stt_fb_check)
 
         self._stt_fb_group = QGroupBox("Fallback STT")
@@ -194,6 +193,7 @@ class SettingsDialog(QDialog):
         )
 
         self._stt_fb_group.setVisible(False)
+        self._stt_fb_check.toggled.connect(self._stt_fb_group.setVisible)
         form.addRow(self._stt_fb_group)
 
         self._tabs.addTab(tab, "STT")
@@ -205,7 +205,6 @@ class SettingsDialog(QDialog):
         form = QFormLayout(tab)
 
         self._llm_check = QCheckBox("Enable AI rewrite")
-        self._llm_check.toggled.connect(self._on_llm_toggled)
         form.addRow(self._llm_check)
 
         self._llm_group = QGroupBox("LLM Settings")
@@ -228,7 +227,6 @@ class SettingsDialog(QDialog):
 
         # --- LLM Fallback ---
         self._llm_fb_check = QCheckBox("Enable fallback LLM provider")
-        self._llm_fb_check.toggled.connect(self._on_llm_fallback_toggled)
         llm_form.addRow(self._llm_fb_check)
 
         self._llm_fb_group = QGroupBox("Fallback LLM")
@@ -239,9 +237,11 @@ class SettingsDialog(QDialog):
         )
 
         self._llm_fb_group.setVisible(False)
+        self._llm_fb_check.toggled.connect(self._llm_fb_group.setVisible)
         llm_form.addRow(self._llm_fb_group)
 
         self._llm_group.setVisible(False)
+        self._llm_check.toggled.connect(self._llm_group.setVisible)
         form.addRow(self._llm_group)
 
         self._tabs.addTab(tab, "LLM")
@@ -384,19 +384,6 @@ class SettingsDialog(QDialog):
             self._rms_label.setText(f"Threshold: {threshold:.1f}")
         except Exception as e:
             QMessageBox.warning(self, "Calibration Failed", str(e))
-
-    # ------------------------------------------------------------------
-    # Dynamic reveals
-    # ------------------------------------------------------------------
-
-    def _on_stt_fallback_toggled(self, checked: bool) -> None:
-        self._stt_fb_group.setVisible(checked)
-
-    def _on_llm_toggled(self, checked: bool) -> None:
-        self._llm_group.setVisible(checked)
-
-    def _on_llm_fallback_toggled(self, checked: bool) -> None:
-        self._llm_fb_group.setVisible(checked)
 
     # ------------------------------------------------------------------
     # Validation
