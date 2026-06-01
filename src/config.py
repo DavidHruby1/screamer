@@ -19,6 +19,8 @@ DEFAULT_LLM_SYSTEM_PROMPT: str = (
     "Return only the corrected text with no explanations."
 )
 
+DEFAULT_RMS_THRESHOLD = 5.0
+
 MOD_CONTROL = 0x0002
 MOD_ALT = 0x0001
 MOD_SHIFT = 0x0004
@@ -100,7 +102,7 @@ class AppConfig:
     post_type_key: str = "none"  # "none" | "enter" | "tab" | "space" | "backspace"
     audio_device_id: int | None = None
     audio_device_name: str = ""
-    rms_threshold: float = 50.0
+    rms_threshold: float = DEFAULT_RMS_THRESHOLD
     # STT primary
     stt_api_key: str = ""
     stt_base_url: str = ""

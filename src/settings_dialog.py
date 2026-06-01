@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
+    QDoubleSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -258,6 +259,14 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         form = QFormLayout(tab)
 
+        hint = QLabel(
+            "No external mic needed: use System Default for the built-in laptop mic, "
+            "or pick the device named Microphone Array, Internal Mic, Realtek, DMIC, "
+            "or Intel Smart Sound. Avoid Monitor, Stereo Mix, HDMI, and output devices."
+        )
+        hint.setWordWrap(True)
+        form.addRow(hint)
+
         self._device_combo = QComboBox()
         self._populate_devices()
         form.addRow("Input Device:", self._device_combo)
@@ -267,6 +276,13 @@ class SettingsDialog(QDialog):
         if self._calibrate_fn is None:
             self._calibrate_btn.setEnabled(False)
         form.addRow(self._calibrate_btn)
+
+        self._rms_spin = QDoubleSpinBox()
+        self._rms_spin.setRange(0.0, 32767.0)
+        self._rms_spin.setDecimals(1)
+        self._rms_spin.setSingleStep(1.0)
+        self._rms_spin.setSpecialValueText("Disabled")
+        form.addRow("RMS Threshold:", self._rms_spin)
 
         self._rms_label = QLabel("Threshold: —")
         form.addRow(self._rms_label)
@@ -313,6 +329,7 @@ class SettingsDialog(QDialog):
         self._llm_fb_headers.setText(cfg.llm_fallback_custom_headers)
 
         # Audio
+        self._rms_spin.setValue(cfg.rms_threshold)
         self._rms_label.setText(f"Threshold: {cfg.rms_threshold:.1f}")
 
     def _collect(self) -> None:
@@ -351,6 +368,7 @@ class SettingsDialog(QDialog):
 
         # Audio
         cfg.audio_device_id = self._device_combo.currentData()
+        cfg.rms_threshold = self._rms_spin.value()
         cfg.audio_device_name = ""
         if cfg.audio_device_id is not None:
             text = self._device_combo.currentText()
@@ -362,7 +380,7 @@ class SettingsDialog(QDialog):
 
     def _populate_devices(self) -> None:
         """Fill the device combo from the pre-fetched device list."""
-        self._device_combo.addItem("(System Default)", None)
+        self._device_combo.addItem("System Default (usually built-in laptop mic)", None)
         for dev_id, dev_name in self._devices:
             self._device_combo.addItem(f"[{dev_id}] {dev_name}", dev_id)
 
@@ -387,6 +405,7 @@ class SettingsDialog(QDialog):
             )
             threshold = self._calibrate_fn(device_id)
             self._working.rms_threshold = threshold
+            self._rms_spin.setValue(threshold)
             self._rms_label.setText(f"Threshold: {threshold:.1f}")
         except Exception as e:
             QMessageBox.warning(self, "Calibration Failed", str(e))
@@ -398,13 +417,9 @@ class SettingsDialog(QDialog):
     def _set_dynamic_group_visible(self, group: QWidget, visible: bool) -> None:
         group.setVisible(visible)
 
-        parent = group.parentWidget()
-        if parent is not None and parent.layout() is not None:
-            parent.layout().invalidate()
-
         if self.layout() is not None:
-            self.layout().invalidate()
-        self.adjustSize()
+            self.layout().activate()
+        self.resize(self.sizeHint())
 
     # ------------------------------------------------------------------
     # Validation

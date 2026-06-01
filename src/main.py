@@ -15,7 +15,7 @@ from PySide6.QtCore import QObject, Signal, QThread
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from src.audio import AudioRecorder, resolve_device, list_devices
+from src.audio import AudioRecorder, default_input_device_id, list_devices, resolve_device
 from src.config import (
     HOTKEY_OPTIONS,
     POST_KEY_OPTIONS,
@@ -132,7 +132,14 @@ class _TrayApp(QObject):
     def _get_device_list(self) -> list[tuple[int, str]]:
         """Return list of (device_id, name) for the settings dialog."""
         try:
-            return [(d.id, d.name) for d in list_devices()]
+            default_id = default_input_device_id()
+            devices = []
+            for d in list_devices():
+                name = d.name
+                if d.id == default_id:
+                    name = f"{name} (Default input)"
+                devices.append((d.id, name))
+            return devices
         except Exception as e:
             log.warning("Could not enumerate audio devices: %s", e)
             return []

@@ -18,6 +18,7 @@ try:
 except OSError:
     sd = None  # type: ignore[assignment]
 
+from src.config import DEFAULT_RMS_THRESHOLD
 from src.utils import AppError, ScreamerError
 
 log = logging.getLogger(__name__)
@@ -54,6 +55,16 @@ def list_devices() -> list[AudioDevice]:
     return result
 
 
+def default_input_device_id() -> int | None:
+    """Return PortAudio's default input device ID, if one is configured."""
+    _require_sd()
+    default = sd.default.device
+    device_id = default[0] if isinstance(default, (list, tuple)) else default
+    if device_id is None or int(device_id) < 0:
+        return None
+    return int(device_id)
+
+
 class AudioRecorder:
     def __init__(self, device_id: int | None = None, sample_rate: int = SAMPLE_RATE) -> None:
         self._device_id = device_id
@@ -62,7 +73,7 @@ class AudioRecorder:
         self._stream: Any = None
         self._lock = threading.Lock()
         self._start_time: float = 0.0
-        self._rms_threshold: float = 50.0
+        self._rms_threshold: float = DEFAULT_RMS_THRESHOLD
 
     @property
     def rms_threshold(self) -> float:
@@ -78,7 +89,7 @@ class AudioRecorder:
         return self._stream is not None
 
     def calibrate(self, duration: float = 2.0) -> float:
-        """Record ambient noise, return noise_floor * 2.0. Fallback: 50."""
+        """Record ambient noise and return a usable silence-gate threshold."""
         _require_sd()
         try:
             log.info("Calibrating RMS threshold for %.1fs...", duration)
@@ -92,15 +103,15 @@ class AudioRecorder:
             sd.wait()
             noise_floor = float(np.sqrt(np.mean(recording.astype(np.float64) ** 2)))
             threshold = noise_floor * 2.0
-            if threshold < 1.0:
-                threshold = 50.0
+            if threshold < DEFAULT_RMS_THRESHOLD:
+                threshold = DEFAULT_RMS_THRESHOLD
             self._rms_threshold = threshold
             log.info("Calibration done: noise_floor=%.1f, threshold=%.1f", noise_floor, threshold)
             return threshold
         except Exception as e:
-            log.warning("Calibration failed: %s; using fallback 50", e)
-            self._rms_threshold = 50.0
-            return 50.0
+            log.warning("Calibration failed: %s; using fallback %.1f", e, DEFAULT_RMS_THRESHOLD)
+            self._rms_threshold = DEFAULT_RMS_THRESHOLD
+            return DEFAULT_RMS_THRESHOLD
 
     def _callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:  # type: ignore[no-untyped-def]
         if status:
