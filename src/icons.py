@@ -35,6 +35,8 @@ _EMBEDDED_PNG: dict[TrayState, bytes] = {
 
 
 # Decoded pixmaps, built lazily once a QApplication exists and reused thereafter.
+# The icons are static, so this cache is intentionally never invalidated; it
+# holds at most three small pixmaps for the process lifetime.
 _pixmap_cache: dict[TrayState, QPixmap] = {}
 
 
