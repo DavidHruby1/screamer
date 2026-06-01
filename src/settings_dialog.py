@@ -325,6 +325,7 @@ class SettingsDialog(QDialog):
         self._llm_fb_headers.setText(cfg.llm_fallback_custom_headers)
 
         # Audio
+        self._select_device(cfg)
         self._rms_spin.setValue(cfg.rms_threshold)
         self._rms_label.setText(f"Threshold: {cfg.rms_threshold:.1f}")
 
@@ -368,7 +369,9 @@ class SettingsDialog(QDialog):
         cfg.audio_device_name = ""
         if cfg.audio_device_id is not None:
             text = self._device_combo.currentText()
-            cfg.audio_device_name = text.split("] ", 1)[1] if "] " in text else text
+            cfg.audio_device_name = _clean_device_name(
+                text.split("] ", 1)[1] if "] " in text else text
+            )
 
     # ------------------------------------------------------------------
     # Audio tab helpers
@@ -376,16 +379,40 @@ class SettingsDialog(QDialog):
 
     def _populate_devices(self) -> None:
         """Fill the device combo from the pre-fetched device list."""
-        self._device_combo.addItem("System Default (usually built-in laptop mic)", None)
+        default_name = next(
+            (
+                _clean_device_name(dev_name)
+                for _dev_id, dev_name in self._devices
+                if dev_name.endswith(" (Default input)")
+            ),
+            "usually built-in laptop mic",
+        )
+        self._device_combo.addItem(f"System Default ({default_name})", None)
         for dev_id, dev_name in self._devices:
             self._device_combo.addItem(f"[{dev_id}] {dev_name}", dev_id)
 
-        # Select the stored device.
-        if self._working.audio_device_id is not None:
+        self._select_device(self._working)
+
+    def _select_device(self, cfg: AppConfig) -> None:
+        """Select saved device by current ID, then by stable device name."""
+        self._device_combo.setCurrentIndex(0)
+        saved_name = _clean_device_name(cfg.audio_device_name).lower()
+
+        if cfg.audio_device_id is not None:
             for i in range(self._device_combo.count()):
-                if self._device_combo.itemData(i) == self._working.audio_device_id:
+                if self._device_combo.itemData(i) == cfg.audio_device_id:
+                    item_name = _clean_device_name(self._device_combo.itemText(i).split("] ", 1)[-1])
+                    if not saved_name or saved_name in item_name.lower():
+                        self._device_combo.setCurrentIndex(i)
+                        return
+
+        if saved_name:
+            for i in range(self._device_combo.count()):
+                item_data = self._device_combo.itemData(i)
+                item_name = _clean_device_name(self._device_combo.itemText(i).split("] ", 1)[-1])
+                if item_data is not None and saved_name in item_name.lower():
                     self._device_combo.setCurrentIndex(i)
-                    break
+                    return
 
     def _on_calibrate(self) -> None:
         """Run RMS auto-calibration via the provided callback."""
@@ -494,6 +521,10 @@ def _combo_index(combo: QComboBox, data: str) -> int:
         if combo.itemData(i) == data:
             return i
     return -1
+
+
+def _clean_device_name(name: str) -> str:
+    return name.removesuffix(" (Default input)").strip()
 
 
 # ------------------------------------------------------------------

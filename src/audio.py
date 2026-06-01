@@ -65,6 +65,10 @@ def default_input_device_id() -> int | None:
     return int(device_id)
 
 
+def _clean_device_name(name: str) -> str:
+    return name.removesuffix(" (Default input)").strip()
+
+
 class AudioRecorder:
     def __init__(self, device_id: int | None = None, sample_rate: int = SAMPLE_RATE) -> None:
         self._device_id = device_id
@@ -181,25 +185,38 @@ class AudioRecorder:
 
 
 def resolve_device(preferred_id: int | None, preferred_name: str) -> int | None:
-    """ID → name search → None (use default)."""
+    """Resolve saved device ID/name, falling back to the current default input."""
     _require_sd()
+    clean_name = _clean_device_name(preferred_name)
+
     if preferred_id is not None:
         try:
             dev = sd.query_devices(preferred_id)
-            if dev["max_input_channels"] > 0:
+            dev_name = str(dev["name"])
+            if dev["max_input_channels"] > 0 and (
+                not clean_name or clean_name.lower() in dev_name.lower()
+            ):
                 return preferred_id
+            if dev["max_input_channels"] > 0:
+                log.warning(
+                    "Preferred device ID %d is now '%s', expected '%s'; trying name search",
+                    preferred_id,
+                    dev_name,
+                    clean_name,
+                )
         except (sd.PortAudioError, ValueError):
             log.warning("Preferred device ID %d not found; trying name search", preferred_id)
 
-    if preferred_name:
+    if clean_name:
         devices = sd.query_devices()
         for i, dev in enumerate(devices):
-            if dev["max_input_channels"] > 0 and preferred_name.lower() in dev["name"].lower():
-                log.info("Resolved device '%s' to ID %d", preferred_name, i)
+            if dev["max_input_channels"] > 0 and clean_name.lower() in dev["name"].lower():
+                log.info("Resolved device '%s' to ID %d", clean_name, i)
                 return i
 
-    log.info("No preferred device; using default")
-    return None
+    default_id = default_input_device_id()
+    log.info("Using current default input device: %s", default_id)
+    return default_id
 
 
 # ---------------------------------------------------------------------------

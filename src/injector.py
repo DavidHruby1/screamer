@@ -33,8 +33,8 @@ def type_text(text: str, post_key: str | None = None) -> None:
     import ctypes.wintypes
 
     # --- SendInput struct definitions ---
-    # Copied from pynput/_util/win32.py (MIT-licensed) for correct alignment.
-    # See: https://github.com/moses-palmer/pynput
+    # SendInput requires cbSize to be the exact size of the Win32 INPUT union.
+    # Defining only KEYBDINPUT makes INPUT too small on 64-bit Windows.
 
     INPUT_KEYBOARD = 1
     KEYEVENTF_KEYUP = 0x0002
@@ -46,39 +46,73 @@ def type_text(text: str, post_key: str | None = None) -> None:
             ("wScan", ctypes.wintypes.WORD),
             ("dwFlags", ctypes.wintypes.DWORD),
             ("time", ctypes.wintypes.DWORD),
-            ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+            ("dwExtraInfo", ctypes.c_size_t),
+        ]
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [
+            ("dx", ctypes.wintypes.LONG),
+            ("dy", ctypes.wintypes.LONG),
+            ("mouseData", ctypes.wintypes.DWORD),
+            ("dwFlags", ctypes.wintypes.DWORD),
+            ("time", ctypes.wintypes.DWORD),
+            ("dwExtraInfo", ctypes.c_size_t),
+        ]
+
+    class HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [
+            ("uMsg", ctypes.wintypes.DWORD),
+            ("wParamL", ctypes.wintypes.WORD),
+            ("wParamH", ctypes.wintypes.WORD),
         ]
 
     class _INPUT_UNION(ctypes.Union):
-        _fields_ = [("ki", KEYBDINPUT)]
+        _fields_ = [
+            ("mi", MOUSEINPUT),
+            ("ki", KEYBDINPUT),
+            ("hi", HARDWAREINPUT),
+        ]
 
     class INPUT(ctypes.Structure):
+        _anonymous_ = ("union",)
         _fields_ = [
             ("type", ctypes.wintypes.DWORD),
             ("union", _INPUT_UNION),
         ]
 
-    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    user32 = ctypes.WinDLL("user32", use_last_error=True)  # type: ignore[attr-defined]
+    user32.SendInput.argtypes = (ctypes.wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
+    user32.SendInput.restype = ctypes.wintypes.UINT
+
+    def _raise_sendinput_failed(detail: str) -> None:
+        err = ctypes.get_last_error()
+        if err:
+            detail = f"{detail} (WinError {err})"
+        raise ScreamerError(AppError.INJECTION_FAILED, detail)
 
     def _send_unicode(char: str, key_up: bool = False) -> None:
         inp = INPUT()
         inp.type = INPUT_KEYBOARD
-        inp.union.ki.wScan = ord(char)
-        inp.union.ki.dwFlags = KEYEVENTF_UNICODE | (KEYEVENTF_KEYUP if key_up else 0)
-        if user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 0:
-            raise ScreamerError(AppError.INJECTION_FAILED, f"SendInput failed for U+{ord(char):04X}")
+        inp.ki.wScan = ord(char)
+        inp.ki.dwFlags = KEYEVENTF_UNICODE | (KEYEVENTF_KEYUP if key_up else 0)
+        if user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
+            _raise_sendinput_failed(f"SendInput failed for U+{ord(char):04X}")
 
     def _send_vk(vk: int, key_up: bool = False) -> None:
         inp = INPUT()
         inp.type = INPUT_KEYBOARD
-        inp.union.ki.wVk = vk
-        inp.union.ki.dwFlags = KEYEVENTF_KEYUP if key_up else 0
-        if user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 0:
-            raise ScreamerError(AppError.INJECTION_FAILED, f"SendInput failed for VK 0x{vk:02X}")
+        inp.ki.wVk = vk
+        inp.ki.dwFlags = KEYEVENTF_KEYUP if key_up else 0
+        if user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
+            _raise_sendinput_failed(f"SendInput failed for VK 0x{vk:02X}")
+
+    def _utf16_units(value: str) -> list[str]:
+        encoded = value.encode("utf-16-le", errors="surrogatepass")
+        return [chr(int.from_bytes(encoded[i : i + 2], "little")) for i in range(0, len(encoded), 2)]
 
     try:
         log.info("Typing %d characters", len(text))
-        for ch in text:
+        for ch in _utf16_units(text):
             _send_unicode(ch)
             _send_unicode(ch, key_up=True)
 
