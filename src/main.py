@@ -209,19 +209,21 @@ class _TrayApp(QObject):
     # Hotkey
     # ------------------------------------------------------------------
 
-    def _build_hotkey(self) -> None:
+    def _make_listener(self) -> None:
+        """Create and start a HotkeyListener from current config, storing it on self."""
         mode = HotkeyMode.TOGGLE if self._config.recording_mode == "toggle" else HotkeyMode.HOLD
         self._hotkey = HotkeyListener(self._config.hotkey, mode, self._bridge)
+        self._hotkey.start()
+
+    def _build_hotkey(self) -> None:
         self._bridge.hotkey_pressed.connect(self._on_hotkey_pressed)
         self._bridge.hotkey_released.connect(self._on_hotkey_released)
         self._bridge.error_occurred.connect(self._on_error)
-        self._hotkey.start()
+        self._make_listener()
 
     def _restart_hotkey(self) -> None:
         self._hotkey.stop()
-        mode = HotkeyMode.TOGGLE if self._config.recording_mode == "toggle" else HotkeyMode.HOLD
-        self._hotkey = HotkeyListener(self._config.hotkey, mode, self._bridge)
-        self._hotkey.start()
+        self._make_listener()
 
     # ------------------------------------------------------------------
     # State machine
