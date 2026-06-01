@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
-import json
 import logging
 
 import httpx
 
+from src.config import AppConfig, ProviderConfig, parse_custom_headers
 from src.utils import AppError, PipelineResult, ScreamerError
 
 log = logging.getLogger(__name__)
 
 
-def rewrite(text: str, config: object) -> PipelineResult:
+def rewrite(text: str, config: AppConfig) -> PipelineResult:
     """Send text to LLM with system prompt. Primary → fallback.
 
     Returns input text unchanged in ``PipelineResult.text`` if ``config.llm_enabled`` is False.
-    Error → ``ScreamerError(AppError.LLM_FAILED)``.
+    Provider errors return the original text with ``AppError.LLM_FAILED`` as a warning.
     """
     if not config.llm_enabled:
         return PipelineResult(text=text)
@@ -26,71 +26,51 @@ def rewrite(text: str, config: object) -> PipelineResult:
     if language:
         system_prompt += f"\nThe speech language is {language}."
 
-    # Try primary LLM.
-    try:
-        result = _call_llm(
-            api_key=config.llm_api_key,
-            base_url=config.llm_base_url,
-            model=config.llm_model,
-            custom_headers=config.llm_custom_headers,
-            system_prompt=system_prompt,
-            user_text=text,
-        )
-        if result:
-            log.debug("LLM rewrite: %r → %r", text[:60], result[:60])
-            return PipelineResult(text=result)
-    except Exception as e:
-        log.warning("Primary LLM failed: %s", e)
-        if not config.llm_fallback_enabled:
-            return PipelineResult(text=text, warnings=[AppError.LLM_FAILED])
+    primary = config.llm_provider()
+    fallback = config.llm_fallback_provider()
 
-    # Try fallback LLM.
-    if config.llm_fallback_enabled and config.llm_fallback_api_key:
+    for is_fallback, provider in ((False, primary), (True, fallback.provider)):
+        if is_fallback and not fallback.enabled:
+            continue
+        if not provider.is_complete:
+            continue
+
         try:
-            result = _call_llm(
-                api_key=config.llm_fallback_api_key,
-                base_url=config.llm_fallback_base_url,
-                model=config.llm_fallback_model,
-                custom_headers=config.llm_fallback_custom_headers,
-                system_prompt=system_prompt,
-                user_text=text,
-            )
+            result = _call_llm(provider=provider, system_prompt=system_prompt, user_text=text)
             if result:
-                log.debug("LLM fallback rewrite: %r → %r", text[:60], result[:60])
+                log.debug("%s LLM rewrite: %r → %r", "Fallback" if is_fallback else "Primary", text[:60], result[:60])
                 return PipelineResult(text=result)
         except Exception as e:
-            log.warning("Fallback LLM failed: %s", e)
+            log.warning("%s LLM failed: %s", "Fallback" if is_fallback else "Primary", e)
+            if not fallback.enabled:
+                return PipelineResult(text=text, warnings=[AppError.LLM_FAILED])
 
     log.debug("LLM rewrite failed or returned empty; using original text")
     return PipelineResult(text=text, warnings=[AppError.LLM_FAILED])
 
 
 def _call_llm(
-    api_key: str,
-    base_url: str,
-    model: str,
-    custom_headers: str,
+    provider: ProviderConfig,
     system_prompt: str,
     user_text: str,
 ) -> str | None:
     """Call an OpenAI-compatible chat completions endpoint. Returns corrected text or None."""
-    if not api_key:
+    if not provider.api_key:
         return None
 
-    url = (base_url.rstrip("/") if base_url else "") + "/chat/completions"
+    url = provider.base_url.rstrip("/") + "/chat/completions"
 
     headers: dict[str, str] = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {provider.api_key}",
         "Content-Type": "application/json",
     }
-    if custom_headers:
-        try:
-            headers.update(json.loads(custom_headers))
-        except json.JSONDecodeError:
-            log.warning("Invalid custom headers JSON; ignoring")
+    try:
+        headers.update(parse_custom_headers(provider.custom_headers))
+    except ValueError as e:
+        log.warning("Invalid custom headers; ignoring: %s", e)
 
     body = {
-        "model": model,
+        "model": provider.model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
@@ -98,7 +78,7 @@ def _call_llm(
         "temperature": 0.3,
     }
 
-    log.info("LLM request: url=%s model=%s", url, model)
+    log.info("LLM request: url=%s model=%s", url, provider.model)
     resp = httpx.post(url, headers=headers, json=body, timeout=30.0)
     resp.raise_for_status()
 

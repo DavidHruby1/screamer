@@ -12,10 +12,19 @@ import threading
 from typing import Any
 
 from PySide6.QtCore import QObject, Signal, QThread
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from src.audio import AudioRecorder, resolve_device, list_devices
-from src.config import AppConfig, import_from_env, load_config, save_config
+from src.config import (
+    HOTKEY_OPTIONS,
+    POST_KEY_OPTIONS,
+    AppConfig,
+    import_from_env,
+    load_config,
+    save_config,
+    validate_config,
+)
 from src.hotkey import HotkeyListener, HotkeyMode
 from src.icons import TrayState, get_icon_pixmap
 from src.injector import type_text
@@ -35,12 +44,14 @@ log = logging.getLogger(__name__)
 class _WorkerThread(QThread):
     """Daemon thread: transcribe → rewrite → type.
 
-    Communicates results back to the Qt main thread via finished_signal.
+    Communicates results back to the Qt main thread via explicit signals.
     Checks cancel_event before each blocking step.
     Carries transcription warnings through to the final result.
     """
 
-    finished_signal = Signal(object)  # PipelineResult | Exception | None
+    succeeded = Signal(object)  # PipelineResult
+    failed = Signal(Exception)
+    cancelled = Signal()
 
     def __init__(
         self,
@@ -57,29 +68,29 @@ class _WorkerThread(QThread):
     def run(self) -> None:
         try:
             if self._cancel.is_set():
-                self.finished_signal.emit(None)
+                self.cancelled.emit()
                 return
 
             stt_result = transcribe(self._audio_wav, self._config)
             all_warnings = list(stt_result.warnings)
 
             if self._cancel.is_set():
-                self.finished_signal.emit(None)
+                self.cancelled.emit()
                 return
 
             result = rewrite(stt_result.text, self._config)
             all_warnings.extend(result.warnings)
 
             if self._cancel.is_set():
-                self.finished_signal.emit(None)
+                self.cancelled.emit()
                 return
 
             post_key = self._config.post_type_key
             type_text(result.text, post_key if post_key != "none" else None)
 
-            self.finished_signal.emit(PipelineResult(text=result.text, warnings=all_warnings))
+            self.succeeded.emit(PipelineResult(text=result.text, warnings=all_warnings))
         except Exception as e:
-            self.finished_signal.emit(e)
+            self.failed.emit(e)
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +120,9 @@ class _TrayApp(QObject):
         self._build_hotkey()
         self._apply_state(TrayState.IDLE)
 
-        # Auto-open settings on first launch if no STT key configured.
-        if not self._config.stt_api_key:
-            log.info("No STT API key; opening settings on first launch")
+        # Auto-open settings if startup config is incomplete.
+        if validate_config(self._config):
+            log.info("Incomplete configuration; opening settings on startup")
             self._open_settings()
 
     # ------------------------------------------------------------------
@@ -137,6 +148,7 @@ class _TrayApp(QObject):
 
     def _build_tray(self) -> None:
         self._tray = QSystemTrayIcon(self)
+        self._tray.setIcon(QIcon(get_icon_pixmap(TrayState.IDLE)))
         self._tray.setToolTip("Screamer — Idle")
         self._menu = QMenu()
         self._tray.setContextMenu(self._menu)
@@ -171,7 +183,6 @@ class _TrayApp(QObject):
 
         # Hotkey submenu.
         hotkey_menu = self._menu.addMenu("Hotkey")
-        from src.settings_dialog import HOTKEY_OPTIONS
 
         self._hotkey_actions: dict[str, Any] = {}
         for key, label in HOTKEY_OPTIONS:
@@ -183,7 +194,6 @@ class _TrayApp(QObject):
 
         # Post-type Key submenu.
         post_menu = self._menu.addMenu("Post-type Key")
-        from src.settings_dialog import POST_KEY_OPTIONS
 
         self._post_actions: dict[str, Any] = {}
         for key, label in POST_KEY_OPTIONS:
@@ -228,7 +238,7 @@ class _TrayApp(QObject):
     # ------------------------------------------------------------------
 
     def _apply_state(self, state: TrayState) -> None:
-        self._tray.setIcon(get_icon_pixmap(state))
+        self._tray.setIcon(QIcon(get_icon_pixmap(state)))
         labels = {
             TrayState.IDLE: "Idle",
             TrayState.RECORDING: "Recording...",
@@ -271,7 +281,9 @@ class _TrayApp(QObject):
 
         self._cancel_event.clear()
         self._worker = _WorkerThread(audio_wav, self._config, self._cancel_event, self)
-        self._worker.finished_signal.connect(self._on_worker_done)
+        self._worker.succeeded.connect(self._on_worker_succeeded)
+        self._worker.failed.connect(self._on_worker_failed)
+        self._worker.cancelled.connect(self._on_worker_cancelled)
         self._worker.start()
 
     # ------------------------------------------------------------------
@@ -300,18 +312,22 @@ class _TrayApp(QObject):
     # Worker result
     # ------------------------------------------------------------------
 
-    def _on_worker_done(self, result: object) -> None:
+    def _on_worker_succeeded(self, result: PipelineResult) -> None:
         self._worker = None
+        for warning in result.warnings:
+            self._on_error(warning)
+        self._apply_state(TrayState.IDLE)
 
-        if isinstance(result, Exception):
-            if isinstance(result, ScreamerError):
-                self._on_error(result.code, result.detail)
-            else:
-                self._on_error(AppError.STT_FAILED, str(result))
-        elif isinstance(result, PipelineResult):
-            for warning in result.warnings:
-                self._on_error(warning)
+    def _on_worker_failed(self, error: Exception) -> None:
+        self._worker = None
+        if isinstance(error, ScreamerError):
+            self._on_error(error.code, error.detail)
+        else:
+            self._on_error(AppError.STT_FAILED, str(error))
+        self._apply_state(TrayState.IDLE)
 
+    def _on_worker_cancelled(self) -> None:
+        self._worker = None
         self._apply_state(TrayState.IDLE)
 
     # ------------------------------------------------------------------

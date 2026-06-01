@@ -8,7 +8,6 @@ import os
 import platform
 from dataclasses import dataclass, field, fields
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
 from src.utils import APP_DIR, APP_NAME, ScreamerError, AppError
 
@@ -19,6 +18,73 @@ DEFAULT_LLM_SYSTEM_PROMPT: str = (
     "errors in the input text. Preserve the original meaning and tone. "
     "Return only the corrected text with no explanations."
 )
+
+MOD_CONTROL = 0x0002
+MOD_NOREPEAT = 0x4000
+
+# App-level options shared by settings and tray menus.
+HOTKEY_OPTIONS: list[tuple[str, str]] = [
+    ("scroll_lock", "Scroll Lock"),
+    ("pause", "Pause"),
+    ("f13", "F13"),
+    ("f14", "F14"),
+    ("ctrl_scroll_lock", "Ctrl+Scroll Lock"),
+]
+
+POST_KEY_OPTIONS: list[tuple[str, str]] = [
+    ("none", "None"),
+    ("enter", "Enter"),
+    ("tab", "Tab"),
+    ("space", "Space"),
+    ("backspace", "Backspace"),
+]
+
+
+@dataclass(frozen=True)
+class HotkeyBinding:
+    modifiers: int
+    vk: int
+
+
+HOTKEY_BINDINGS: dict[str, HotkeyBinding] = {
+    "scroll_lock": HotkeyBinding(MOD_NOREPEAT, 0x91),
+    "pause": HotkeyBinding(MOD_NOREPEAT, 0x13),
+    "f13": HotkeyBinding(MOD_NOREPEAT, 0x7C),
+    "f14": HotkeyBinding(MOD_NOREPEAT, 0x7D),
+    "ctrl_scroll_lock": HotkeyBinding(MOD_CONTROL | MOD_NOREPEAT, 0x91),
+}
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    api_key: str = ""
+    base_url: str = ""
+    model: str = ""
+    custom_headers: str = ""
+
+    @property
+    def has_any_value(self) -> bool:
+        return bool(self.api_key or self.base_url or self.model or self.custom_headers)
+
+    @property
+    def is_complete(self) -> bool:
+        return bool(self.api_key and self.base_url and self.model)
+
+
+@dataclass(frozen=True)
+class FallbackProviderConfig:
+    enabled: bool = False
+    provider: ProviderConfig = field(default_factory=ProviderConfig)
+
+    @property
+    def is_complete(self) -> bool:
+        return self.enabled and self.provider.is_complete
+
+
+@dataclass(frozen=True)
+class ConfigValidationIssue:
+    message: str
+    tab_index: int = 0
 
 
 @dataclass
@@ -54,6 +120,44 @@ class AppConfig:
     llm_fallback_base_url: str = ""
     llm_fallback_model: str = ""
     llm_fallback_custom_headers: str = ""
+
+    def stt_provider(self) -> ProviderConfig:
+        return ProviderConfig(
+            api_key=self.stt_api_key,
+            base_url=self.stt_base_url,
+            model=self.stt_model,
+            custom_headers=self.stt_custom_headers,
+        )
+
+    def stt_fallback_provider(self) -> FallbackProviderConfig:
+        return FallbackProviderConfig(
+            enabled=self.stt_fallback_enabled,
+            provider=ProviderConfig(
+                api_key=self.stt_fallback_api_key,
+                base_url=self.stt_fallback_base_url,
+                model=self.stt_fallback_model,
+                custom_headers=self.stt_fallback_custom_headers,
+            ),
+        )
+
+    def llm_provider(self) -> ProviderConfig:
+        return ProviderConfig(
+            api_key=self.llm_api_key,
+            base_url=self.llm_base_url,
+            model=self.llm_model,
+            custom_headers=self.llm_custom_headers,
+        )
+
+    def llm_fallback_provider(self) -> FallbackProviderConfig:
+        return FallbackProviderConfig(
+            enabled=self.llm_fallback_enabled,
+            provider=ProviderConfig(
+                api_key=self.llm_fallback_api_key,
+                base_url=self.llm_fallback_base_url,
+                model=self.llm_fallback_model,
+                custom_headers=self.llm_fallback_custom_headers,
+            ),
+        )
 
 
 # Fields that contain secret API keys and must go through DPAPI.
@@ -248,6 +352,10 @@ def load_config() -> AppConfig:
             setattr(cfg, key, val)
 
     _load_secrets(cfg)
+    if cfg.hotkey not in HOTKEY_BINDINGS:
+        cfg.hotkey = "scroll_lock"
+    if cfg.post_type_key not in {key for key, _label in POST_KEY_OPTIONS}:
+        cfg.post_type_key = "none"
     return cfg
 
 
@@ -265,6 +373,72 @@ def save_config(cfg: AppConfig) -> None:
 def reset_config() -> AppConfig:
     """Fresh AppConfig with all defaults. Does not write disk."""
     return AppConfig()
+
+
+def parse_custom_headers(custom_headers: str) -> dict[str, str]:
+    """Parse provider custom headers as a JSON object of string-ish values."""
+    if not custom_headers:
+        return {}
+
+    parsed = json.loads(custom_headers)
+    if not isinstance(parsed, dict):
+        raise ValueError("Custom headers must be a JSON object")
+
+    return {str(key): str(value) for key, value in parsed.items()}
+
+
+def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]:
+    """Return all startup/settings validation issues for the current config."""
+    issues: list[ConfigValidationIssue] = []
+
+    if cfg.hotkey not in HOTKEY_BINDINGS:
+        issues.append(ConfigValidationIssue("Choose a supported global hotkey.", 0))
+
+    stt = cfg.stt_provider()
+    stt_fallback = cfg.stt_fallback_provider()
+    if stt.has_any_value and not stt.is_complete:
+        issues.append(
+            ConfigValidationIssue("Primary STT requires an API key, base URL, and model.", 1)
+        )
+    if stt_fallback.enabled and not stt_fallback.provider.is_complete:
+        issues.append(
+            ConfigValidationIssue("Fallback STT requires an API key, base URL, and model.", 1)
+        )
+    if not stt.is_complete and not stt_fallback.is_complete:
+        issues.append(
+            ConfigValidationIssue("Configure a complete primary or fallback STT provider.", 1)
+        )
+
+    llm = cfg.llm_provider()
+    llm_fallback = cfg.llm_fallback_provider()
+    if cfg.llm_enabled:
+        if llm.has_any_value and not llm.is_complete:
+            issues.append(
+                ConfigValidationIssue("Primary LLM requires an API key, base URL, and model.", 2)
+            )
+        if llm_fallback.enabled and not llm_fallback.provider.is_complete:
+            issues.append(
+                ConfigValidationIssue("Fallback LLM requires an API key, base URL, and model.", 2)
+            )
+        if not llm.is_complete and not llm_fallback.is_complete:
+            issues.append(
+                ConfigValidationIssue(
+                    "AI rewrite requires a complete primary or fallback LLM provider.", 2
+                )
+            )
+
+    for headers, label, tab_index in (
+        (cfg.stt_custom_headers, "Primary STT", 1),
+        (cfg.stt_fallback_custom_headers, "Fallback STT", 1),
+        (cfg.llm_custom_headers, "Primary LLM", 2),
+        (cfg.llm_fallback_custom_headers, "Fallback LLM", 2),
+    ):
+        try:
+            parse_custom_headers(headers)
+        except (json.JSONDecodeError, ValueError) as e:
+            issues.append(ConfigValidationIssue(f"{label} custom headers are invalid: {e}", tab_index))
+
+    return issues
 
 
 def import_from_env(cfg: AppConfig) -> AppConfig:
@@ -299,6 +473,7 @@ def import_from_env(cfg: AppConfig) -> AppConfig:
         "LLM_FALLBACK_API_KEY": "llm_fallback_api_key",
         "LLM_FALLBACK_BASE_URL": "llm_fallback_base_url",
         "LLM_FALLBACK_MODEL": "llm_fallback_model",
+        "LLM_FALLBACK_HEADERS": "llm_fallback_custom_headers",
     }
 
     for env_name, field_name in env_map.items():

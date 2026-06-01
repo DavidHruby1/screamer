@@ -33,36 +33,36 @@ from PySide6.QtWidgets import (
 from src.config import (
     AppConfig,
     DEFAULT_LLM_SYSTEM_PROMPT,
+    HOTKEY_OPTIONS,
+    POST_KEY_OPTIONS,
     import_from_env,
     load_config,
     reset_config,
     save_config,
+    validate_config,
 )
 from src.utils import APP_NAME
 
 log = logging.getLogger(__name__)
 
-# Keys available for hotkey selection (shared with tray menu in main.py).
-HOTKEY_OPTIONS: list[tuple[str, str]] = [
-    ("scroll_lock", "Scroll Lock"),
-    ("ctrl", "Ctrl"),
-    ("alt", "Alt"),
-    ("pause", "Pause"),
-    ("f13", "F13"),
-    ("f14", "F14"),
-]
-
-# Post-type key options (shared with tray menu in main.py).
-POST_KEY_OPTIONS: list[tuple[str, str]] = [
-    ("none", "None"),
-    ("enter", "Enter"),
-    ("tab", "Tab"),
-    ("space", "Space"),
-    ("backspace", "Backspace"),
-]
-
 # Type alias for device list items: (id, display_name).
 DeviceItem = tuple[int, str]
+
+
+class PasswordField(QLineEdit):
+    """Password line edit that reveals text only while focused."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setEchoMode(QLineEdit.EchoMode.Password)
+
+    def focusInEvent(self, event) -> None:
+        self.setEchoMode(QLineEdit.EchoMode.Normal)
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event) -> None:
+        self.setEchoMode(QLineEdit.EchoMode.Password)
+        super().focusOutEvent(event)
 
 
 class SettingsDialog(QDialog):
@@ -172,23 +172,14 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         form = QFormLayout(tab)
 
-        self._stt_key = _password_field_with_toggle()
-        form.addRow("API Key:", self._stt_key)
-
-        self._stt_url = QLineEdit()
-        self._stt_url.setPlaceholderText("https://api.openai.com/v1")
-        form.addRow("Base URL:", self._stt_url)
-
-        self._stt_model = QLineEdit()
-        form.addRow("Model:", self._stt_model)
+        self._stt_key, self._stt_url, self._stt_model, self._stt_headers = _add_provider_fields(
+            form,
+            base_url_placeholder="https://api.openai.com/v1",
+        )
 
         self._stt_lang = QLineEdit()
         self._stt_lang.setPlaceholderText("auto-detect")
         form.addRow("Language:", self._stt_lang)
-
-        self._stt_headers = QLineEdit()
-        self._stt_headers.setPlaceholderText('{"X-Custom": "value"}')
-        form.addRow("Custom Headers:", self._stt_headers)
 
         # --- Fallback ---
         self._stt_fb_check = QCheckBox("Enable fallback STT provider")
@@ -198,18 +189,9 @@ class SettingsDialog(QDialog):
         self._stt_fb_group = QGroupBox("Fallback STT")
         fb_form = QFormLayout(self._stt_fb_group)
 
-        self._stt_fb_key = _password_field_with_toggle()
-        fb_form.addRow("API Key:", self._stt_fb_key)
-
-        self._stt_fb_url = QLineEdit()
-        fb_form.addRow("Base URL:", self._stt_fb_url)
-
-        self._stt_fb_model = QLineEdit()
-        fb_form.addRow("Model:", self._stt_fb_model)
-
-        self._stt_fb_headers = QLineEdit()
-        self._stt_fb_headers.setPlaceholderText('{"X-Custom": "value"}')
-        fb_form.addRow("Custom Headers:", self._stt_fb_headers)
+        self._stt_fb_key, self._stt_fb_url, self._stt_fb_model, self._stt_fb_headers = (
+            _add_provider_fields(fb_form)
+        )
 
         self._stt_fb_group.setVisible(False)
         form.addRow(self._stt_fb_group)
@@ -229,18 +211,9 @@ class SettingsDialog(QDialog):
         self._llm_group = QGroupBox("LLM Settings")
         llm_form = QFormLayout(self._llm_group)
 
-        self._llm_key = _password_field_with_toggle()
-        llm_form.addRow("API Key:", self._llm_key)
-
-        self._llm_url = QLineEdit()
-        llm_form.addRow("Base URL:", self._llm_url)
-
-        self._llm_model = QLineEdit()
-        llm_form.addRow("Model:", self._llm_model)
-
-        self._llm_headers = QLineEdit()
-        self._llm_headers.setPlaceholderText('{"X-Custom": "value"}')
-        llm_form.addRow("Custom Headers:", self._llm_headers)
+        self._llm_key, self._llm_url, self._llm_model, self._llm_headers = _add_provider_fields(
+            llm_form
+        )
 
         self._llm_prompt = QPlainTextEdit()
         self._llm_prompt.setMaximumHeight(120)
@@ -261,18 +234,9 @@ class SettingsDialog(QDialog):
         self._llm_fb_group = QGroupBox("Fallback LLM")
         fb_form = QFormLayout(self._llm_fb_group)
 
-        self._llm_fb_key = _password_field_with_toggle()
-        fb_form.addRow("API Key:", self._llm_fb_key)
-
-        self._llm_fb_url = QLineEdit()
-        fb_form.addRow("Base URL:", self._llm_fb_url)
-
-        self._llm_fb_model = QLineEdit()
-        fb_form.addRow("Model:", self._llm_fb_model)
-
-        self._llm_fb_headers = QLineEdit()
-        self._llm_fb_headers.setPlaceholderText('{"X-Custom": "value"}')
-        fb_form.addRow("Custom Headers:", self._llm_fb_headers)
+        self._llm_fb_key, self._llm_fb_url, self._llm_fb_model, self._llm_fb_headers = (
+            _add_provider_fields(fb_form)
+        )
 
         self._llm_fb_group.setVisible(False)
         llm_form.addRow(self._llm_fb_group)
@@ -441,63 +405,8 @@ class SettingsDialog(QDialog):
     def _validate_and_accept(self) -> None:
         """Validate required fields, then accept."""
         self._collect()
-        cfg = self._working
-
-        if not cfg.stt_api_key and not (cfg.stt_fallback_enabled and cfg.stt_fallback_api_key):
-            QMessageBox.warning(
-                self,
-                "Missing Configuration",
-                "At least one STT API key is required.",
-            )
-            self._tabs.setCurrentIndex(1)  # Switch to STT tab.
+        if not self._show_validation_issue():
             return
-
-        if cfg.stt_api_key and (not cfg.stt_base_url or not cfg.stt_model):
-            QMessageBox.warning(
-                self,
-                "Missing STT Configuration",
-                "Primary STT requires an API key, base URL, and model.",
-            )
-            self._tabs.setCurrentIndex(1)
-            return
-
-        if cfg.stt_fallback_enabled and (
-            not cfg.stt_fallback_api_key or not cfg.stt_fallback_base_url or not cfg.stt_fallback_model
-        ):
-            QMessageBox.warning(
-                self,
-                "Missing STT Fallback Configuration",
-                "Fallback STT requires an API key, base URL, and model.",
-            )
-            self._tabs.setCurrentIndex(1)
-            return
-
-        if cfg.llm_enabled:
-            has_primary_llm = bool(cfg.llm_api_key and cfg.llm_base_url and cfg.llm_model)
-            has_partial_primary_llm = bool(cfg.llm_api_key or cfg.llm_base_url or cfg.llm_model)
-            has_fallback_llm = bool(
-                cfg.llm_fallback_enabled
-                and cfg.llm_fallback_api_key
-                and cfg.llm_fallback_base_url
-                and cfg.llm_fallback_model
-            )
-            if has_partial_primary_llm and not has_primary_llm:
-                QMessageBox.warning(
-                    self,
-                    "Missing LLM Configuration",
-                    "Primary LLM requires an API key, base URL, and model.",
-                )
-                self._tabs.setCurrentIndex(2)
-                return
-
-            if not has_primary_llm and not has_fallback_llm:
-                QMessageBox.warning(
-                    self,
-                    "Missing LLM Configuration",
-                    "AI rewrite requires a complete primary or fallback LLM provider.",
-                )
-                self._tabs.setCurrentIndex(2)
-                return
 
         super().accept()
 
@@ -521,6 +430,8 @@ class SettingsDialog(QDialog):
     def _on_apply(self) -> None:
         """Apply: collect and persist without closing."""
         self._collect()
+        if not self._show_validation_issue():
+            return
         save_config(self._working)
         log.info("Settings applied")
 
@@ -532,34 +443,42 @@ class SettingsDialog(QDialog):
         self._collect()
         super().accept()
 
+    def _show_validation_issue(self) -> bool:
+        issue = next(iter(validate_config(self._working)), None)
+        if issue is None:
+            return True
+
+        QMessageBox.warning(self, "Missing Configuration", issue.message)
+        self._tabs.setCurrentIndex(issue.tab_index)
+        return False
+
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
 
 
-def _password_field_with_toggle() -> QLineEdit:
-    """Password QLineEdit that toggles echo mode on focus-in/focus-out."""
-    field = QLineEdit()
-    field.setEchoMode(QLineEdit.EchoMode.Password)
-    field._showing = False
+def _add_provider_fields(
+    form: QFormLayout,
+    *,
+    base_url_placeholder: str = "",
+) -> tuple[QLineEdit, QLineEdit, QLineEdit, QLineEdit]:
+    key = PasswordField()
+    form.addRow("API Key:", key)
 
-    original_focus_in = field.focusInEvent
-    original_focus_out = field.focusOutEvent
+    url = QLineEdit()
+    if base_url_placeholder:
+        url.setPlaceholderText(base_url_placeholder)
+    form.addRow("Base URL:", url)
 
-    def focus_in(event):
-        field.setEchoMode(QLineEdit.EchoMode.Normal)
-        field._showing = True
-        original_focus_in(event)
+    model = QLineEdit()
+    form.addRow("Model:", model)
 
-    def focus_out(event):
-        field.setEchoMode(QLineEdit.EchoMode.Password)
-        field._showing = False
-        original_focus_out(event)
+    headers = QLineEdit()
+    headers.setPlaceholderText('{"X-Custom": "value"}')
+    form.addRow("Custom Headers:", headers)
 
-    field.focusInEvent = focus_in
-    field.focusOutEvent = focus_out
-    return field
+    return key, url, model, headers
 
 
 def _combo_index(combo: QComboBox, data: str) -> int:

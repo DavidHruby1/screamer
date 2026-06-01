@@ -8,24 +8,10 @@ import threading
 import time
 from enum import Enum
 
+from src.config import HOTKEY_BINDINGS, HotkeyBinding
 from src.utils import AppError, ScreamerError, SignalBridge
 
 log = logging.getLogger(__name__)
-
-# Virtual key code map for hotkey strings.
-_VK_MAP: dict[str, int] = {
-    "ctrl": 0xA2,       # VK_LCONTROL
-    "ctrl_l": 0xA2,
-    "ctrl_r": 0xA3,
-    "alt": 0xA4,        # VK_LMENU
-    "alt_l": 0xA4,
-    "alt_r": 0xA5,
-    "pause": 0x13,      # VK_PAUSE
-    "f13": 0x7C,
-    "f14": 0x7D,
-    "scroll_lock": 0x91,  # VK_SCROLL
-}
-
 
 class HotkeyMode(Enum):
     HOLD = "hold"
@@ -43,6 +29,9 @@ class HotkeyListener:
         self._stop_event = threading.Event()
         self._hwnd = None
         self._hotkey_id = 1
+        self._release_lock = threading.Lock()
+        self._release_thread: threading.Thread | None = None
+        self._release_watch_active = False
 
     def start(self) -> None:
         """Create message-only window, RegisterHotKey, GetMessage pump in daemon thread."""
@@ -84,8 +73,9 @@ class HotkeyListener:
         user32 = ctypes.windll.user32  # type: ignore[attr-defined]
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
 
+        lresult_type = getattr(ctypes.wintypes, "LRESULT", ctypes.c_ssize_t)
         WNDPROC = ctypes.WINFUNCTYPE(
-            ctypes.wintypes.LRESULT,
+            lresult_type,
             ctypes.wintypes.HWND,
             ctypes.wintypes.UINT,
             ctypes.wintypes.WPARAM,
@@ -113,12 +103,14 @@ class HotkeyListener:
 
             wnd_class_type = WNDCLASSEXW
 
+        _declare_win32_functions(ctypes, user32, kernel32, wnd_class_type, lresult_type)
+
         # Create a message-only window.
         wnd_proc = WNDPROC(self._wnd_proc)
         wnd_class = wnd_class_type()
         wnd_class.cbSize = ctypes.sizeof(wnd_class_type)
         wnd_class.lpfnWndProc = wnd_proc
-        wnd_class.hInstance = ctypes.windll.kernel32.GetModuleHandleW(None)  # type: ignore[attr-defined]
+        wnd_class.hInstance = kernel32.GetModuleHandleW(None)
         wnd_class.lpszClassName = "ScreamerHotkeyWindow"
 
         atom = user32.RegisterClassExW(ctypes.byref(wnd_class))
@@ -148,18 +140,29 @@ class HotkeyListener:
             return
 
         # Register the hotkey.
-        vk = _VK_MAP.get(self._key.lower())
-        if vk is None:
+        binding = HOTKEY_BINDINGS.get(self._key.lower())
+        if binding is None:
             log.error("Unknown hotkey: %s", self._key)
             return
 
         HOTKEY_ID = self._hotkey_id
-        if not user32.RegisterHotKey(self._hwnd, HOTKEY_ID, 0, vk):
-            log.error("RegisterHotKey failed for key=%s vk=0x%02X (conflict?)", self._key, vk)
+        if not user32.RegisterHotKey(self._hwnd, HOTKEY_ID, binding.modifiers, binding.vk):
+            log.error(
+                "RegisterHotKey failed for key=%s modifiers=0x%04X vk=0x%02X (conflict?)",
+                self._key,
+                binding.modifiers,
+                binding.vk,
+            )
             self._bridge.error_occurred.emit(AppError.HOTKEY_CONFLICT)
             return
 
-        log.info("Registered hotkey: key=%s vk=0x%02X id=%d", self._key, vk, HOTKEY_ID)
+        log.info(
+            "Registered hotkey: key=%s modifiers=0x%04X vk=0x%02X id=%d",
+            self._key,
+            binding.modifiers,
+            binding.vk,
+            HOTKEY_ID,
+        )
 
         # Message pump — blocks until WM_QUIT.
         msg = ctypes.wintypes.MSG()
@@ -190,16 +193,89 @@ class HotkeyListener:
             self._bridge.hotkey_pressed.emit()
 
             if self._mode == HotkeyMode.HOLD:
-                # Poll GetAsyncKeyState until the key is released.
-                vk = _VK_MAP.get(self._key.lower(), 0)
-                while not self._stop_event.is_set():
-                    state = user32.GetAsyncKeyState(vk)
-                    if not (state & 0x8000):  # high-order bit = key is down
-                        break
-                    time.sleep(0.05)
-                self._bridge.hotkey_released.emit()
+                binding = HOTKEY_BINDINGS.get(self._key.lower())
+                if binding is not None:
+                    self._start_release_watch(binding)
 
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def _start_release_watch(self, binding: HotkeyBinding) -> None:
+        """Poll key release outside the window procedure so the pump stays responsive."""
+        with self._release_lock:
+            if self._release_watch_active:
+                return
+            self._release_watch_active = True
+            self._release_thread = threading.Thread(
+                target=self._watch_release,
+                args=(binding.vk,),
+                daemon=True,
+            )
+            self._release_thread.start()
+
+    def _watch_release(self, vk: int) -> None:
+        import ctypes
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        while not self._stop_event.is_set():
+            state = user32.GetAsyncKeyState(vk)
+            if not (state & 0x8000):  # high-order bit = key is down
+                break
+            time.sleep(0.05)
+
+        with self._release_lock:
+            self._release_watch_active = False
+
+        if not self._stop_event.is_set():
+            self._bridge.hotkey_released.emit()
+
+
+def _declare_win32_functions(ctypes, user32, kernel32, wnd_class_type, lresult_type) -> None:
+    """Declare the Win32 ABI once before any ctypes calls cross the boundary."""
+    wintypes = ctypes.wintypes
+
+    kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+    kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    kernel32.GetLastError.restype = wintypes.DWORD
+    kernel32.GetLastError.argtypes = []
+
+    atom_type = getattr(wintypes, "ATOM", wintypes.WORD)
+    user32.RegisterClassExW.restype = atom_type
+    user32.RegisterClassExW.argtypes = [ctypes.POINTER(wnd_class_type)]
+    user32.CreateWindowExW.restype = wintypes.HWND
+    user32.CreateWindowExW.argtypes = [
+        wintypes.DWORD,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.HWND,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    user32.RegisterHotKey.restype = wintypes.BOOL
+    user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
+    user32.GetMessageW.restype = wintypes.BOOL
+    user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+    user32.TranslateMessage.restype = wintypes.BOOL
+    user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.DispatchMessageW.restype = lresult_type
+    user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.PostMessageW.restype = wintypes.BOOL
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.PostQuitMessage.restype = None
+    user32.PostQuitMessage.argtypes = [ctypes.c_int]
+    user32.DestroyWindow.restype = wintypes.BOOL
+    user32.DestroyWindow.argtypes = [wintypes.HWND]
+    user32.UnregisterHotKey.restype = wintypes.BOOL
+    user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetAsyncKeyState.restype = ctypes.c_short
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    user32.DefWindowProcW.restype = lresult_type
+    user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 
 
 # ---------------------------------------------------------------------------

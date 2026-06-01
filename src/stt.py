@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import io
-import json
 import logging
 
 import httpx
 
+from src.config import AppConfig, ProviderConfig, parse_custom_headers
 from src.utils import AppError, PipelineResult, ScreamerError
 
 log = logging.getLogger(__name__)
@@ -15,87 +14,72 @@ log = logging.getLogger(__name__)
 _NO_SPEECH_THRESHOLD = 0.7
 
 
-def transcribe(audio_wav: bytes, config: object) -> PipelineResult:
+def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
     """POST WAV to STT endpoint with verbose_json. Primary → fallback if enabled and primary fails.
 
     Filter: keep if ANY segment no_speech_prob < 0.7. All-above → ScreamerError(AppError.NO_SPEECH).
     HTTP/network errors → ScreamerError(AppError.STT_FAILED).
     Fallback success → PipelineResult with AppError.STT_FALLBACK_USED in warnings.
 
-    *config* must expose the same attribute names as ``AppConfig``.
+    *config* supplies primary and fallback providers via ``AppConfig``.
     """
     warnings: list[AppError] = []
 
-    if not config.stt_api_key and not (config.stt_fallback_enabled and config.stt_fallback_api_key):
+    primary = config.stt_provider()
+    fallback = config.stt_fallback_provider()
+
+    if not primary.is_complete and not fallback.is_complete:
         raise ScreamerError(AppError.STT_FAILED, "No STT API key configured")
 
-    # Try primary STT.
-    try:
-        text = _call_stt(
-            api_key=config.stt_api_key,
-            base_url=config.stt_base_url,
-            model=config.stt_model,
-            language=config.stt_language,
-            custom_headers=config.stt_custom_headers,
-            audio_wav=audio_wav,
-        )
-        if text is not None:
-            return PipelineResult(text=text, warnings=warnings)
-    except ScreamerError:
-        raise
-    except Exception as e:
-        log.warning("Primary STT failed: %s", e)
-        if not config.stt_fallback_enabled:
-            raise ScreamerError(AppError.STT_FAILED, str(e)) from e
+    for is_fallback, provider, language in (
+        (False, primary, config.stt_language),
+        (True, fallback.provider, ""),
+    ):
+        if is_fallback and not fallback.enabled:
+            continue
+        if not provider.is_complete:
+            continue
 
-    # Try fallback STT.
-    if config.stt_fallback_enabled and config.stt_fallback_api_key:
         try:
-            text = _call_stt(
-                api_key=config.stt_fallback_api_key,
-                base_url=config.stt_fallback_base_url,
-                model=config.stt_fallback_model,
-                language="",
-                custom_headers=config.stt_fallback_custom_headers,
-                audio_wav=audio_wav,
-            )
+            text = _call_stt(provider=provider, language=language, audio_wav=audio_wav)
             if text is not None:
-                warnings.append(AppError.STT_FALLBACK_USED)
+                if is_fallback:
+                    warnings.append(AppError.STT_FALLBACK_USED)
                 return PipelineResult(text=text, warnings=warnings)
+        except ScreamerError:
+            raise
         except Exception as e:
-            log.warning("Fallback STT failed: %s", e)
+            log.warning("%s STT failed: %s", "Fallback" if is_fallback else "Primary", e)
+            if not fallback.enabled:
+                raise ScreamerError(AppError.STT_FAILED, str(e)) from e
 
     raise ScreamerError(AppError.STT_FAILED, "Both primary and fallback STT failed or returned no speech")
 
 
 def _call_stt(
-    api_key: str,
-    base_url: str,
-    model: str,
+    provider: ProviderConfig,
     language: str,
-    custom_headers: str,
     audio_wav: bytes,
 ) -> str | None:
     """POST to an OpenAI-compatible STT endpoint. Returns text, or None if unconfigured."""
-    if not api_key:
+    if not provider.api_key:
         return None
 
-    url = (base_url.rstrip("/") if base_url else "") + "/audio/transcriptions"
+    url = provider.base_url.rstrip("/") + "/audio/transcriptions"
 
-    headers: dict[str, str] = {"Authorization": f"Bearer {api_key}"}
-    if custom_headers:
-        try:
-            headers.update(json.loads(custom_headers))
-        except json.JSONDecodeError:
-            log.warning("Invalid custom headers JSON; ignoring: %s", custom_headers[:50])
+    headers: dict[str, str] = {"Authorization": f"Bearer {provider.api_key}"}
+    try:
+        headers.update(parse_custom_headers(provider.custom_headers))
+    except ValueError as e:
+        log.warning("Invalid custom headers; ignoring: %s", e)
 
-    data: dict[str, str] = {"model": model, "response_format": "verbose_json"}
+    data: dict[str, str] = {"model": provider.model, "response_format": "verbose_json"}
     if language:
         data["language"] = language
 
     files = {"file": ("recording.wav", audio_wav, "audio/wav")}
 
-    log.info("STT request: url=%s model=%s", url, model)
+    log.info("STT request: url=%s model=%s", url, provider.model)
     resp = httpx.post(url, headers=headers, data=data, files=files, timeout=60.0)
     resp.raise_for_status()
 
