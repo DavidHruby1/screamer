@@ -20,15 +20,19 @@ DEFAULT_LLM_SYSTEM_PROMPT: str = (
 )
 
 MOD_CONTROL = 0x0002
+MOD_ALT = 0x0001
+MOD_SHIFT = 0x0004
 MOD_NOREPEAT = 0x4000
 
 # App-level options shared by settings and tray menus.
 HOTKEY_OPTIONS: list[tuple[str, str]] = [
+    ("ctrl_alt_space", "Ctrl+Alt+Space"),
+    ("ctrl_shift_space", "Ctrl+Shift+Space"),
+    ("ctrl_alt_d", "Ctrl+Alt+D"),
+    ("ctrl_alt_s", "Ctrl+Alt+S"),
+    ("ctrl_alt_v", "Ctrl+Alt+V"),
     ("scroll_lock", "Scroll Lock"),
     ("pause", "Pause"),
-    ("f13", "F13"),
-    ("f14", "F14"),
-    ("ctrl_scroll_lock", "Ctrl+Scroll Lock"),
 ]
 
 POST_KEY_OPTIONS: list[tuple[str, str]] = [
@@ -47,11 +51,13 @@ class HotkeyBinding:
 
 
 HOTKEY_BINDINGS: dict[str, HotkeyBinding] = {
+    "ctrl_alt_space": HotkeyBinding(MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 0x20),
+    "ctrl_shift_space": HotkeyBinding(MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 0x20),
+    "ctrl_alt_d": HotkeyBinding(MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 0x44),
+    "ctrl_alt_s": HotkeyBinding(MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 0x53),
+    "ctrl_alt_v": HotkeyBinding(MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 0x56),
     "scroll_lock": HotkeyBinding(MOD_NOREPEAT, 0x91),
     "pause": HotkeyBinding(MOD_NOREPEAT, 0x13),
-    "f13": HotkeyBinding(MOD_NOREPEAT, 0x7C),
-    "f14": HotkeyBinding(MOD_NOREPEAT, 0x7D),
-    "ctrl_scroll_lock": HotkeyBinding(MOD_CONTROL | MOD_NOREPEAT, 0x91),
 }
 
 
@@ -89,7 +95,7 @@ class ConfigValidationIssue:
 
 @dataclass
 class AppConfig:
-    hotkey: str = "scroll_lock"
+    hotkey: str = "ctrl_alt_space"
     recording_mode: str = "hold"  # "hold" | "toggle"
     post_type_key: str = "none"  # "none" | "enter" | "tab" | "space" | "backspace"
     audio_device_id: int | None = None
@@ -324,7 +330,7 @@ def load_config() -> AppConfig:
 
     _load_secrets(cfg)
     if cfg.hotkey not in HOTKEY_BINDINGS:
-        cfg.hotkey = "scroll_lock"
+        cfg.hotkey = "ctrl_alt_space"
     if cfg.post_type_key not in {key for key, _label in POST_KEY_OPTIONS}:
         cfg.post_type_key = "none"
     return cfg
