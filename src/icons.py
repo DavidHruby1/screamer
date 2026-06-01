@@ -34,10 +34,17 @@ _EMBEDDED_PNG: dict[TrayState, bytes] = {
 }
 
 
+# Decoded pixmaps, built lazily once a QApplication exists and reused thereafter.
+_pixmap_cache: dict[TrayState, QPixmap] = {}
+
+
 def get_icon_pixmap(state: TrayState) -> QPixmap:
-    """32x32 QPixmap from embedded base64 PNG data."""
-    pixmap = QPixmap()
-    pixmap.loadFromData(_EMBEDDED_PNG[state])
+    """32x32 QPixmap from embedded base64 PNG data (decoded once per state, then cached)."""
+    pixmap = _pixmap_cache.get(state)
+    if pixmap is None:
+        pixmap = QPixmap()
+        pixmap.loadFromData(_EMBEDDED_PNG[state])
+        _pixmap_cache[state] = pixmap
     return pixmap
 
 
