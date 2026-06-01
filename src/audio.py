@@ -15,7 +15,7 @@ import numpy as np
 
 try:
     import sounddevice as sd
-except OSError:
+except (ImportError, OSError):
     sd = None  # type: ignore[assignment]
 
 from src.config import DEFAULT_RMS_THRESHOLD
@@ -59,10 +59,36 @@ def default_input_device_id() -> int | None:
     """Return PortAudio's default input device ID, if one is configured."""
     _require_sd()
     default = sd.default.device
-    device_id = default[0] if isinstance(default, (list, tuple)) else default
-    if device_id is None or int(device_id) < 0:
+
+    try:
+        device_id = default["input"]
+    except (TypeError, KeyError, IndexError):
+        device_id = default[0] if isinstance(default, (list, tuple)) else default
+
+    if device_id is None:
         return None
-    return int(device_id)
+
+    try:
+        resolved_id = int(device_id)
+    except (TypeError, ValueError):
+        dev = sd.query_devices(device_id, "input")
+        if "index" in dev:
+            resolved_id = int(dev["index"])
+        else:
+            dev_name = str(dev["name"])
+            for i, candidate in enumerate(sd.query_devices()):
+                if (
+                    candidate["max_input_channels"] > 0
+                    and str(candidate["name"]) == dev_name
+                ):
+                    resolved_id = i
+                    break
+            else:
+                return None
+
+    if resolved_id < 0:
+        return None
+    return resolved_id
 
 
 def _clean_device_name(name: str) -> str:
