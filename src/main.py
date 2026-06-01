@@ -163,7 +163,12 @@ class _TrayApp(QObject):
         current: str,
         on_select: Any,
     ) -> None:
-        """Add a submenu of mutually-exclusive checkable actions, one per (key, label)."""
+        """Add a submenu of checkable actions, one per (key, label).
+
+        The action matching *current* starts checked. Selecting one calls
+        *on_select(key)*, whose handler rebuilds the menu — that rebuild is what
+        keeps a single item checked, not a QActionGroup.
+        """
         submenu = self._menu.addMenu(title)
         for key, label in options:
             act = submenu.addAction(label)
