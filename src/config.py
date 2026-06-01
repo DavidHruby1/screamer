@@ -168,9 +168,6 @@ _SECRET_FIELDS = frozenset({
     "llm_fallback_api_key",
 })
 
-# All non-secret field names.
-_PLAIN_FIELDS = [f.name for f in fields(AppConfig) if f.name not in _SECRET_FIELDS]
-
 # DPAPI entropy string bound to this application.
 _ENTROPY = b"screamer-dpapi-v1"
 
