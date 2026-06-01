@@ -1,24 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_all
-
-pyside_datas, pyside_binaries, pyside_hiddenimports = collect_all("PySide6")
-shiboken_datas, shiboken_binaries, shiboken_hiddenimports = collect_all("shiboken6")
-sounddevice_datas, sounddevice_binaries, sounddevice_hiddenimports = collect_all("sounddevice")
+from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
 
 a = Analysis(
     ["src/main.py"],
     pathex=[],
-    binaries=pyside_binaries + shiboken_binaries + sounddevice_binaries,
-    datas=pyside_datas + shiboken_datas + sounddevice_datas,
-    hiddenimports=(
-        pyside_hiddenimports
-        + shiboken_hiddenimports
-        + sounddevice_hiddenimports
-        + ["numpy", "httpx", "dotenv"]
-    ),
+    binaries=[],
+    datas=[],
+    hiddenimports=collect_submodules("PySide6") + ["sounddevice", "numpy", "httpx", "dotenv"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -40,7 +31,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=False,
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
