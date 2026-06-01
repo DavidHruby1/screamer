@@ -82,19 +82,54 @@ class HotkeyListener:
         import ctypes.wintypes
 
         user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+        WNDPROC = ctypes.WINFUNCTYPE(
+            ctypes.wintypes.LRESULT,
+            ctypes.wintypes.HWND,
+            ctypes.wintypes.UINT,
+            ctypes.wintypes.WPARAM,
+            ctypes.wintypes.LPARAM,
+        )
+
+        try:
+            wnd_class_type = ctypes.wintypes.WNDCLASSEXW
+        except AttributeError:
+            class WNDCLASSEXW(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", ctypes.wintypes.UINT),
+                    ("style", ctypes.wintypes.UINT),
+                    ("lpfnWndProc", WNDPROC),
+                    ("cbClsExtra", ctypes.c_int),
+                    ("cbWndExtra", ctypes.c_int),
+                    ("hInstance", ctypes.c_void_p),
+                    ("hIcon", ctypes.c_void_p),
+                    ("hCursor", ctypes.c_void_p),
+                    ("hbrBackground", ctypes.c_void_p),
+                    ("lpszMenuName", ctypes.c_wchar_p),
+                    ("lpszClassName", ctypes.c_wchar_p),
+                    ("hIconSm", ctypes.c_void_p),
+                ]
+
+            wnd_class_type = WNDCLASSEXW
 
         # Create a message-only window.
-        wnd_class = ctypes.wintypes.WNDCLASSEXW()
-        wnd_class.cbSize = ctypes.sizeof(ctypes.wintypes.WNDCLASSEXW)
-        wnd_class.lpfnWndProc = ctypes.WINFUNCTYPE(
-            ctypes.c_long, ctypes.wintypes.HWND, ctypes.c_uint, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM
-        )(self._wnd_proc)
+        wnd_proc = WNDPROC(self._wnd_proc)
+        wnd_class = wnd_class_type()
+        wnd_class.cbSize = ctypes.sizeof(wnd_class_type)
+        wnd_class.lpfnWndProc = wnd_proc
         wnd_class.hInstance = ctypes.windll.kernel32.GetModuleHandleW(None)  # type: ignore[attr-defined]
         wnd_class.lpszClassName = "ScreamerHotkeyWindow"
 
         atom = user32.RegisterClassExW(ctypes.byref(wnd_class))
         if not atom:
-            log.error("RegisterClassExW failed")
+            ERROR_CLASS_ALREADY_EXISTS = 1410
+            last_error = kernel32.GetLastError()
+            if last_error != ERROR_CLASS_ALREADY_EXISTS:
+                log.error("RegisterClassExW failed: error=%d", last_error)
+                return
+
+        if self._stop_event.is_set():
             return
 
         # HWND_MESSAGE parent = -3 for message-only window.
@@ -105,6 +140,11 @@ class HotkeyListener:
         )
         if not self._hwnd:
             log.error("CreateWindowExW failed")
+            return
+
+        if self._stop_event.is_set():
+            user32.DestroyWindow(self._hwnd)
+            self._hwnd = None
             return
 
         # Register the hotkey.
@@ -138,7 +178,12 @@ class HotkeyListener:
         import ctypes.wintypes
 
         WM_HOTKEY = 0x0312
+        WM_CLOSE = 0x0010
         user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+
+        if msg == WM_CLOSE:
+            user32.PostQuitMessage(0)
+            return 0
 
         if msg == WM_HOTKEY:
             log.debug("WM_HOTKEY received: id=%d", wparam)
