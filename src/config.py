@@ -183,8 +183,12 @@ def _dpapi_available() -> bool:
     return platform.system() == "Windows"
 
 
-def _dpapi_encrypt(plaintext: str) -> str:
-    """Encrypt *plaintext* with Windows DPAPI. Returns hex-encoded blob string."""
+def _dpapi_crypt(data: bytes, protect: bool, errmsg: str) -> bytes:
+    """Run a DPAPI Protect/Unprotect call over *data*, bound to the app entropy.
+
+    *protect* selects ``CryptProtectData`` (True) or ``CryptUnprotectData`` (False).
+    Raises ``ScreamerError(KEY_STORAGE_FAILED)`` on failure.
+    """
     if not _dpapi_available():
         raise ScreamerError(AppError.UNSUPPORTED_PLATFORM, "DPAPI requires Windows")
 
@@ -197,15 +201,13 @@ def _dpapi_encrypt(plaintext: str) -> str:
     crypt32 = ctypes.windll.crypt32  # type: ignore[attr-defined]
     kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
 
-    data_in = plaintext.encode("utf-8")
-    entropy_in = _ENTROPY
-
-    blob_in = DATA_BLOB(len(data_in), ctypes.create_string_buffer(data_in, len(data_in)))
-    blob_entropy = DATA_BLOB(len(entropy_in), ctypes.create_string_buffer(entropy_in, len(entropy_in)))
+    blob_in = DATA_BLOB(len(data), ctypes.create_string_buffer(data, len(data)))
+    blob_entropy = DATA_BLOB(len(_ENTROPY), ctypes.create_string_buffer(_ENTROPY, len(_ENTROPY)))
     blob_out = DATA_BLOB()
 
     CRYPTPROTECT_UI_FORBIDDEN = 0x01
-    if not crypt32.CryptProtectData(
+    fn = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
+    if not fn(
         ctypes.byref(blob_in),
         None,
         ctypes.byref(blob_entropy),
@@ -214,49 +216,21 @@ def _dpapi_encrypt(plaintext: str) -> str:
         CRYPTPROTECT_UI_FORBIDDEN,
         ctypes.byref(blob_out),
     ):
-        raise ScreamerError(AppError.KEY_STORAGE_FAILED, "DPAPI encrypt failed")
+        raise ScreamerError(AppError.KEY_STORAGE_FAILED, errmsg)
 
-    encrypted = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    result = ctypes.string_at(blob_out.pbData, blob_out.cbData)
     kernel32.LocalFree(blob_out.pbData)
-    return encrypted.hex()
+    return result
+
+
+def _dpapi_encrypt(plaintext: str) -> str:
+    """Encrypt *plaintext* with Windows DPAPI. Returns hex-encoded blob string."""
+    return _dpapi_crypt(plaintext.encode("utf-8"), protect=True, errmsg="DPAPI encrypt failed").hex()
 
 
 def _dpapi_decrypt(hex_blob: str) -> str:
     """Decrypt a hex-encoded DPAPI blob. Returns plaintext string."""
-    if not _dpapi_available():
-        raise ScreamerError(AppError.UNSUPPORTED_PLATFORM, "DPAPI requires Windows")
-
-    import ctypes
-    import ctypes.wintypes
-
-    class DATA_BLOB(ctypes.Structure):
-        _fields_ = [("cbData", ctypes.wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
-
-    crypt32 = ctypes.windll.crypt32  # type: ignore[attr-defined]
-    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-
-    data_in = bytes.fromhex(hex_blob)
-    entropy_in = _ENTROPY
-
-    blob_in = DATA_BLOB(len(data_in), ctypes.create_string_buffer(data_in, len(data_in)))
-    blob_entropy = DATA_BLOB(len(entropy_in), ctypes.create_string_buffer(entropy_in, len(entropy_in)))
-    blob_out = DATA_BLOB()
-
-    CRYPTPROTECT_UI_FORBIDDEN = 0x01
-    if not crypt32.CryptUnprotectData(
-        ctypes.byref(blob_in),
-        None,
-        ctypes.byref(blob_entropy),
-        None,
-        None,
-        CRYPTPROTECT_UI_FORBIDDEN,
-        ctypes.byref(blob_out),
-    ):
-        raise ScreamerError(AppError.KEY_STORAGE_FAILED, "DPAPI decrypt failed")
-
-    decrypted = ctypes.string_at(blob_out.pbData, blob_out.cbData)
-    kernel32.LocalFree(blob_out.pbData)
-    return decrypted.decode("utf-8")
+    return _dpapi_crypt(bytes.fromhex(hex_blob), protect=False, errmsg="DPAPI decrypt failed").decode("utf-8")
 
 
 # ---------------------------------------------------------------------------
