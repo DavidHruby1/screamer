@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
@@ -93,6 +94,7 @@ class SettingsDialog(QDialog):
         self._working = copy.deepcopy(config)
 
         self._build_ui()
+        self.layout().setSizeConstraint(QLayout.SetFixedSize)
         self._populate(self._working)
 
     # ------------------------------------------------------------------
@@ -194,9 +196,7 @@ class SettingsDialog(QDialog):
         )
 
         self._stt_fb_group.setVisible(False)
-        self._stt_fb_check.toggled.connect(
-            lambda checked: self._set_dynamic_group_visible(self._stt_fb_group, checked)
-        )
+        self._stt_fb_check.toggled.connect(self._stt_fb_group.setVisible)
         form.addRow(self._stt_fb_group)
 
         self._tabs.addTab(tab, "STT")
@@ -240,15 +240,11 @@ class SettingsDialog(QDialog):
         )
 
         self._llm_fb_group.setVisible(False)
-        self._llm_fb_check.toggled.connect(
-            lambda checked: self._set_dynamic_group_visible(self._llm_fb_group, checked)
-        )
+        self._llm_fb_check.toggled.connect(self._llm_fb_group.setVisible)
         llm_form.addRow(self._llm_fb_group)
 
         self._llm_group.setVisible(False)
-        self._llm_check.toggled.connect(
-            lambda checked: self._set_dynamic_group_visible(self._llm_group, checked)
-        )
+        self._llm_check.toggled.connect(self._llm_group.setVisible)
         form.addRow(self._llm_group)
 
         self._tabs.addTab(tab, "LLM")
@@ -409,17 +405,6 @@ class SettingsDialog(QDialog):
             self._rms_label.setText(f"Threshold: {threshold:.1f}")
         except Exception as e:
             QMessageBox.warning(self, "Calibration Failed", str(e))
-
-    # ------------------------------------------------------------------
-    # Dynamic reveals
-    # ------------------------------------------------------------------
-
-    def _set_dynamic_group_visible(self, group: QWidget, visible: bool) -> None:
-        group.setVisible(visible)
-
-        if self.layout() is not None:
-            self.layout().activate()
-        self.resize(self.sizeHint())
 
     # ------------------------------------------------------------------
     # Validation
