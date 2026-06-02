@@ -13,7 +13,15 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal, QThread
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+from PySide6.QtWidgets import (
+    QApplication,
+    QButtonGroup,
+    QCheckBox,
+    QMenu,
+    QRadioButton,
+    QSystemTrayIcon,
+    QWidgetAction,
+)
 
 from src.audio import AudioRecorder, default_input_device_id, list_devices, resolve_device
 from src.config import (
@@ -170,29 +178,49 @@ class _TrayApp(QObject):
         current: str,
         on_select: Any,
     ) -> None:
-        """Add a submenu of checkable actions, one per (key, label).
+        submenu = QMenu(title, self._menu)
+        self._menu.addMenu(submenu)
+        group = QButtonGroup(submenu)
+        group.setExclusive(True)
 
-        The action matching *current* starts checked. Selecting one calls
-        *on_select(key)*, whose handler rebuilds the menu — that rebuild is what
-        keeps a single item checked, not a QActionGroup.
-        """
-        submenu = self._menu.addMenu(title)
         for key, label in options:
-            act = submenu.addAction(label)
-            act.setCheckable(True)
-            act.setChecked(key == current)
-            act.triggered.connect(lambda checked, k=key: on_select(k))
+            radio = QRadioButton(label)
+            radio.setChecked(key == current)
+
+            action = QWidgetAction(submenu)
+            action.setDefaultWidget(radio)
+            submenu.addAction(action)
+
+            group.addButton(radio)
+
+            radio.toggled.connect(
+                lambda checked, k=key: checked and on_select(k, rebuild_menu=False)
+            )
+
+    def _add_persistent_checkbox(
+        self,
+        label: str,
+        checked: bool,
+        on_changed: Any,
+    ) -> QCheckBox:
+        # Use QWidgetAction instead of checkable QAction so clicking the control
+        # does not trigger QMenu's default close-on-action behavior.
+        checkbox = QCheckBox(label)
+        checkbox.setChecked(checked)
+
+        action = QWidgetAction(self._menu)
+        action.setDefaultWidget(checkbox)
+        self._menu.addAction(action)
+
+        checkbox.toggled.connect(on_changed)
+        return checkbox
 
     def _rebuild_menu(self) -> None:
         """Rebuild the context menu from current config."""
         self._menu.clear()
         c = self._config
 
-        # Enabled toggle.
-        act_enabled = self._menu.addAction("Enabled")
-        act_enabled.setCheckable(True)
-        act_enabled.setChecked(self._enabled)
-        act_enabled.triggered.connect(self._toggle_enabled)
+        self._add_persistent_checkbox("Enabled", self._enabled, self._toggle_enabled)
 
         self._menu.addSeparator()
 
@@ -205,12 +233,8 @@ class _TrayApp(QObject):
         self._add_choice_submenu("Hotkey", HOTKEY_OPTIONS, c.hotkey, self._set_hotkey)
         self._add_choice_submenu("Post-type Key", POST_KEY_OPTIONS, c.post_type_key, self._set_post_key)
 
-        # AI Rewrite toggle.
         self._menu.addSeparator()
-        act_rewrite = self._menu.addAction("AI Rewrite")
-        act_rewrite.setCheckable(True)
-        act_rewrite.setChecked(c.llm_enabled)
-        act_rewrite.triggered.connect(self._toggle_rewrite)
+        self._add_persistent_checkbox("AI Rewrite", c.llm_enabled, self._toggle_rewrite)
 
         # Settings / Exit.
         self._menu.addSeparator()
@@ -355,24 +379,27 @@ class _TrayApp(QObject):
             self._finalize_recording()
         log.info("Screamer %s", "enabled" if checked else "disabled")
 
-    def _set_recording_mode(self, mode: str) -> None:
+    def _set_recording_mode(self, mode: str, rebuild_menu: bool = True) -> None:
         self._config.recording_mode = mode
         save_config(self._config)
         self._restart_hotkey()
-        self._rebuild_menu()
+        if rebuild_menu:
+            self._rebuild_menu()
         log.info("Recording mode set to %s", mode)
 
-    def _set_hotkey(self, key: str) -> None:
+    def _set_hotkey(self, key: str, rebuild_menu: bool = True) -> None:
         self._config.hotkey = key
         save_config(self._config)
         self._restart_hotkey()
-        self._rebuild_menu()
+        if rebuild_menu:
+            self._rebuild_menu()
         log.info("Hotkey set to %s", key)
 
-    def _set_post_key(self, key: str) -> None:
+    def _set_post_key(self, key: str, rebuild_menu: bool = True) -> None:
         self._config.post_type_key = key
         save_config(self._config)
-        self._rebuild_menu()
+        if rebuild_menu:
+            self._rebuild_menu()
         log.info("Post-type key set to %s", key)
 
     def _toggle_rewrite(self, checked: bool) -> None:
