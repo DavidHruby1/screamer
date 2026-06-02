@@ -41,9 +41,10 @@ from src.config import (
     load_config,
     reset_config,
     save_config,
+    set_autostart,
     validate_config,
 )
-from src.utils import APP_NAME
+from src.utils import APP_NAME, ScreamerError
 
 log = logging.getLogger(__name__)
 
@@ -166,6 +167,9 @@ class SettingsDialog(QDialog):
         for key, label in POST_KEY_OPTIONS:
             self._post_key_combo.addItem(label, key)
         form.addRow("Post-type key:", self._post_key_combo)
+
+        self._autostart_check = QCheckBox("Start with Windows")
+        form.addRow(self._autostart_check)
 
         self._tabs.addTab(tab, "General")
 
@@ -298,6 +302,7 @@ class SettingsDialog(QDialog):
         self._mode_toggle.setChecked(cfg.recording_mode != "hold")
         idx = _combo_index(self._post_key_combo, cfg.post_type_key)
         self._post_key_combo.setCurrentIndex(max(idx, 0))
+        self._autostart_check.setChecked(cfg.autostart)
 
         # STT
         self._stt_key.setText(cfg.stt_api_key)
@@ -337,6 +342,7 @@ class SettingsDialog(QDialog):
         cfg.hotkey = self._hotkey_combo.currentData()
         cfg.recording_mode = "toggle" if self._mode_toggle.isChecked() else "hold"
         cfg.post_type_key = self._post_key_combo.currentData()
+        cfg.autostart = self._autostart_check.isChecked()
 
         # STT
         cfg.stt_api_key = self._stt_key.text().strip()
@@ -443,7 +449,19 @@ class SettingsDialog(QDialog):
         if not self._show_validation_issue():
             return
 
+        self._apply_autostart()
         super().accept()
+
+    def _apply_autostart(self) -> None:
+        """Sync the Windows Run key to the working config. Warn on failure.
+
+        Autostart lives in the registry, not QSettings, so it is applied here
+        (the points where the user commits changes) rather than in save_config.
+        """
+        try:
+            set_autostart(self._working.autostart)
+        except ScreamerError as e:
+            QMessageBox.warning(self, "Autostart", e.detail or e.code.value)
 
     # ------------------------------------------------------------------
     # Bottom bar actions
@@ -468,6 +486,7 @@ class SettingsDialog(QDialog):
         if not self._show_validation_issue():
             return
         save_config(self._working)
+        self._apply_autostart()
         log.info("Settings applied")
 
     # ------------------------------------------------------------------
