@@ -100,6 +100,7 @@ class AppConfig:
     hotkey: str = "ctrl_alt_space"
     recording_mode: str = "hold"  # "hold" | "toggle"
     post_type_key: str = "none"  # "none" | "enter" | "tab" | "space" | "backspace"
+    start_with_windows: bool = False
     audio_device_id: int | None = None
     audio_device_name: str = ""
     rms_threshold: float = DEFAULT_RMS_THRESHOLD

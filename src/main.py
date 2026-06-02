@@ -109,7 +109,7 @@ class _WorkerThread(QThread):
 class _TrayApp(QObject):
     """Owns tray icon, state machine, hotkey listener, and worker lifecycle."""
 
-    def __init__(self) -> None:
+    def __init__(self, startup_mode: bool = False) -> None:
         super().__init__()
 
         self._config = load_config()
@@ -128,8 +128,8 @@ class _TrayApp(QObject):
         self._build_hotkey()
         self._apply_state(TrayState.IDLE)
 
-        # Auto-open settings if startup config is incomplete.
-        if validate_config(self._config):
+        # Auto-open settings on manual launch only if startup config is incomplete.
+        if not startup_mode and validate_config(self._config):
             log.info("Incomplete configuration; opening settings on startup")
             self._open_settings()
 
@@ -477,15 +477,22 @@ class _TrayApp(QObject):
 # ------------------------------------------------------------------
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    import argparse
+    import sys
+
     from src.config import setup_logging
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--startup", action="store_true")
+    args, _unknown = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
 
     setup_logging()
 
     app = QApplication([])
     app.setQuitOnLastWindowClosed(False)
 
-    tray_app = _TrayApp()
+    tray_app = _TrayApp(startup_mode=args.startup)
     log.info("Screamer started")
 
     app.exec()

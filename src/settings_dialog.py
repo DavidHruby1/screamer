@@ -44,6 +44,7 @@ from src.config import (
     validate_config,
 )
 from src.utils import APP_NAME
+from src.startup import is_supported
 
 log = logging.getLogger(__name__)
 
@@ -166,6 +167,12 @@ class SettingsDialog(QDialog):
         for key, label in POST_KEY_OPTIONS:
             self._post_key_combo.addItem(label, key)
         form.addRow("Post-type key:", self._post_key_combo)
+
+        self._startup_check = QCheckBox("Start Screamer with Windows")
+        if not is_supported():
+            self._startup_check.setEnabled(False)
+            self._startup_check.setToolTip("Windows only")
+        form.addRow(self._startup_check)
 
         self._tabs.addTab(tab, "General")
 
@@ -298,6 +305,7 @@ class SettingsDialog(QDialog):
         self._mode_toggle.setChecked(cfg.recording_mode != "hold")
         idx = _combo_index(self._post_key_combo, cfg.post_type_key)
         self._post_key_combo.setCurrentIndex(max(idx, 0))
+        self._startup_check.setChecked(cfg.start_with_windows)
 
         # STT
         self._stt_key.setText(cfg.stt_api_key)
@@ -337,6 +345,7 @@ class SettingsDialog(QDialog):
         cfg.hotkey = self._hotkey_combo.currentData()
         cfg.recording_mode = "toggle" if self._mode_toggle.isChecked() else "hold"
         cfg.post_type_key = self._post_key_combo.currentData()
+        cfg.start_with_windows = self._startup_check.isChecked()
 
         # STT
         cfg.stt_api_key = self._stt_key.text().strip()
@@ -442,6 +451,8 @@ class SettingsDialog(QDialog):
         self._collect()
         if not self._show_validation_issue():
             return
+        if not self._sync_startup_or_warn():
+            return
 
         super().accept()
 
@@ -467,6 +478,8 @@ class SettingsDialog(QDialog):
         self._collect()
         if not self._show_validation_issue():
             return
+        if not self._sync_startup_or_warn():
+            return
         save_config(self._working)
         log.info("Settings applied")
 
@@ -486,6 +499,20 @@ class SettingsDialog(QDialog):
         QMessageBox.warning(self, "Missing Configuration", issue.message)
         self._tabs.setCurrentIndex(issue.tab_index)
         return False
+
+    def _sync_startup_or_warn(self) -> bool:
+        from src.startup import sync_enabled
+        from src.utils import ScreamerError
+
+        if not is_supported():
+            return True
+
+        try:
+            sync_enabled(self._working.start_with_windows)
+            return True
+        except ScreamerError as e:
+            QMessageBox.warning(self, "Startup Setting Failed", str(e))
+            return False
 
 
 # ------------------------------------------------------------------
