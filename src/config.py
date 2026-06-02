@@ -100,6 +100,7 @@ class AppConfig:
     hotkey: str = "ctrl_alt_space"
     recording_mode: str = "hold"  # "hold" | "toggle"
     post_type_key: str = "none"  # "none" | "enter" | "tab" | "space" | "backspace"
+    autostart: bool = False  # launch on Windows login (HKCU Run key)
     audio_device_id: int | None = None
     audio_device_name: str = ""
     rms_threshold: float = DEFAULT_RMS_THRESHOLD
@@ -239,6 +240,75 @@ def _dpapi_decrypt(hex_blob: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Autostart (Windows-only, guarded at runtime; registry HKCU Run key)
+# ---------------------------------------------------------------------------
+
+_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def _autostart_command() -> str:
+    """Command registered to launch Screamer at login.
+
+    Frozen (PyInstaller) builds register the bundled exe directly. In a dev
+    checkout there is no exe, so fall back to ``python -m src.main`` — note this
+    only resolves when launched from the project root (see docs/AUTOSTART_PLAN.md).
+    """
+    import sys
+
+    exe = sys.executable
+    if getattr(sys, "frozen", False):
+        return f'"{exe}"'
+    return f'"{exe}" -m src.main'
+
+
+def set_autostart(enabled: bool) -> None:
+    """Register or unregister Screamer in the HKCU Run key. No-op off Windows.
+
+    Raises ``ScreamerError(AUTOSTART_FAILED)`` if the registry write fails.
+    """
+    if platform.system() != "Windows":
+        log.debug("Autostart unavailable off Windows; skipping")
+        return
+
+    import winreg
+
+    try:
+        if enabled:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _RUN_KEY) as key:
+                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, _autostart_command())
+        else:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE
+            ) as key:
+                try:
+                    winreg.DeleteValue(key, APP_NAME)
+                except FileNotFoundError:
+                    pass  # Value already absent.
+    except FileNotFoundError:
+        pass  # Run key itself absent (only on the delete path); nothing to remove.
+    except OSError as e:
+        raise ScreamerError(AppError.AUTOSTART_FAILED, str(e)) from e
+
+
+def is_autostart_enabled() -> bool:
+    """True if Screamer is registered in the HKCU Run key. False off Windows."""
+    if platform.system() != "Windows":
+        return False
+
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_READ) as key:
+            winreg.QueryValueEx(key, APP_NAME)
+            return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        log.warning("Could not read autostart registry value")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # QSettings helpers
 # ---------------------------------------------------------------------------
 
@@ -331,6 +401,8 @@ def load_config() -> AppConfig:
             setattr(cfg, key, val)
 
     _load_secrets(cfg)
+    # Registry is the source of truth for autostart; reflect actual state.
+    cfg.autostart = is_autostart_enabled()
     if cfg.hotkey not in HOTKEY_BINDINGS:
         cfg.hotkey = "ctrl_alt_space"
     if cfg.post_type_key not in {key for key, _label in POST_KEY_OPTIONS}:

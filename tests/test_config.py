@@ -1,10 +1,20 @@
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from src.config import AppConfig, import_from_env, parse_custom_headers, validate_config
+from src.config import (
+    AppConfig,
+    _autostart_command,
+    import_from_env,
+    is_autostart_enabled,
+    parse_custom_headers,
+    set_autostart,
+    validate_config,
+)
 
 
 class ConfigValidationTests(unittest.TestCase):
@@ -72,6 +82,33 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(imported.stt_api_key, "existing")
         self.assertEqual(imported.stt_base_url, "https://env.test/v1")
         self.assertEqual(imported.stt_model, "env-model")
+
+
+class AutostartTests(unittest.TestCase):
+    def test_autostart_defaults_off(self) -> None:
+        self.assertFalse(AppConfig().autostart)
+
+    def test_is_autostart_enabled_false_off_windows(self) -> None:
+        with mock.patch("src.config.platform.system", return_value="Linux"):
+            self.assertFalse(is_autostart_enabled())
+
+    def test_set_autostart_noop_off_windows(self) -> None:
+        with mock.patch("src.config.platform.system", return_value="Linux"):
+            # Neither enabling nor disabling should raise where there is no registry.
+            set_autostart(True)
+            set_autostart(False)
+
+    def test_autostart_command_frozen_uses_bare_exe(self) -> None:
+        with mock.patch.object(sys, "executable", r"C:\Apps\Screamer\Screamer.exe"), \
+                mock.patch.object(sys, "frozen", True, create=True):
+            self.assertEqual(_autostart_command(), r'"C:\Apps\Screamer\Screamer.exe"')
+
+    def test_autostart_command_dev_runs_module(self) -> None:
+        with mock.patch.object(sys, "executable", r"C:\Py\python.exe"):
+            # Ensure dev mode (not frozen) regardless of how tests are launched.
+            if hasattr(sys, "frozen"):
+                self.skipTest("running under a frozen interpreter")
+            self.assertEqual(_autostart_command(), r'"C:\Py\python.exe" -m src.main')
 
 
 if __name__ == "__main__":

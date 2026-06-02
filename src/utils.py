@@ -25,6 +25,7 @@ class AppError(Enum):
     HOTKEY_CONFLICT = "Hotkey conflict. Choose a different hotkey."
     UNSUPPORTED_PLATFORM = "This feature is only available on Windows."
     KEY_STORAGE_FAILED = "Could not save or load API keys securely."
+    AUTOSTART_FAILED = "Could not update Windows startup setting."
 
 
 class ScreamerError(Exception):
