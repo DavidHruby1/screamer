@@ -1,5 +1,8 @@
 # OVI Fork Overview
 
+> **Status:** This document describes the original OVI project and recommended fork direction.
+> All recommendations have been implemented in Screamer. See `PLAN.md` and `IMPLEMENTATION.md`.
+
 This repo is a small but useful prototype for a Groq-based push-to-talk dictation app. It already has the core speech loop working, but it is not yet a full WisprFlow alternative.
 
 ## What the app does

@@ -19,6 +19,35 @@ def make_tray_app():
 
 
 class TrayMenuTests(unittest.TestCase):
+    def test_startup_mode_suppresses_incomplete_config_settings_dialog(self):
+        from src.config import AppConfig
+
+        app = QApplication.instance() or QApplication([])
+        del app
+
+        patches = [
+            patch("src.main.load_config", return_value=AppConfig()),
+            patch("src.main.import_from_env", side_effect=lambda cfg: cfg),
+            patch("src.main.save_config"),
+            patch("src.main.validate_config", return_value=[object()]),
+            patch("src.main.AudioRecorder"),
+            patch.object(_TrayApp, "_build_tray"),
+            patch.object(_TrayApp, "_build_hotkey"),
+            patch.object(_TrayApp, "_apply_state"),
+            patch.object(_TrayApp, "_open_settings"),
+        ]
+
+        started = [p.start() for p in patches]
+        try:
+            _TrayApp(startup_mode=True)
+            started[-1].assert_not_called()
+
+            _TrayApp(startup_mode=False)
+            started[-1].assert_called_once_with()
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
     def test_choice_submenu_uses_widget_actions(self):
         from PySide6.QtWidgets import QWidgetAction
 

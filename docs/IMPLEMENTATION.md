@@ -22,7 +22,8 @@ src/
 ├── rewrite.py
 ├── injector.py
 ├── icons.py
-└── utils.py
+├── utils.py
+└── startup.py
 requirements.txt         (repo root)
 ```
 
@@ -46,6 +47,8 @@ class AppError(Enum):
     INJECTION_FAILED = "Could not type text. Focus may have changed."
     HOTKEY_CONFLICT = "Hotkey conflict. Choose a different hotkey."
     UNSUPPORTED_PLATFORM = "This feature is only available on Windows."
+    KEY_STORAGE_FAILED = "Could not save or load API keys securely."
+    STARTUP_REGISTRATION_FAILED = "Could not update Windows startup setting."
 
 class ScreamerError(Exception):
     def __init__(self, code: AppError, detail: str | None = None): ...
@@ -73,14 +76,43 @@ DEFAULT_LLM_SYSTEM_PROMPT: str = (
 )
 
 ```python
+DEFAULT_RMS_THRESHOLD: float = 5.0
+
+```python
+@dataclass(frozen=True)
+class HotkeyBinding:
+    modifiers: int
+    vk: int
+
+HOTKEY_OPTIONS: list[tuple[str, str]]  # (key, display_label) pairs for combo hotkeys
+HOTKEY_BINDINGS: dict[str, HotkeyBinding]  # maps hotkey name → HotkeyBinding
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    api_key: str = ""
+    base_url: str = ""
+    model: str = ""
+    custom_headers: str = ""
+
+@dataclass(frozen=True)
+class FallbackProviderConfig:
+    enabled: bool = False
+    provider: ProviderConfig = field(default_factory=ProviderConfig)
+
+@dataclass(frozen=True)
+class ConfigValidationIssue:
+    message: str
+    tab_index: int = 0
+
 @dataclass
 class AppConfig:
-    hotkey: str = "scroll_lock"
+    hotkey: str = "ctrl_alt_space"
     recording_mode: str = "hold"          # "hold" | "toggle"
     post_type_key: str = "none"           # "none" | "enter" | "tab" | "space" | "backspace"
+    start_with_windows: bool = False
     audio_device_id: int | None = None
     audio_device_name: str = ""
-    rms_threshold: float = 50.0
+    rms_threshold: float = 5.0
     # STT primary
     stt_api_key: str = ""
     stt_base_url: str = ""
@@ -107,6 +139,11 @@ class AppConfig:
     llm_fallback_model: str = ""
     llm_fallback_custom_headers: str = ""
 
+    def stt_provider(self) -> ProviderConfig: ...
+    def stt_fallback_provider(self) -> FallbackProviderConfig: ...
+    def llm_provider(self) -> ProviderConfig: ...
+    def llm_fallback_provider(self) -> FallbackProviderConfig: ...
+
 def load_config() -> AppConfig: ...
     """Load QSettings + DPAPI. Unknown keys get field defaults."""
 
@@ -122,6 +159,12 @@ def import_from_env(cfg: AppConfig) -> AppConfig: ...
 def setup_logging(debug: bool = False) -> None: ...
     """Rotating file at APP_DIR/screamer.log. Never log api_key values.
     Never log transcripts unless debug=True."""
+
+def parse_custom_headers(custom_headers: str) -> dict[str, str]: ...
+    """Parse provider custom headers as a JSON object of string-ish values."""
+
+def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]: ...
+    """Return all startup/settings validation issues for the current config."""
 ```
 
 ### audio.py
@@ -206,14 +249,44 @@ def get_icon_bytes(state: TrayState) -> bytes: ...
 ### settings_dialog.py
 
 ```python
+class PasswordField(QLineEdit):
+    """Password line edit that reveals text only while focused."""
+
 class SettingsDialog(QDialog):
-    def __init__(self, config: AppConfig, parent: QWidget | None = None): ...
+    def __init__(
+        self,
+        config: AppConfig,
+        parent: QWidget | None = None,
+        devices: list[tuple[int, str]] | None = None,
+        calibrate_fn: Callable[[int | None], float] | None = None,
+    ): ...
         """4-tab dialog (General, STT, LLM, Audio) prefilled from config.
-        Edits a copy; original untouched until accept."""
+        Edits a copy; original untouched until accept.
+        *devices*: list of (device_id, display_name) for the Audio tab.
+        *calibrate_fn*: fn(device_id) -> float for RMS calibration."""
     def get_config(self) -> AppConfig: ...
         """Return edited config. Call after exec() returns Accepted."""
 
 # if __name__ == "__main__": launches standalone for testing
+```
+
+### startup.py
+
+```python
+def is_supported() -> bool: ...
+    """True on Windows."""
+
+def startup_command() -> str: ...
+    """Return the command stored in HKCU Run."""
+
+def set_enabled(enabled: bool) -> None: ...
+    """Add or remove HKCU Run key. Raises ScreamerError on failure."""
+
+def is_enabled() -> bool: ...
+    """Check if startup registration is currently active."""
+
+def sync_enabled(enabled: bool) -> None: ...
+    """Idempotent: only writes registry if state differs from desired."""
 ```
 
 ### main.py
@@ -222,6 +295,7 @@ No public exports. Entry point only:
 
 ```python
 # if __name__ == "__main__": main()
+# Accepts --startup flag for silent tray launch (no auto-open settings)
 ```
 
 ---
@@ -231,11 +305,11 @@ No public exports. Entry point only:
 | Rule | Detail |
 |------|--------|
 | Composition root | `main.py` imports all other modules. Nothing imports `main.py`. |
-| Settings dialog | `settings_dialog.py` imports only `config.py` (and `utils.py` for constants). |
-| Shared utilities | `audio.py`, `hotkey.py`, `stt.py`, `rewrite.py`, `injector.py` may import `utils.py`. |
-| Zero peer imports | The five backend modules must NOT import each other. |
+| Settings dialog | `settings_dialog.py` imports only `config.py` and `startup.py` (and `utils.py` for constants). |
+| Shared utilities | `audio.py`, `hotkey.py`, `stt.py`, `rewrite.py`, `injector.py`, `startup.py` may import `utils.py`. |
+| Zero peer imports | The six backend modules must NOT import each other. |
 | Config consumer | `stt.py` and `rewrite.py` receive `AppConfig` as a parameter — they do not import `config.py`. `audio.py` receives device ID, device name, and RMS threshold from `main.py`. `main.py` passes config values to all backends. |
-| Qt in backend | Only `utils.py`, `icons.py`, `settings_dialog.py`, `main.py` import PySide6. Backend modules (`audio`, `hotkey`, `stt`, `rewrite`, `injector`) do not. |
+| Qt in backend | Only `utils.py`, `icons.py`, `settings_dialog.py`, `main.py` import PySide6. Backend modules (`audio`, `hotkey`, `stt`, `rewrite`, `injector`, `startup`) do not. |
 | No circular imports | The graph is a DAG rooted at `main.py`. Structural guarantee. |
 
 ---
@@ -287,6 +361,7 @@ No hardcoded provider defaults. No silent fallback to unconfigured endpoints.
 | 8 | `src/stt.py` | `python -m src.stt test.wav` prints transcription (needs API config) |
 | 9 | `src/rewrite.py` | `python -m src.rewrite "test sentense wit erors"` prints corrected text (needs API config) |
 | 10 | `src/injector.py` | `python -m src.injector "hello world"` types into active window (Windows), message otherwise |
+| 11 | `src/startup.py` | `python -m src.startup` checks/sets Windows startup registry key |
 
 **Verification commands:**
 ```bash
@@ -307,7 +382,7 @@ python -c "import src; print('OK')"
 - [ ] No `api_key` values appear in log output.
 - [ ] Transcript text appears in logs only when `debug=True`.
 - [ ] Public exports match the API Contracts section above.
-- [ ] `audio`, `hotkey`, `stt`, `rewrite`, `injector` do not import each other.
+- [ ] `audio`, `hotkey`, `stt`, `rewrite`, `injector`, `startup` do not import each other.
 
 ---
 
@@ -325,6 +400,7 @@ The reviewer should inspect:
 | Logging | Secrets excluded from logs. Transcripts only logged with `debug=True`. |
 | Platform guards | Windows-only modules raise clean errors on Linux/macOS at runtime, not import time. |
 | Phase 2 readiness | Can `main.py` + `settings_dialog.py` be built **without modifying any Phase 1 file**? If not, fix Phase 1 now. |
+| Windows-only guard | `startup.py` raises `ScreamerError(UNSUPPORTED_PLATFORM)` on non-Windows at runtime, not import time. |
 
 Do not proceed to Phase 2 until review passes.
 
@@ -366,7 +442,8 @@ Do not proceed to Phase 2 until review passes.
 
 ## Boundaries
 
-- No modules beyond the 10 listed. No new dependencies.
-- Do not implement packaging (PyInstaller), autostart, code signing, or cross-platform hotkey backends.
+- No modules beyond the 11 listed. No new dependencies.
+- Do not implement packaging (PyInstaller), code signing, or cross-platform hotkey backends.
+- Autostart registration is implemented in `startup.py`.
 - All paths: `%LOCALAPPDATA%/Screamer/`. API keys: DPAPI. Plain settings: QSettings (IniFormat).
 - If a Phase 2 bug forces a Phase 1 API change, document it in the review checkpoint and get re-approval.

@@ -1,5 +1,9 @@
 # OVI Project Summary
 
+> **Status:** This document describes the original OVI codebase that Screamer was forked from.
+> All recommended improvements listed below have been implemented in Screamer.
+> See `PLAN.md` for the final architecture and `IMPLEMENTATION.md` for the build sequence.
+
 This document is a complete architecture and implementation summary of the current OVI codebase. It is intended to give another AI agent enough context to understand, modify, extend, or fork the project without first reverse-engineering the whole repository.
 
 OVI stands for Open Voice Interface. The current project is a small desktop prototype for system-wide push-to-talk dictation. The user holds a global hotkey, speaks into the microphone, releases the hotkey, and the app transcribes the captured audio using an OpenAI-compatible speech-to-text API. The resulting text is typed into whichever application is currently focused. The primary intended STT provider is Groq, but the implementation is deliberately provider-agnostic as long as the provider exposes an OpenAI-compatible `/audio/transcriptions` endpoint.
@@ -863,6 +867,8 @@ Future production work should replace prints with structured logging and expose 
 
 ## Current Limitations
 
+> **All resolved in Screamer** (except streaming, always-listening, and VAD which remain out of scope).
+
 - No persistent app settings. Hotkey, enabled state, post-type key, and rewrite toggle reset on restart.
 - `.env` configuration is acceptable for a prototype but rough for desktop users.
 - No settings window.
@@ -888,46 +894,46 @@ Future production work should replace prints with structured logging and expose 
 
 The fork overview recommends keeping the existing push-to-talk MVP and improving product foundations first.
 
-### Keep
+### Keep ✅
 
-- Keep the push-to-talk flow as the MVP.
-- Keep `audio.py` mostly as-is initially.
-- Keep 16 kHz mono int16 WAV capture.
-- Keep silence filtering.
-- Keep the STT client shape and OpenAI-compatible provider support.
-- Keep primary + fallback STT.
-- Keep optional AI rewrite.
-- Keep tray state machine and Qt signal bridge.
-- Keep typing suppression.
-- Keep optional post-type key behavior.
+- Keep the push-to-talk flow as the MVP. ✅
+- Keep `audio.py` mostly as-is initially. ✅ (rewritten with device selection + calibration)
+- Keep 16 kHz mono int16 WAV capture. ✅
+- Keep silence filtering. ✅ (RMS auto-calibration added)
+- Keep the STT client shape and OpenAI-compatible provider support. ✅ (rewritten with httpx)
+- Keep primary + fallback STT. ✅
+- Keep optional AI rewrite. ✅
+- Keep tray state machine and Qt signal bridge. ✅
+- ~~Keep typing suppression.~~ Dropped — not needed with RegisterHotKey + SendInput.
+- Keep optional post-type key behavior. ✅
 
-### Replace Or Refactor
+### Replace Or Refactor ✅
 
-- Replace `.env`-only config with persistent app settings.
-- Replace inline tray menu as the main settings surface with a real settings window.
-- Replace `print()` diagnostics with structured logging.
-- Split `Transcriber` into smaller modules.
-- Replace generated tiny tray icons with proper assets.
-- Add packaging/build tooling before treating it as a product.
+- Replace `.env`-only config with persistent app settings. ✅ (QSettings + DPAPI)
+- Replace inline tray menu as the main settings surface with a real settings window. ✅ (4-tab QDialog)
+- Replace `print()` diagnostics with structured logging. ✅ (stdlib logging + rotating file)
+- Split `Transcriber` into smaller modules. ✅ (stt.py, rewrite.py, injector.py)
+- Replace generated tiny tray icons with proper assets. ✅ (32x32 embedded base64 PNGs)
+- Add packaging/build tooling before treating it as a product. ✅ (PyInstaller spec + build script)
 
-### Add First
+### Add First ✅
 
-- Persistent configuration.
-- Device selection.
-- Structured logging.
-- Packaging/build scripts.
-- User-facing error notifications.
-- Settings window.
+- Persistent configuration. ✅
+- Device selection. ✅
+- Structured logging. ✅
+- Packaging/build scripts. ✅
+- User-facing error notifications. ✅ (AppError → tray balloons)
+- Settings window. ✅
 
 ### Add Later
 
-- VAD.
-- Better recording UX.
-- Toggle mode where one shortcut starts recording and a second shortcut stops/transcribes.
-- Optional always-listening or streaming behavior.
-- More robust platform-specific input handling.
-- Autostart.
-- Installer.
+- VAD. Deferred — RMS pre-filter + no_speech_prob is sufficient for push-to-talk.
+- Better recording UX. Deferred.
+- Toggle mode where one shortcut starts recording and a second shortcut stops/transcribes. ✅
+- Optional always-listening or streaming behavior. Out of scope.
+- More robust platform-specific input handling. Out of scope.
+- Autostart. ✅ (startup.py via HKCU Run key)
+- Installer. Out of scope.
 
 ### Recommended Model Defaults
 
@@ -936,7 +942,12 @@ The current code defaults to `whisper-large-v3`. For a Groq-first fork, recommen
 - Primary/default STT: `whisper-large-v3-turbo`
 - Quality fallback STT: `whisper-large-v3`
 
+> **Note:** Screamer leaves all model fields empty by default. Users configure everything.
+
 ## Suggested Future Module Split
+
+> **Implemented.** The `Transcriber` god object has been split. Screamer's module layout:
+> `config.py`, `audio.py`, `hotkey.py`, `stt.py`, `rewrite.py`, `injector.py`, `icons.py`, `settings_dialog.py`, `main.py`, `utils.py`, `startup.py`.
 
 The largest architectural issue is that `Transcriber` does too much. A cleaner future layout could be:
 
@@ -970,6 +981,8 @@ This keeps behavior identical while reducing coupling.
 
 ## Settings Persistence Design Notes
 
+> **Implemented.** Screamer uses QSettings (IniFormat) at `%LOCALAPPDATA%/Screamer/settings.ini` for plain settings and Windows DPAPI with entropy for API keys at `%LOCALAPPDATA%/Screamer/keys.enc`. `.env` import backfills empty fields only.
+
 The first major product improvement should be persistent settings.
 
 Current runtime settings that should persist:
@@ -999,6 +1012,8 @@ Important migration path:
 
 ## Toggle Recording Mode Design Notes
 
+> **Implemented.** Screamer supports both hold-to-talk and toggle modes. `HotkeyListener` abstracts the mode; in toggle mode, `WM_HOTKEY` fires on each press to flip state. Configured via `recording_mode` in settings.
+
 The current app is hold-to-talk only. A toggle mode can reuse most of the existing state machine.
 
 Current hold-to-talk semantics:
@@ -1022,6 +1037,8 @@ Implementation considerations:
 
 ## Device Selection Design Notes
 
+> **Implemented.** `audio.py` enumerates devices via `sounddevice.query_devices()`, stores device ID and name in QSettings, and uses `resolve_device()` for recovery (stored ID → name search → default). The Audio tab in settings provides a device dropdown and Recalibrate button.
+
 `AudioRecorder` currently uses the default input device by omitting the `device` argument to `sd.InputStream`.
 
 For device selection:
@@ -1037,16 +1054,20 @@ Device IDs may change across reboots or hardware changes, so storing both ID and
 
 ## Logging Design Notes
 
+> **Implemented.** Screamer uses stdlib `logging` with a `RotatingFileHandler` at `%LOCALAPPDATA%/Screamer/screamer.log` (2 MB, 3 backups) plus a console handler. API keys are never logged; transcripts only in debug mode.
+
 Replace `print()` calls with Python's `logging` module.
 
 Suggested logger names:
 
-- `ovi.main`
-- `ovi.audio`
-- `ovi.hotkey`
-- `ovi.stt`
-- `ovi.rewrite`
-- `ovi.injector`
+- `src.main`
+- `src.audio`
+- `src.hotkey`
+- `src.stt`
+- `src.rewrite`
+- `src.injector`
+- `src.config`
+- `src.startup`
 
 Suggested log destinations:
 
@@ -1070,6 +1091,8 @@ Important events to log:
 Avoid logging secrets and avoid logging full dictated text by default unless a debug setting explicitly enables it.
 
 ## Testing Strategy
+
+> **Partial.** Screamer has test files in `tests/`: `test_audio.py`, `test_config.py`, `test_icons.py`, `test_mappings.py`, `test_startup.py`, `test_stt_rewrite.py`, `test_tray_menu.py`.
 
 There are no automated tests today. Useful future tests:
 
