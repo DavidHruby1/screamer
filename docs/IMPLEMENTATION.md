@@ -122,6 +122,13 @@ def import_from_env(cfg: AppConfig) -> AppConfig: ...
 def setup_logging(debug: bool = False) -> None: ...
     """Rotating file at APP_DIR/screamer.log. Never log api_key values.
     Never log transcripts unless debug=True."""
+
+def set_autostart(enabled: bool) -> None: ...
+    """Register/unregister the HKCU Run key. No-op off Windows.
+    Raises ScreamerError(AUTOSTART_FAILED) on registry write failure."""
+
+def is_autostart_enabled() -> bool: ...
+    """True if the HKCU Run value exists. False off Windows."""
 ```
 
 ### audio.py

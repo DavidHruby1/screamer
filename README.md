@@ -22,3 +22,4 @@ Configure your STT provider (Groq, OpenAI, or any OpenAI-compatible endpoint) vi
 - Persistent settings and secure key storage
 - Microphone device selection with auto-calibration
 - Post-type key support (Enter, Tab, Space, Backspace)
+- Optional launch on Windows startup
