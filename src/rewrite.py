@@ -75,7 +75,7 @@ def _call_llm(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
         ],
-        "temperature": 0.3,
+        "temperature": 0.0,
     }
 
     log.info("LLM request: url=%s model=%s", url, provider.model)
