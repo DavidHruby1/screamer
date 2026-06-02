@@ -22,3 +22,18 @@ Configure your STT provider (Groq, OpenAI, or any OpenAI-compatible endpoint) vi
 - Persistent settings and secure key storage
 - Microphone device selection with auto-calibration
 - Post-type key support (Enter, Tab, Space, Backspace)
+
+## Releases
+
+Pushing a version tag builds the Windows executable and publishes a GitHub Release
+automatically (see `.github/workflows/release.yml`):
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The workflow runs the test suite, builds with PyInstaller, and attaches a
+`Screamer-v1.0.0-windows-x64.zip` (plus a `.sha256` checksum) to the release.
+Tags with a hyphen (e.g. `v1.0.0-rc1`) are published as pre-releases. Download the
+zip, extract it, and run `Screamer\Screamer.exe`.
