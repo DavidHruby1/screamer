@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # required for gh release create
+
+jobs:
+  release:
+    name: build and publish (windows / py3.12)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+
+      # Gate the release on the same test suite CI runs — never ship a broken build.
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -v
+
+      - name: Build executable
+        run: python -m PyInstaller --noconfirm --clean screamer.spec
+
+      # screamer.spec uses COLLECT (onedir), so the artifact is the dist\Screamer
+      # folder zipped whole — users extract it and run Screamer\Screamer.exe.
+      - name: Package
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $zip = "Screamer-$tag-windows-x64.zip"
+          Compress-Archive -Path dist\Screamer -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $zip" | Out-File -FilePath "$zip.sha256" -Encoding ascii
+          "ASSET_ZIP=$zip"        | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ASSET_SHA=$zip.sha256" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # Hyphenated tags (v1.0.0-rc1, v1.2.0-beta) publish as pre-releases.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $ghArgs = @(
+            "release", "create", $tag,
+            $env:ASSET_ZIP, $env:ASSET_SHA,
+            "--title", $tag,
+            "--generate-notes"
+          )
+          if ($tag -match "-") { $ghArgs += "--prerelease" }
+          & gh @ghArgs
