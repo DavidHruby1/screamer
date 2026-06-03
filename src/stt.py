@@ -7,7 +7,7 @@ import logging
 import httpx
 
 from src.config import AppConfig, ProviderConfig, parse_custom_headers
-from src.utils import AppError, PipelineResult, ScreamerError
+from src.utils import AppError, PipelineResult, ScreamerError, log_duration
 
 log = logging.getLogger(__name__)
 
@@ -23,37 +23,38 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
 
     *config* supplies primary and fallback providers via ``AppConfig``.
     """
-    warnings: list[AppError] = []
+    with log_duration(log, "STT transcription"):
+        warnings: list[AppError] = []
 
-    primary = config.stt_provider()
-    fallback = config.stt_fallback_provider()
+        primary = config.stt_provider()
+        fallback = config.stt_fallback_provider()
 
-    if not primary.is_complete and not fallback.is_complete:
-        raise ScreamerError(AppError.STT_FAILED, "No STT API key configured")
+        if not primary.is_complete and not fallback.is_complete:
+            raise ScreamerError(AppError.STT_FAILED, "No STT API key configured")
 
-    for is_fallback, provider, language in (
-        (False, primary, config.stt_language),
-        (True, fallback.provider, ""),
-    ):
-        if is_fallback and not fallback.enabled:
-            continue
-        if not provider.is_complete:
-            continue
+        for is_fallback, provider, language in (
+            (False, primary, config.stt_language),
+            (True, fallback.provider, ""),
+        ):
+            if is_fallback and not fallback.enabled:
+                continue
+            if not provider.is_complete:
+                continue
 
-        try:
-            text = _call_stt(provider=provider, language=language, audio_wav=audio_wav)
-            if text is not None:
-                if is_fallback:
-                    warnings.append(AppError.STT_FALLBACK_USED)
-                return PipelineResult(text=text, warnings=warnings)
-        except ScreamerError:
-            raise
-        except Exception as e:
-            log.warning("%s STT failed: %s", "Fallback" if is_fallback else "Primary", e)
-            if not fallback.enabled:
-                raise ScreamerError(AppError.STT_FAILED, str(e)) from e
+            try:
+                text = _call_stt(provider=provider, language=language, audio_wav=audio_wav)
+                if text is not None:
+                    if is_fallback:
+                        warnings.append(AppError.STT_FALLBACK_USED)
+                    return PipelineResult(text=text, warnings=warnings)
+            except ScreamerError:
+                raise
+            except Exception as e:
+                log.warning("%s STT failed: %s", "Fallback" if is_fallback else "Primary", e)
+                if not fallback.enabled:
+                    raise ScreamerError(AppError.STT_FAILED, str(e)) from e
 
-    raise ScreamerError(AppError.STT_FAILED, "Both primary and fallback STT failed or returned no speech")
+        raise ScreamerError(AppError.STT_FAILED, "Both primary and fallback STT failed or returned no speech")
 
 
 def _call_stt(
@@ -79,26 +80,27 @@ def _call_stt(
 
     files = {"file": ("recording.wav", audio_wav, "audio/wav")}
 
-    log.info("STT request: url=%s model=%s", url, provider.model)
-    resp = httpx.post(url, headers=headers, data=data, files=files, timeout=60.0)
-    resp.raise_for_status()
+    with log_duration(log, f"STT request ({provider.model})"):
+        log.info("STT request: url=%s model=%s", url, provider.model)
+        resp = httpx.post(url, headers=headers, data=data, files=files, timeout=60.0)
+        resp.raise_for_status()
 
-    result = resp.json()
-    segments = result.get("segments", [])
+        result = resp.json()
+        segments = result.get("segments", [])
 
-    # Filter: keep if ANY segment has no_speech_prob < threshold.
-    if segments:
-        has_speech = any(seg.get("no_speech_prob", 0.0) < _NO_SPEECH_THRESHOLD for seg in segments)
-        if not has_speech:
-            log.debug("All segments above no_speech_prob threshold; filtering out")
+        # Filter: keep if ANY segment has no_speech_prob < threshold.
+        if segments:
+            has_speech = any(seg.get("no_speech_prob", 0.0) < _NO_SPEECH_THRESHOLD for seg in segments)
+            if not has_speech:
+                log.debug("All segments above no_speech_prob threshold; filtering out")
+                raise ScreamerError(AppError.NO_SPEECH)
+
+        text = (result.get("text") or "").strip()
+        if not text:
             raise ScreamerError(AppError.NO_SPEECH)
 
-    text = (result.get("text") or "").strip()
-    if not text:
-        raise ScreamerError(AppError.NO_SPEECH)
-
-    log.debug("STT result: %s", text[:80])
-    return text
+        log.debug("STT result: %s", text[:80])
+        return text
 
 
 # ---------------------------------------------------------------------------

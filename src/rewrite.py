@@ -7,7 +7,7 @@ import logging
 import httpx
 
 from src.config import AppConfig, ProviderConfig, parse_custom_headers
-from src.utils import AppError, PipelineResult, ScreamerError
+from src.utils import AppError, PipelineResult, ScreamerError, log_duration
 
 log = logging.getLogger(__name__)
 
@@ -18,35 +18,36 @@ def rewrite(text: str, config: AppConfig) -> PipelineResult:
     Returns input text unchanged in ``PipelineResult.text`` if ``config.llm_enabled`` is False.
     Provider errors return the original text with ``AppError.LLM_FAILED`` as a warning.
     """
-    if not config.llm_enabled:
-        return PipelineResult(text=text)
+    with log_duration(log, "LLM rewrite"):
+        if not config.llm_enabled:
+            return PipelineResult(text=text)
 
-    system_prompt = config.llm_system_prompt or ""
-    language = getattr(config, "stt_language", "")
-    if language:
-        system_prompt += f"\nThe speech language is {language}."
+        system_prompt = config.llm_system_prompt or ""
+        language = getattr(config, "stt_language", "")
+        if language:
+            system_prompt += f"\nThe speech language is {language}."
 
-    primary = config.llm_provider()
-    fallback = config.llm_fallback_provider()
+        primary = config.llm_provider()
+        fallback = config.llm_fallback_provider()
 
-    for is_fallback, provider in ((False, primary), (True, fallback.provider)):
-        if is_fallback and not fallback.enabled:
-            continue
-        if not provider.is_complete:
-            continue
+        for is_fallback, provider in ((False, primary), (True, fallback.provider)):
+            if is_fallback and not fallback.enabled:
+                continue
+            if not provider.is_complete:
+                continue
 
-        try:
-            result = _call_llm(provider=provider, system_prompt=system_prompt, user_text=text)
-            if result:
-                log.debug("%s LLM rewrite: %r → %r", "Fallback" if is_fallback else "Primary", text[:60], result[:60])
-                return PipelineResult(text=result)
-        except Exception as e:
-            log.warning("%s LLM failed: %s", "Fallback" if is_fallback else "Primary", e)
-            if not fallback.enabled:
-                return PipelineResult(text=text, warnings=[AppError.LLM_FAILED])
+            try:
+                result = _call_llm(provider=provider, system_prompt=system_prompt, user_text=text)
+                if result:
+                    log.debug("%s LLM rewrite: %r → %r", "Fallback" if is_fallback else "Primary", text[:60], result[:60])
+                    return PipelineResult(text=result)
+            except Exception as e:
+                log.warning("%s LLM failed: %s", "Fallback" if is_fallback else "Primary", e)
+                if not fallback.enabled:
+                    return PipelineResult(text=text, warnings=[AppError.LLM_FAILED])
 
-    log.debug("LLM rewrite failed or returned empty; using original text")
-    return PipelineResult(text=text, warnings=[AppError.LLM_FAILED])
+        log.debug("LLM rewrite failed or returned empty; using original text")
+        return PipelineResult(text=text, warnings=[AppError.LLM_FAILED])
 
 
 def _call_llm(
@@ -78,13 +79,14 @@ def _call_llm(
         "temperature": 0.0,
     }
 
-    log.info("LLM request: url=%s model=%s", url, provider.model)
-    resp = httpx.post(url, headers=headers, json=body, timeout=30.0)
-    resp.raise_for_status()
+    with log_duration(log, f"LLM request ({provider.model})"):
+        log.info("LLM request: url=%s model=%s", url, provider.model)
+        resp = httpx.post(url, headers=headers, json=body, timeout=30.0)
+        resp.raise_for_status()
 
-    data = resp.json()
-    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-    return content.strip() if content else None
+        data = resp.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return content.strip() if content else None
 
 
 # ---------------------------------------------------------------------------

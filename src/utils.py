@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
+from time import perf_counter
 
 from PySide6.QtCore import QObject, Signal
 
@@ -51,3 +54,16 @@ class PipelineResult:
 
     text: str
     warnings: list[AppError] = field(default_factory=list)
+
+
+@contextmanager
+def log_duration(logger: logging.Logger, label: str, level: int = logging.INFO):
+    """Log how long a block takes, even if it raises."""
+    start = perf_counter()
+    try:
+        yield
+    except Exception:
+        logger.log(level, "%s failed after %.3fs", label, perf_counter() - start)
+        raise
+    else:
+        logger.log(level, "%s finished in %.3fs", label, perf_counter() - start)
