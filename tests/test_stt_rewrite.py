@@ -5,8 +5,8 @@ import httpx
 
 from src.config import AppConfig
 from src.rewrite import rewrite
-from src.stt import transcribe
-from src.utils import AppError
+from src.stt import is_meaningful_transcript, transcribe
+from src.utils import AppError, ScreamerError
 
 
 class FakeResponse:
@@ -65,6 +65,28 @@ class SttRewriteFallbackTests(unittest.TestCase):
 
         self.assertEqual(captured_headers["Authorization"], "Bearer primary")
         self.assertEqual(captured_headers["X-Test"], "yes")
+
+    def test_stt_rejects_punctuation_only_text(self) -> None:
+        cfg = AppConfig(
+            stt_api_key="primary",
+            stt_base_url="https://primary.test/v1",
+            stt_model="stt-primary",
+        )
+
+        for text in (".", "..", "...", "\a"):
+            with self.subTest(text=repr(text)):
+                with patch("src.stt.httpx.post", return_value=FakeResponse({"text": text, "segments": []})):
+                    with self.assertRaises(ScreamerError) as ctx:
+                        transcribe(b"wav", cfg)
+
+                self.assertIs(ctx.exception.code, AppError.NO_SPEECH)
+
+    def test_meaningful_transcript_accepts_normal_punctuation(self) -> None:
+        self.assertFalse(is_meaningful_transcript("."))
+        self.assertFalse(is_meaningful_transcript(".."))
+        self.assertFalse(is_meaningful_transcript("..."))
+        self.assertFalse(is_meaningful_transcript("\a"))
+        self.assertTrue(is_meaningful_transcript("Hello, world."))
 
     def test_rewrite_uses_fallback_after_primary_http_failure(self) -> None:
         cfg = AppConfig(

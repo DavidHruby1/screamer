@@ -147,6 +147,36 @@ class AudioDrainTests(unittest.TestCase):
         self.assertNotEqual(result, b"")
         self.assertEqual(len(recorder._frames), 0)
 
+    def test_snapshot_does_not_clear_frames(self) -> None:
+        recorder = AudioRecorder()
+        recorder._frames = [np.full((16000, 1), 100, dtype=np.int16)]
+
+        result = recorder.snapshot_window(0)
+
+        self.assertNotEqual(result.wav, b"")
+        self.assertEqual(len(recorder._frames), 1)
+        self.assertEqual(recorder.current_sample_count(), 16000)
+
+    def test_snapshot_window_can_include_overlap(self) -> None:
+        recorder = AudioRecorder()
+        recorder._frames = [np.full((48000, 1), 100, dtype=np.int16)]
+
+        result = recorder.snapshot_window(16000, 48000)
+
+        self.assertEqual(result.start_sample, 16000)
+        self.assertEqual(result.end_sample, 48000)
+        self.assertAlmostEqual(result.duration, 2.0, places=1)
+
+    def test_snapshot_window_keeps_quiet_audio_for_streaming(self) -> None:
+        recorder = AudioRecorder()
+        recorder._frames = [np.full((16000, 1), 1, dtype=np.int16)]
+        recorder.rms_threshold = 1000.0
+
+        result = recorder.snapshot_window(0, 16000)
+
+        self.assertNotEqual(result.wav, b"")
+        self.assertAlmostEqual(result.duration, 1.0, places=1)
+
     def test_drain_subsequent_returns_empty_after_clearing(self) -> None:
         recorder = AudioRecorder()
         recorder._frames = [np.full((16000, 1), 100, dtype=np.int16)]
