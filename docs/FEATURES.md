@@ -1,5 +1,11 @@
 # Future Features
 
+## PRIORITY FEATURE**
+
+Async batching of transcriptions after 5 seconds using queue to boost performance significantly.
+
+---
+
 ## 1. Custom Vocabulary / Personal Dictionary
 
 Let users define names, acronyms, project terms, product names, usernames, and domain-specific jargon.
@@ -78,3 +84,9 @@ First version can be provider presets/documentation rather than bundling models.
 Low-priority polish feature.
 
 Show simple usage stats such as words dictated, estimated time saved, and top target apps.
+
+## 9. Language List
+
+Add a possibility to create list of languages the user wants to use frequently.
+
+Then add the option to quickly switch between them in the Tray.
