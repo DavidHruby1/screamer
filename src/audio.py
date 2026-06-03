@@ -19,7 +19,7 @@ except (ImportError, OSError):
     sd = None  # type: ignore[assignment]
 
 from src.config import DEFAULT_RMS_THRESHOLD
-from src.utils import AppError, ScreamerError
+from src.utils import AppError, ScreamerError, log_duration
 
 log = logging.getLogger(__name__)
 
@@ -34,14 +34,6 @@ class AudioDevice:
     id: int
     name: str
     channels: int
-
-
-@dataclass(frozen=True)
-class AudioSnapshot:
-    wav: bytes
-    start_sample: int
-    end_sample: int
-    duration: float
 
 
 def _require_sd():
@@ -103,48 +95,11 @@ def _clean_device_name(name: str) -> str:
     return name.removesuffix(" (Default input)").strip()
 
 
-def _frames_to_audio_data(frames: list[np.ndarray]) -> np.ndarray | None:
-    if not frames:
-        return None
-    return np.concatenate(frames, axis=0)
-
-
-def _audio_duration(audio_data: np.ndarray, sample_rate: int = SAMPLE_RATE) -> float:
-    return len(audio_data) / sample_rate
-
-
-def _audio_rms(audio_data: np.ndarray) -> float:
-    return float(np.sqrt(np.mean(audio_data.astype(np.float64) ** 2)))
-
-
-def _encode_wav(audio_data: np.ndarray, sample_rate: int = SAMPLE_RATE) -> bytes:
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        wf.writeframes(audio_data.tobytes())
-    return buf.getvalue()
-
-
-def _should_discard_audio(audio_data: np.ndarray, rms_threshold: float, label: str, sample_rate: int = SAMPLE_RATE) -> bool:
-    duration = _audio_duration(audio_data, sample_rate)
-    if duration < MIN_DURATION:
-        log.info("Audio %s too short (%.2fs); discarding", label, duration)
-        return True
-    rms = _audio_rms(audio_data)
-    if rms < rms_threshold:
-        log.info("Audio %s below RMS threshold (%.1f < %.1f); discarding", label, rms, rms_threshold)
-        return True
-    return False
-
-
 class AudioRecorder:
     def __init__(self, device_id: int | None = None, sample_rate: int = SAMPLE_RATE) -> None:
         self._device_id = device_id
         self._sample_rate = sample_rate
         self._frames: list[np.ndarray] = []
-        self._start_sample = 0
         self._stream: Any = None
         self._lock = threading.Lock()
         self._start_time: float = 0.0
@@ -167,22 +122,22 @@ class AudioRecorder:
         """Record ambient noise and return a usable silence-gate threshold."""
         _require_sd()
         try:
-            log.info("Calibrating RMS threshold for %.1fs...", duration)
-            recording = sd.rec(
-                int(duration * self._sample_rate),
-                samplerate=self._sample_rate,
-                channels=CHANNELS,
-                dtype=DTYPE,
-                device=self._device_id,
-            )
-            sd.wait()
-            noise_floor = float(np.sqrt(np.mean(recording.astype(np.float64) ** 2)))
-            threshold = noise_floor * 2.0
-            if threshold < DEFAULT_RMS_THRESHOLD:
-                threshold = DEFAULT_RMS_THRESHOLD
-            self._rms_threshold = threshold
-            log.info("Calibration done: noise_floor=%.1f, threshold=%.1f", noise_floor, threshold)
-            return threshold
+            with log_duration(log, f"Calibration for {duration:.1f}s"):
+                recording = sd.rec(
+                    int(duration * self._sample_rate),
+                    samplerate=self._sample_rate,
+                    channels=CHANNELS,
+                    dtype=DTYPE,
+                    device=self._device_id,
+                )
+                sd.wait()
+                noise_floor = float(np.sqrt(np.mean(recording.astype(np.float64) ** 2)))
+                threshold = noise_floor * 2.0
+                if threshold < DEFAULT_RMS_THRESHOLD:
+                    threshold = DEFAULT_RMS_THRESHOLD
+                self._rms_threshold = threshold
+                log.info("Calibration done: noise_floor=%.1f, threshold=%.1f", noise_floor, threshold)
+                return threshold
         except Exception as e:
             log.warning("Calibration failed: %s; using fallback %.1f", e, DEFAULT_RMS_THRESHOLD)
             self._rms_threshold = DEFAULT_RMS_THRESHOLD
@@ -198,7 +153,6 @@ class AudioRecorder:
         """Begin recording from the configured device."""
         _require_sd()
         self._frames = []
-        self._start_sample = 0
         self._start_time = time.monotonic()
         self._stream = sd.InputStream(
             samplerate=self._sample_rate,
@@ -209,84 +163,6 @@ class AudioRecorder:
         )
         self._stream.start()
         log.info("Recording started (device=%s)", self._device_id)
-
-    def current_sample_count(self) -> int:
-        """Return the absolute sample index at the current end of the buffer."""
-        with self._lock:
-            return self._start_sample + sum(len(frame) for frame in self._frames)
-
-    def snapshot_window(self, start_sample: int, end_sample: int | None = None) -> AudioSnapshot:
-        """Return a non-destructive WAV snapshot for the requested sample range."""
-        with self._lock:
-            buffer_start = self._start_sample
-            frames = list(self._frames)
-
-        audio_data = _frames_to_audio_data(frames)
-        if audio_data is None:
-            return AudioSnapshot(b"", buffer_start, buffer_start, 0.0)
-
-        buffer_end = buffer_start + len(audio_data)
-        bounded_start = max(buffer_start, min(start_sample, buffer_end))
-        bounded_end = buffer_end if end_sample is None else max(bounded_start, min(end_sample, buffer_end))
-        window = audio_data[bounded_start - buffer_start:bounded_end - buffer_start]
-
-        duration = _audio_duration(window, self._sample_rate)
-        if len(window) == 0:
-            return AudioSnapshot(b"", bounded_start, bounded_end, duration)
-
-        wav_bytes = _encode_wav(window, self._sample_rate)
-        log.info("Snapshot WAV encoded: %d bytes, %.2fs", len(wav_bytes), duration)
-        return AudioSnapshot(wav_bytes, bounded_start, bounded_end, duration)
-
-    def discard_before(self, sample_index: int) -> None:
-        """Drop buffered audio before ``sample_index`` without changing later samples."""
-        with self._lock:
-            audio_data = _frames_to_audio_data(self._frames)
-            if audio_data is None:
-                self._start_sample = max(self._start_sample, sample_index)
-                return
-            buffer_end = self._start_sample + len(audio_data)
-            keep_from = max(self._start_sample, min(sample_index, buffer_end))
-            kept = audio_data[keep_from - self._start_sample:]
-            self._frames = [kept] if len(kept) else []
-            self._start_sample = keep_from
-
-    def stop_and_snapshot_tail(self, start_sample: int = 0) -> AudioSnapshot:
-        """Stop recording and return the final snapshot from ``start_sample``."""
-        if self._stream is not None:
-            try:
-                self._stream.stop()
-                self._stream.close()
-            except Exception as e:
-                self._stream = None
-                raise ScreamerError(AppError.MIC_DISCONNECTED, str(e)) from e
-            self._stream = None
-        return self.snapshot_window(start_sample)
-
-    def drain(self) -> bytes:
-        """Return frames accumulated since last drain as WAV bytes.
-
-        Returns empty bytes if no frames or audio is too short/silent.
-        The internal frame buffer is cleared so subsequent calls only
-        return newly captured audio.
-        """
-        with self._lock:
-            if not self._frames:
-                return b""
-            frames = self._frames
-            self._frames = []
-            self._start_sample += sum(len(frame) for frame in frames)
-
-        audio_data = _frames_to_audio_data(frames)
-        if audio_data is None:
-            return b""
-
-        if _should_discard_audio(audio_data, self._rms_threshold, "chunk", self._sample_rate):
-            return b""
-
-        wav_bytes = _encode_wav(audio_data, self._sample_rate)
-        log.info("Chunk WAV encoded: %d bytes, %.2fs", len(wav_bytes), _audio_duration(audio_data, self._sample_rate))
-        return wav_bytes
 
     def stop(self) -> bytes:
         """Stop recording and return 16kHz mono int16 WAV bytes.
@@ -305,21 +181,32 @@ class AudioRecorder:
             raise ScreamerError(AppError.MIC_DISCONNECTED, str(e)) from e
         self._stream = None
 
+        duration = time.monotonic() - self._start_time
+        if duration < MIN_DURATION:
+            log.info("Recording too short (%.2fs); discarding", duration)
+            return b""
+
         with self._lock:
-            frames = self._frames
-            self._frames = []
-            self._start_sample += sum(len(frame) for frame in frames)
+            if not self._frames:
+                log.info("No frames captured; discarding")
+                return b""
+            audio_data = np.concatenate(self._frames, axis=0)
 
-        audio_data = _frames_to_audio_data(frames)
-        if audio_data is None:
-            log.info("No frames captured; discarding")
+        rms = float(np.sqrt(np.mean(audio_data.astype(np.float64) ** 2)))
+        log.info("Recording stopped: %.2fs, RMS=%.1f, threshold=%.1f", duration, rms, self._rms_threshold)
+        if rms < self._rms_threshold:
+            log.info("Below RMS threshold; discarding")
             return b""
 
-        if _should_discard_audio(audio_data, self._rms_threshold, "tail", self._sample_rate):
-            return b""
-
-        wav_bytes = _encode_wav(audio_data, self._sample_rate)
-        log.info("Tail WAV encoded: %d bytes, %.2fs", len(wav_bytes), _audio_duration(audio_data, self._sample_rate))
+        # Encode as WAV in memory.
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(CHANNELS)
+            wf.setsampwidth(2)  # int16 = 2 bytes
+            wf.setframerate(self._sample_rate)
+            wf.writeframes(audio_data.tobytes())
+        wav_bytes = buf.getvalue()
+        log.info("WAV encoded: %d bytes", len(wav_bytes))
         return wav_bytes
 
 

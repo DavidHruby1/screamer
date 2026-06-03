@@ -11,7 +11,7 @@ import logging
 import threading
 from typing import Any
 
-from PySide6.QtCore import QObject, QTimer, Signal, QThread
+from PySide6.QtCore import QObject, Signal, QThread
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
-from src.audio import AudioRecorder, AudioSnapshot, default_input_device_id, list_devices, resolve_device
+from src.audio import AudioRecorder, default_input_device_id, list_devices, resolve_device
 from src.config import (
     HOTKEY_OPTIONS,
     POST_KEY_OPTIONS,
@@ -39,126 +39,54 @@ from src.injector import type_text
 from src.rewrite import rewrite
 from src.settings_dialog import SettingsDialog
 from src.stt import transcribe
-from src.streaming import OnlineTranscriptionSession
 from src.utils import AppError, PipelineResult, ScreamerError, SignalBridge
 
 log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Streaming worker — transcribes latest rolling snapshot, then rewrite + type.
+# Worker thread — runs the full pipeline off the Qt main thread.
 # ---------------------------------------------------------------------------
 
-class _StreamingWorker(QThread):
-    """Single-flight rolling transcription worker.
 
-    enqueue(snapshot) replaces any stale pending snapshot. finish(snapshot)
-    finalizes remaining audio, then runs rewrite and injection once.
+class _WorkerThread(QThread):
+    """Daemon thread: transcribe → rewrite → type.
+
+    Communicates results back to the Qt main thread via explicit signals.
+    Checks cancel_event before each blocking step.
+    Carries transcription warnings through to the final result.
     """
 
     succeeded = Signal(object)  # PipelineResult
     failed = Signal(Exception)
     cancelled = Signal()
-    committed_audio_advanced = Signal(int)
 
     def __init__(
         self,
+        audio_wav: bytes,
         config: AppConfig,
         cancel_event: threading.Event,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
+        self._audio_wav = audio_wav
         self._config = config
         self._cancel = cancel_event
-        self._condition = threading.Condition()
-        self._pending_snapshot: AudioSnapshot | None = None
-        self._final_snapshot: AudioSnapshot | None = None
-        self._finish_requested = False
-        self._session = OnlineTranscriptionSession()
-        self._session_lock = threading.Lock()
-
-    def window_start_sample(self, current_sample: int) -> int:
-        with self._session_lock:
-            return self._session.window_start_sample(current_sample)
-
-    def final_window_start_sample(self) -> int:
-        with self._session_lock:
-            return self._session.final_window_start_sample()
-
-    def enqueue(self, snapshot: AudioSnapshot | bytes) -> None:
-        if isinstance(snapshot, bytes):
-            snapshot = AudioSnapshot(snapshot, 0, 0, 0.0)
-        with self._condition:
-            self._pending_snapshot = snapshot
-            self._condition.notify()
-
-    def finish(self, snapshot: AudioSnapshot | bytes | None = None) -> None:
-        if isinstance(snapshot, bytes):
-            snapshot = AudioSnapshot(snapshot, 0, 0, 0.0)
-        with self._condition:
-            self._final_snapshot = snapshot
-            self._finish_requested = True
-            self._condition.notify()
 
     def run(self) -> None:
-        all_warnings: list[AppError] = []
         try:
-            while True:
-                with self._condition:
-                    while (
-                        self._pending_snapshot is None
-                        and not self._finish_requested
-                        and not self._cancel.is_set()
-                    ):
-                        self._condition.wait(timeout=0.5)
+            if self._cancel.is_set():
+                self.cancelled.emit()
+                return
 
-                    if self._cancel.is_set():
-                        self.cancelled.emit()
-                        return
-
-                    if self._finish_requested:
-                        snapshot = self._final_snapshot
-                        self._final_snapshot = None
-                        self._pending_snapshot = None
-                        final = True
-                    else:
-                        snapshot = self._pending_snapshot
-                        self._pending_snapshot = None
-                        final = False
-
-                if self._cancel.is_set():
-                    self.cancelled.emit()
-                    return
-
-                if snapshot is not None and snapshot.wav:
-                    try:
-                        stt_result = transcribe(snapshot.wav, self._config)
-                        with self._session_lock:
-                            update = self._session.accept(snapshot, stt_result, final=final)
-                            trim_before = self._session.trim_before_sample()
-                        all_warnings.extend(update.warnings)
-                        if update.committed_delta and trim_before > 0:
-                            self.committed_audio_advanced.emit(trim_before)
-                    except ScreamerError as e:
-                        if e.code is not AppError.NO_SPEECH:
-                            raise
-                elif final:
-                    with self._session_lock:
-                        self._session.finalize_hypothesis()
-
-                if final:
-                    break
-
-            with self._session_lock:
-                full_text = self._session.finalize_hypothesis()
-            if not full_text:
-                raise ScreamerError(AppError.NO_SPEECH)
+            stt_result = transcribe(self._audio_wav, self._config)
+            all_warnings = list(stt_result.warnings)
 
             if self._cancel.is_set():
                 self.cancelled.emit()
                 return
 
-            result = rewrite(full_text, self._config)
+            result = rewrite(stt_result.text, self._config)
             all_warnings.extend(result.warnings)
 
             if self._cancel.is_set():
@@ -191,13 +119,10 @@ class _TrayApp(QObject):
         self._recorder = AudioRecorder()
         self._bridge = SignalBridge()
         self._cancel_event = threading.Event()
-        self._worker: _StreamingWorker | None = None
+        self._worker: _WorkerThread | None = None
         self._settings_dlg: SettingsDialog | None = None
         self._recording = False
         self._enabled = True
-
-        self._batch_timer = QTimer(self)
-        self._batch_timer.timeout.connect(self._flush_audio_batch)
 
         self._build_tray()
         self._build_hotkey()
@@ -350,79 +275,44 @@ class _TrayApp(QObject):
         self._tray.setToolTip(f"Screamer — {labels[state]}")
 
     # ------------------------------------------------------------------
-    # Batch timer — periodic flush from audio callback to worker queue
-    # ------------------------------------------------------------------
-
-    BATCH_INTERVAL_MS = 4000
-
-    def _flush_audio_batch(self) -> None:
-        if not self._recording or self._worker is None:
-            return
-        try:
-            current_sample = self._recorder.current_sample_count()
-            start_sample = self._worker.window_start_sample(current_sample)
-            snapshot = self._recorder.snapshot_window(start_sample, current_sample)
-        except ScreamerError as e:
-            self._on_error(e.code, e.detail)
-            return
-        if snapshot.wav:
-            self._worker.enqueue(snapshot)
-
-    def _trim_audio_before(self, sample_index: int) -> None:
-        self._recorder.discard_before(sample_index)
-
-    # ------------------------------------------------------------------
     # Recording lifecycle
     # ------------------------------------------------------------------
 
     def _start_recording(self) -> None:
         """Begin a new recording session."""
-        self._cancel_event.clear()
-
+        self._apply_state(TrayState.RECORDING)
         device_id = resolve_device(self._config.audio_device_id, self._config.audio_device_name)
         self._recorder = AudioRecorder(device_id=device_id)
         self._recorder.rms_threshold = self._config.rms_threshold
-
-        worker = _StreamingWorker(self._config, self._cancel_event, self)
-        worker.succeeded.connect(self._on_worker_succeeded)
-        worker.failed.connect(self._on_worker_failed)
-        worker.cancelled.connect(self._on_worker_cancelled)
-        worker.committed_audio_advanced.connect(self._trim_audio_before)
-        self._worker = worker
-
         try:
             self._recorder.start()
+            self._recording = True
         except ScreamerError as e:
-            self._worker = None
+            self._recording = False
             self._on_error(e.code)
-            return
-
-        worker.start()
-        self._batch_timer.start(self.BATCH_INTERVAL_MS)
-        self._recording = True
-        self._apply_state(TrayState.RECORDING)
 
     def _finalize_recording(self) -> None:
-        """Stop recording and signal the streaming worker to finish."""
+        """Stop recording and start the processing worker."""
         self._recording = False
-        self._batch_timer.stop()
         self._apply_state(TrayState.PROCESSING)
 
-        worker = self._worker
-
         try:
-            start_sample = worker.final_window_start_sample() if worker is not None else 0
-            final_snapshot = self._recorder.stop_and_snapshot_tail(start_sample)
+            audio_wav = self._recorder.stop()
         except ScreamerError as e:
-            if worker is not None:
-                self._worker = None
-                self._cancel_event.set()
             self._on_error(e.code)
             self._apply_state(TrayState.IDLE)
             return
 
-        if worker is not None:
-            worker.finish(final_snapshot)
+        if not audio_wav:
+            self._apply_state(TrayState.IDLE)
+            return
+
+        self._cancel_event.clear()
+        self._worker = _WorkerThread(audio_wav, self._config, self._cancel_event, self)
+        self._worker.succeeded.connect(self._on_worker_succeeded)
+        self._worker.failed.connect(self._on_worker_failed)
+        self._worker.cancelled.connect(self._on_worker_cancelled)
+        self._worker.start()
 
     # ------------------------------------------------------------------
     # Hotkey callbacks (called from hotkey thread via SignalBridge → Qt main)
@@ -432,15 +322,14 @@ class _TrayApp(QObject):
         if not self._enabled:
             return
 
-        if self._recording:
-            # Toggle mode: second press → finalize and process.
-            self._finalize_recording()
-            return
-
         if self._worker is not None:
             return  # Already processing; ignore.
 
-        self._start_recording()
+        if self._recording:
+            # Toggle mode: second press → finalize and process.
+            self._finalize_recording()
+        else:
+            self._start_recording()
 
     def _on_hotkey_released(self) -> None:
         # Hold mode: release during recording → finalize and process.
@@ -459,14 +348,6 @@ class _TrayApp(QObject):
 
     def _on_worker_failed(self, error: Exception) -> None:
         self._worker = None
-        if self._recording:
-            self._recording = False
-            self._batch_timer.stop()
-            try:
-                if self._recorder.is_recording:
-                    self._recorder.stop()
-            except Exception:
-                pass
         if isinstance(error, ScreamerError):
             self._on_error(error.code, error.detail)
         else:
@@ -567,32 +448,26 @@ class _TrayApp(QObject):
         # 1. Stop hotkey listener (prevents new recordings).
         self._hotkey.stop()
 
-        # 2. Stop batch timer.
-        self._batch_timer.stop()
-
-        # 3. Cancel worker — no more chunks will be enqueued.
-        self._cancel_event.set()
-
-        # 4. Stop audio if recording (do not enqueue tail; exit = cancel).
-        try:
-            if self._recorder.is_recording:
-                self._recorder.stop()
-        except Exception:
-            pass
-        self._recording = False
-
-        # 5. Wait for worker to drain.
+        # 2. Cancel worker if running.
         if self._worker is not None:
+            self._cancel_event.set()
             self._worker.wait(5000)
             if self._worker.isRunning():
                 log.warning("Worker did not stop within 5s; terminating")
                 self._worker.terminate()
             self._worker = None
 
-        # 6. Save settings.
+        # 3. Stop audio if recording.
+        try:
+            if self._recorder.is_recording:
+                self._recorder.stop()
+        except Exception:
+            pass
+
+        # 4. Save settings.
         save_config(self._config)
 
-        # 7. Quit Qt.
+        # 5. Quit Qt.
         self._tray.hide()
         QApplication.instance().quit()
 
