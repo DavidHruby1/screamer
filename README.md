@@ -1,39 +1,178 @@
+
 # Screamer
 
-A Windows desktop dictation tool. Hold a hotkey, speak, and polished text appears wherever your cursor is. Lives in the system tray with a clean settings window. Open source, MIT licensed.
+Fast Windows dictation that types wherever your cursor is.
+
+Press a hotkey, speak, release - Screamer records your voice, sends it to a speech-to-text provider, optionally cleans up the result with an LLM, and types the final text into the active window.
+
+No browser tab. No copy-paste. Just talk and keep moving.
+
+## Install
+
+Download the latest release from the **Releases** page.
+
+Grab the versioned Windows zip:
+
+```text
+Screamer-vX.Y.Z-windows-x64.zip
+```
+
+Then:
+
+1. Extract the zip.
+2. Open the `Screamer` folder.
+3. Run `Screamer.exe`.
+4. Configure your provider in Settings.
+
+That's it.
+
+## What Screamer does
+
+- **Global hotkey dictation** - speak from anywhere on Windows.
+- **Hold-to-talk or toggle mode** - choose how recording should behave.
+- **Types into the focused app** - works in editors, browsers, chats, notes, docs, and more.
+- **OpenAI-compatible speech-to-text** - use OpenAI, Groq, or another compatible `/audio/transcriptions` endpoint.
+- **Optional AI cleanup** - fix punctuation, grammar, spelling, and capitalization after transcription.
+- **Fallback providers** - configure backup STT and LLM providers if the primary one fails.
+- **System tray app** - enable/disable, change hotkey, toggle rewrite, open settings, or exit from the tray.
+- **Microphone selection** - pick your input device and calibrate silence detection.
+- **Post-type key** - optionally press `Enter`, `Tab`, `Space`, or `Backspace` after typing.
+- **Windows startup support** - launch Screamer automatically when you log in.
+- **Secure API key storage** - API keys are stored locally with Windows DPAPI.
 
 ## How it works
 
-Press Scroll Lock (configurable), speak your sentence, release. Screamer records 16 kHz mono audio, sends it to a Whisper-compatible STT endpoint, optionally cleans up grammar and spelling via an LLM rewrite, and types the result into the active window. Toggle mode is also supported.
+```text
+Hotkey -> Record audio -> Transcribe -> Optional cleanup -> Type into active window
+```
+
+Screamer records 16 kHz mono WAV audio, sends it to your configured STT provider, optionally runs the text through an LLM cleanup step, then injects the final text with Windows `SendInput`.
 
 ## Setup
 
-```bash
-pip install -r requirements.txt
+On first launch, open **Settings** from the tray icon.
+
+You need at least one speech-to-text provider.
+
+Example OpenAI-compatible STT config:
+
+```text
+Base URL: https://api.openai.com/v1
+Model: whisper-1
+API key: your_api_key
 ```
 
-Configure your STT provider (Groq, OpenAI, or any OpenAI-compatible endpoint) via the settings dialog. API keys are stored encrypted with Windows DPAPI.
+For Groq or another provider, use their OpenAI-compatible base URL and model name.
 
-## Features
+The LLM rewrite step is optional. Leave it off if you want raw transcription.
 
-- Push-to-talk or toggle recording modes
-- Primary and fallback STT provider support
-- Optional AI rewrite for spelling and grammar
-- Persistent settings and secure key storage
-- Microphone device selection with auto-calibration
-- Post-type key support (Enter, Tab, Space, Backspace)
+## Settings
+
+### General
+
+- Recording mode: `Hold to talk` or `Toggle`
+- Hotkey selection
+- Post-type key
+- Start with Windows
+
+### STT
+
+- Primary speech-to-text provider
+- Optional fallback STT provider
+- Optional transcription language
+- Custom headers
+
+### LLM
+
+- Optional AI rewrite
+- Primary LLM provider
+- Optional fallback LLM provider
+- Editable system prompt
+- Custom headers
+
+### Audio
+
+- Input device selection
+- Silence threshold calibration
+
+## Hotkeys
+
+Available hotkey options:
+
+```text
+Ctrl+Alt+Space
+Ctrl+Shift+Space
+Ctrl+Alt+D
+Ctrl+Alt+S
+Ctrl+Alt+V
+Scroll Lock
+Pause
+```
+
+Default: `Ctrl+Alt+Space`
+
+## For developers
+
+Run from source:
+
+```bash
+pip install -r requirements.txt
+python -m src.main
+```
+
+Run tests:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Build dependencies:
+
+```bash
+pip install -r requirements-build.txt
+```
+
+Build the Windows executable:
+
+```bash
+python -m PyInstaller --noconfirm --clean screamer.spec
+```
 
 ## Releases
 
-Pushing a version tag builds the Windows executable and publishes a GitHub Release
-automatically (see `.github/workflows/release.yml`):
+Pushing a version tag builds and publishes a Windows release automatically:
 
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-The workflow runs the test suite, builds with PyInstaller, and attaches a
-`Screamer-v1.0.0-windows-x64.zip` (plus a `.sha256` checksum) to the release.
-Tags with a hyphen (e.g. `v1.0.0-rc1`) are published as pre-releases. Download the
-zip, extract it, and run `Screamer\Screamer.exe`.
+The release workflow:
+
+1. Installs dependencies.
+2. Runs the test suite.
+3. Builds Screamer with PyInstaller.
+4. Packages the app as:
+
+```text
+Screamer-v1.0.0-windows-x64.zip
+Screamer-v1.0.0-windows-x64.zip.sha256
+```
+
+Hyphenated tags like `v1.0.0-rc1` are published as pre-releases.
+
+## Platform
+
+Screamer is built for Windows.
+
+It depends on Windows-specific features including:
+
+- global hotkeys via `RegisterHotKey`
+- text injection via `SendInput`
+- tray integration
+- DPAPI key storage
+- startup registration through the current user Run key
+
+## License
+
+MIT
