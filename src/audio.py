@@ -95,42 +95,6 @@ def _clean_device_name(name: str) -> str:
     return name.removesuffix(" (Default input)").strip()
 
 
-def _frames_to_audio_data(frames: list[np.ndarray]) -> np.ndarray | None:
-    if not frames:
-        return None
-    return np.concatenate(frames, axis=0)
-
-
-def _audio_duration(audio_data: np.ndarray, sample_rate: int = SAMPLE_RATE) -> float:
-    return len(audio_data) / sample_rate
-
-
-def _audio_rms(audio_data: np.ndarray) -> float:
-    return float(np.sqrt(np.mean(audio_data.astype(np.float64) ** 2)))
-
-
-def _encode_wav(audio_data: np.ndarray, sample_rate: int = SAMPLE_RATE) -> bytes:
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        wf.writeframes(audio_data.tobytes())
-    return buf.getvalue()
-
-
-def _should_discard_audio(audio_data: np.ndarray, rms_threshold: float, label: str, sample_rate: int = SAMPLE_RATE) -> bool:
-    duration = _audio_duration(audio_data, sample_rate)
-    if duration < MIN_DURATION:
-        log.info("Audio %s too short (%.2fs); discarding", label, duration)
-        return True
-    rms = _audio_rms(audio_data)
-    if rms < rms_threshold:
-        log.info("Audio %s below RMS threshold (%.1f < %.1f); discarding", label, rms, rms_threshold)
-        return True
-    return False
-
-
 class AudioRecorder:
     def __init__(self, device_id: int | None = None, sample_rate: int = SAMPLE_RATE) -> None:
         self._device_id = device_id
@@ -200,30 +164,6 @@ class AudioRecorder:
         self._stream.start()
         log.info("Recording started (device=%s)", self._device_id)
 
-    def drain(self) -> bytes:
-        """Return frames accumulated since last drain as WAV bytes.
-
-        Returns empty bytes if no frames or audio is too short/silent.
-        The internal frame buffer is cleared so subsequent calls only
-        return newly captured audio.
-        """
-        with self._lock:
-            if not self._frames:
-                return b""
-            frames = self._frames
-            self._frames = []
-
-        audio_data = _frames_to_audio_data(frames)
-        if audio_data is None:
-            return b""
-
-        if _should_discard_audio(audio_data, self._rms_threshold, "chunk", self._sample_rate):
-            return b""
-
-        wav_bytes = _encode_wav(audio_data, self._sample_rate)
-        log.info("Chunk WAV encoded: %d bytes, %.2fs", len(wav_bytes), _audio_duration(audio_data, self._sample_rate))
-        return wav_bytes
-
     def stop(self) -> bytes:
         """Stop recording and return 16kHz mono int16 WAV bytes.
 
@@ -241,20 +181,32 @@ class AudioRecorder:
             raise ScreamerError(AppError.MIC_DISCONNECTED, str(e)) from e
         self._stream = None
 
+        duration = time.monotonic() - self._start_time
+        if duration < MIN_DURATION:
+            log.info("Recording too short (%.2fs); discarding", duration)
+            return b""
+
         with self._lock:
-            frames = self._frames
-            self._frames = []
+            if not self._frames:
+                log.info("No frames captured; discarding")
+                return b""
+            audio_data = np.concatenate(self._frames, axis=0)
 
-        audio_data = _frames_to_audio_data(frames)
-        if audio_data is None:
-            log.info("No frames captured; discarding")
+        rms = float(np.sqrt(np.mean(audio_data.astype(np.float64) ** 2)))
+        log.info("Recording stopped: %.2fs, RMS=%.1f, threshold=%.1f", duration, rms, self._rms_threshold)
+        if rms < self._rms_threshold:
+            log.info("Below RMS threshold; discarding")
             return b""
 
-        if _should_discard_audio(audio_data, self._rms_threshold, "tail", self._sample_rate):
-            return b""
-
-        wav_bytes = _encode_wav(audio_data, self._sample_rate)
-        log.info("Tail WAV encoded: %d bytes, %.2fs", len(wav_bytes), _audio_duration(audio_data, self._sample_rate))
+        # Encode as WAV in memory.
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(CHANNELS)
+            wf.setsampwidth(2)  # int16 = 2 bytes
+            wf.setframerate(self._sample_rate)
+            wf.writeframes(audio_data.tobytes())
+        wav_bytes = buf.getvalue()
+        log.info("WAV encoded: %d bytes", len(wav_bytes))
         return wav_bytes
 
 

@@ -8,11 +8,10 @@ No public exports. Nothing imports main.py.
 from __future__ import annotations
 
 import logging
-import queue
 import threading
 from typing import Any
 
-from PySide6.QtCore import QObject, QTimer, Signal, QThread
+from PySide6.QtCore import QObject, Signal, QThread
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -46,18 +45,16 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Streaming worker — transcribes chunks as they arrive, then rewrite + type.
+# Worker thread — runs the full pipeline off the Qt main thread.
 # ---------------------------------------------------------------------------
 
-_FINISH = object()
 
+class _WorkerThread(QThread):
+    """Daemon thread: transcribe → rewrite → type.
 
-class _StreamingWorker(QThread):
-    """Process WAV chunks from a queue sequentially.
-
-    enqueue(audio_wav) — add a chunk for transcription.
-    finish() — signal that no more chunks will arrive. The worker will
-    join accumulated text, run rewrite + injection, and emit succeeded.
+    Communicates results back to the Qt main thread via explicit signals.
+    Checks cancel_event before each blocking step.
+    Carries transcription warnings through to the final result.
     """
 
     succeeded = Signal(object)  # PipelineResult
@@ -66,61 +63,30 @@ class _StreamingWorker(QThread):
 
     def __init__(
         self,
+        audio_wav: bytes,
         config: AppConfig,
         cancel_event: threading.Event,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
+        self._audio_wav = audio_wav
         self._config = config
         self._cancel = cancel_event
-        self._queue: queue.Queue[bytes | object] = queue.Queue()
-
-    def enqueue(self, audio_wav: bytes) -> None:
-        self._queue.put(audio_wav)
-
-    def finish(self) -> None:
-        self._queue.put(_FINISH)
 
     def run(self) -> None:
-        parts: list[str] = []
-        all_warnings: list[AppError] = []
         try:
-            while True:
-                try:
-                    item = self._queue.get(timeout=0.5)
-                except queue.Empty:
-                    if self._cancel.is_set():
-                        self.cancelled.emit()
-                        return
-                    continue
+            if self._cancel.is_set():
+                self.cancelled.emit()
+                return
 
-                if item is _FINISH:
-                    break
-
-                if self._cancel.is_set():
-                    self.cancelled.emit()
-                    return
-
-                try:
-                    stt_result = transcribe(item, self._config)
-                    all_warnings.extend(stt_result.warnings)
-                    if stt_result.text:
-                        parts.append(stt_result.text)
-                except ScreamerError as e:
-                    if e.code is AppError.NO_SPEECH:
-                        continue
-                    raise
-
-            if not parts:
-                raise ScreamerError(AppError.NO_SPEECH)
-
-            full_text = " ".join(parts)
+            stt_result = transcribe(self._audio_wav, self._config)
+            all_warnings = list(stt_result.warnings)
 
             if self._cancel.is_set():
                 self.cancelled.emit()
                 return
 
-            result = rewrite(full_text, self._config)
+            result = rewrite(stt_result.text, self._config)
             all_warnings.extend(result.warnings)
 
             if self._cancel.is_set():
@@ -153,13 +119,10 @@ class _TrayApp(QObject):
         self._recorder = AudioRecorder()
         self._bridge = SignalBridge()
         self._cancel_event = threading.Event()
-        self._worker: _StreamingWorker | None = None
+        self._worker: _WorkerThread | None = None
         self._settings_dlg: SettingsDialog | None = None
         self._recording = False
         self._enabled = True
-
-        self._batch_timer = QTimer(self)
-        self._batch_timer.timeout.connect(self._flush_audio_batch)
 
         self._build_tray()
         self._build_hotkey()
@@ -312,75 +275,44 @@ class _TrayApp(QObject):
         self._tray.setToolTip(f"Screamer — {labels[state]}")
 
     # ------------------------------------------------------------------
-    # Batch timer — periodic flush from audio callback to worker queue
-    # ------------------------------------------------------------------
-
-    BATCH_INTERVAL_MS = 4000
-
-    def _flush_audio_batch(self) -> None:
-        if not self._recording or self._worker is None:
-            return
-        try:
-            audio_wav = self._recorder.drain()
-        except ScreamerError as e:
-            self._on_error(e.code, e.detail)
-            return
-        if audio_wav:
-            self._worker.enqueue(audio_wav)
-
-    # ------------------------------------------------------------------
     # Recording lifecycle
     # ------------------------------------------------------------------
 
     def _start_recording(self) -> None:
         """Begin a new recording session."""
-        self._cancel_event.clear()
-
+        self._apply_state(TrayState.RECORDING)
         device_id = resolve_device(self._config.audio_device_id, self._config.audio_device_name)
         self._recorder = AudioRecorder(device_id=device_id)
         self._recorder.rms_threshold = self._config.rms_threshold
-
-        worker = _StreamingWorker(self._config, self._cancel_event, self)
-        worker.succeeded.connect(self._on_worker_succeeded)
-        worker.failed.connect(self._on_worker_failed)
-        worker.cancelled.connect(self._on_worker_cancelled)
-        self._worker = worker
-
         try:
             self._recorder.start()
+            self._recording = True
         except ScreamerError as e:
-            self._worker = None
+            self._recording = False
             self._on_error(e.code)
-            return
-
-        worker.start()
-        self._batch_timer.start(self.BATCH_INTERVAL_MS)
-        self._recording = True
-        self._apply_state(TrayState.RECORDING)
 
     def _finalize_recording(self) -> None:
-        """Stop recording and signal the streaming worker to finish."""
+        """Stop recording and start the processing worker."""
         self._recording = False
-        self._batch_timer.stop()
         self._apply_state(TrayState.PROCESSING)
 
-        worker = self._worker
-
         try:
-            tail_wav = self._recorder.stop()
+            audio_wav = self._recorder.stop()
         except ScreamerError as e:
-            if worker is not None:
-                self._worker = None
-                self._cancel_event.set()
             self._on_error(e.code)
             self._apply_state(TrayState.IDLE)
             return
 
-        if tail_wav and worker is not None:
-            worker.enqueue(tail_wav)
+        if not audio_wav:
+            self._apply_state(TrayState.IDLE)
+            return
 
-        if worker is not None:
-            worker.finish()
+        self._cancel_event.clear()
+        self._worker = _WorkerThread(audio_wav, self._config, self._cancel_event, self)
+        self._worker.succeeded.connect(self._on_worker_succeeded)
+        self._worker.failed.connect(self._on_worker_failed)
+        self._worker.cancelled.connect(self._on_worker_cancelled)
+        self._worker.start()
 
     # ------------------------------------------------------------------
     # Hotkey callbacks (called from hotkey thread via SignalBridge → Qt main)
@@ -390,15 +322,14 @@ class _TrayApp(QObject):
         if not self._enabled:
             return
 
-        if self._recording:
-            # Toggle mode: second press → finalize and process.
-            self._finalize_recording()
-            return
-
         if self._worker is not None:
             return  # Already processing; ignore.
 
-        self._start_recording()
+        if self._recording:
+            # Toggle mode: second press → finalize and process.
+            self._finalize_recording()
+        else:
+            self._start_recording()
 
     def _on_hotkey_released(self) -> None:
         # Hold mode: release during recording → finalize and process.
@@ -417,14 +348,6 @@ class _TrayApp(QObject):
 
     def _on_worker_failed(self, error: Exception) -> None:
         self._worker = None
-        if self._recording:
-            self._recording = False
-            self._batch_timer.stop()
-            try:
-                if self._recorder.is_recording:
-                    self._recorder.stop()
-            except Exception:
-                pass
         if isinstance(error, ScreamerError):
             self._on_error(error.code, error.detail)
         else:
@@ -525,32 +448,26 @@ class _TrayApp(QObject):
         # 1. Stop hotkey listener (prevents new recordings).
         self._hotkey.stop()
 
-        # 2. Stop batch timer.
-        self._batch_timer.stop()
-
-        # 3. Cancel worker — no more chunks will be enqueued.
-        self._cancel_event.set()
-
-        # 4. Stop audio if recording (do not enqueue tail; exit = cancel).
-        try:
-            if self._recorder.is_recording:
-                self._recorder.stop()
-        except Exception:
-            pass
-        self._recording = False
-
-        # 5. Wait for worker to drain.
+        # 2. Cancel worker if running.
         if self._worker is not None:
+            self._cancel_event.set()
             self._worker.wait(5000)
             if self._worker.isRunning():
                 log.warning("Worker did not stop within 5s; terminating")
                 self._worker.terminate()
             self._worker = None
 
-        # 6. Save settings.
+        # 3. Stop audio if recording.
+        try:
+            if self._recorder.is_recording:
+                self._recorder.stop()
+        except Exception:
+            pass
+
+        # 4. Save settings.
         save_config(self._config)
 
-        # 7. Quit Qt.
+        # 5. Quit Qt.
         self._tray.hide()
         QApplication.instance().quit()
 
