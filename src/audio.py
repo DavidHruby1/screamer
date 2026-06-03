@@ -19,7 +19,7 @@ except (ImportError, OSError):
     sd = None  # type: ignore[assignment]
 
 from src.config import DEFAULT_RMS_THRESHOLD
-from src.utils import AppError, ScreamerError
+from src.utils import AppError, ScreamerError, log_duration
 
 log = logging.getLogger(__name__)
 
@@ -122,22 +122,22 @@ class AudioRecorder:
         """Record ambient noise and return a usable silence-gate threshold."""
         _require_sd()
         try:
-            log.info("Calibrating RMS threshold for %.1fs...", duration)
-            recording = sd.rec(
-                int(duration * self._sample_rate),
-                samplerate=self._sample_rate,
-                channels=CHANNELS,
-                dtype=DTYPE,
-                device=self._device_id,
-            )
-            sd.wait()
-            noise_floor = float(np.sqrt(np.mean(recording.astype(np.float64) ** 2)))
-            threshold = noise_floor * 2.0
-            if threshold < DEFAULT_RMS_THRESHOLD:
-                threshold = DEFAULT_RMS_THRESHOLD
-            self._rms_threshold = threshold
-            log.info("Calibration done: noise_floor=%.1f, threshold=%.1f", noise_floor, threshold)
-            return threshold
+            with log_duration(log, f"Calibration for {duration:.1f}s"):
+                recording = sd.rec(
+                    int(duration * self._sample_rate),
+                    samplerate=self._sample_rate,
+                    channels=CHANNELS,
+                    dtype=DTYPE,
+                    device=self._device_id,
+                )
+                sd.wait()
+                noise_floor = float(np.sqrt(np.mean(recording.astype(np.float64) ** 2)))
+                threshold = noise_floor * 2.0
+                if threshold < DEFAULT_RMS_THRESHOLD:
+                    threshold = DEFAULT_RMS_THRESHOLD
+                self._rms_threshold = threshold
+                log.info("Calibration done: noise_floor=%.1f, threshold=%.1f", noise_floor, threshold)
+                return threshold
         except Exception as e:
             log.warning("Calibration failed: %s; using fallback %.1f", e, DEFAULT_RMS_THRESHOLD)
             self._rms_threshold = DEFAULT_RMS_THRESHOLD

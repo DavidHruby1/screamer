@@ -6,7 +6,7 @@ import logging
 import platform
 import time
 
-from src.utils import AppError, ScreamerError
+from src.utils import AppError, ScreamerError, log_duration
 
 log = logging.getLogger(__name__)
 
@@ -111,21 +111,22 @@ def type_text(text: str, post_key: str | None = None) -> None:
         return [chr(int.from_bytes(encoded[i : i + 2], "little")) for i in range(0, len(encoded), 2)]
 
     try:
-        log.info("Typing %d characters", len(text))
-        for ch in _utf16_units(text):
-            _send_unicode(ch)
-            _send_unicode(ch, key_up=True)
+        with log_duration(log, f"Text injection ({len(text)} chars)"):
+            log.info("Typing %d characters", len(text))
+            for ch in _utf16_units(text):
+                _send_unicode(ch)
+                _send_unicode(ch, key_up=True)
 
-        # Post-type key with 0.05s delay.
-        if post_key and post_key != "none":
-            vk = _POST_KEY_VK.get(post_key.lower())
-            if vk is not None:
-                time.sleep(0.05)
-                _send_vk(vk)
-                _send_vk(vk, key_up=True)
-                log.info("Post-type key pressed: %s", post_key)
-            else:
-                log.warning("Unknown post-type key: %s", post_key)
+            # Post-type key with 0.05s delay.
+            if post_key and post_key != "none":
+                vk = _POST_KEY_VK.get(post_key.lower())
+                if vk is not None:
+                    time.sleep(0.05)
+                    _send_vk(vk)
+                    _send_vk(vk, key_up=True)
+                    log.info("Post-type key pressed: %s", post_key)
+                else:
+                    log.warning("Unknown post-type key: %s", post_key)
 
     except ScreamerError:
         raise

@@ -43,7 +43,7 @@ from src.config import (
     save_config,
     validate_config,
 )
-from src.utils import APP_NAME
+from src.utils import APP_NAME, log_duration
 from src.startup import is_supported
 
 log = logging.getLogger(__name__)
@@ -462,26 +462,29 @@ class SettingsDialog(QDialog):
 
     def _on_import_env(self) -> None:
         """Import .env into the working copy (empty fields only)."""
-        self._collect()
-        self._working = import_from_env(self._working)
-        self._populate(self._working)
-        log.info("Imported .env values into settings")
+        with log_duration(log, "Settings import from .env"):
+            self._collect()
+            self._working = import_from_env(self._working)
+            self._populate(self._working)
+            log.info("Imported .env values into settings")
 
     def _on_reset(self) -> None:
         """Reset all fields to defaults."""
-        self._working = reset_config()
-        self._populate(self._working)
-        log.info("Settings reset to defaults")
+        with log_duration(log, "Settings reset to defaults"):
+            self._working = reset_config()
+            self._populate(self._working)
+            log.info("Settings reset to defaults")
 
     def _on_apply(self) -> None:
         """Apply: collect and persist without closing."""
-        self._collect()
-        if not self._show_validation_issue():
-            return
-        if not self._sync_startup_or_warn():
-            return
-        save_config(self._working)
-        log.info("Settings applied")
+        with log_duration(log, "Settings apply"):
+            self._collect()
+            if not self._show_validation_issue():
+                return
+            if not self._sync_startup_or_warn():
+                return
+            save_config(self._working)
+            log.info("Settings applied")
 
     # ------------------------------------------------------------------
     # Overrides
