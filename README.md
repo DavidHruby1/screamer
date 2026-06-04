@@ -34,6 +34,7 @@ That's it.
 - **OpenAI-compatible speech-to-text** - use OpenAI, Groq, or another compatible `/audio/transcriptions` endpoint.
 - **Optional AI cleanup** - fix punctuation, grammar, spelling, and capitalization after transcription.
 - **Fallback providers** - configure backup STT and LLM providers if the primary one fails.
+- **On-screen recording indicator** - a small pulsing pill appears at the bottom-center of the screen while recording and processing.
 - **System tray app** - enable/disable, change hotkey, toggle rewrite, open settings, or exit from the tray.
 - **Microphone selection** - pick your input device and calibrate silence detection.
 - **Post-type key** - optionally press `Enter`, `Tab`, `Space`, or `Backspace` after typing.

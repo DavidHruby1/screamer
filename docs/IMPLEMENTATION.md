@@ -246,6 +246,23 @@ def get_icon_bytes(state: TrayState) -> bytes: ...
     """Raw PNG bytes for testing without Qt."""
 ```
 
+### snackbar.py
+
+```python
+def snackbar_content_for(state_value: str) -> tuple[str, tuple[int, int, int]] | None: ...
+    """Map a TrayState value to (label, dot_rgb); None for idle/unknown (hidden)."""
+
+def bottom_center_xy(available: QRect, size: QSize, margin: int = 48) -> QPoint: ...
+    """Top-left point centering *size* horizontally in *available*, *margin* above bottom."""
+
+class RecordingSnackbar(QWidget):
+    """Frameless, always-on-top, translucent, click-through status pill at the
+    bottom-center of the primary screen. Pulsing dot + label.
+    Never takes focus or appears in the taskbar."""
+    def show_state(self, label: str, dot_rgb: tuple[int, int, int]) -> None: ...
+    def hide_state(self) -> None: ...
+```
+
 ### settings_dialog.py
 
 ```python
