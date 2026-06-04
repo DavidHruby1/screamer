@@ -232,7 +232,7 @@ class ConfigValidationIssue:
 
 @dataclass
 class AppConfig:
-    hotkey: str = "ctrl_alt_space"
+    hotkey: str = "ctrl+alt+key:0x20"
     recording_mode: str = "hold"  # "hold" | "toggle"
     post_type_key: str = "none"  # "none" | "enter" | "tab" | "space" | "backspace"
     start_with_windows: bool = False
@@ -467,8 +467,11 @@ def load_config() -> AppConfig:
             setattr(cfg, key, val)
 
     _load_secrets(cfg)
-    if cfg.hotkey not in HOTKEY_BINDINGS:
-        cfg.hotkey = "ctrl_alt_space"
+    parsed_hotkey = Hotkey.parse(cfg.hotkey)
+    if parsed_hotkey is None or parsed_hotkey.validate() is not None:
+        cfg.hotkey = "ctrl+alt+key:0x20"
+    else:
+        cfg.hotkey = parsed_hotkey.to_canonical()
     if cfg.post_type_key not in {key for key, _label in POST_KEY_OPTIONS}:
         cfg.post_type_key = "none"
     return cfg
@@ -506,8 +509,9 @@ def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]:
     """Return all startup/settings validation issues for the current config."""
     issues: list[ConfigValidationIssue] = []
 
-    if cfg.hotkey not in HOTKEY_BINDINGS:
-        issues.append(ConfigValidationIssue("Choose a supported global hotkey.", 0))
+    parsed_hotkey = Hotkey.parse(cfg.hotkey)
+    if parsed_hotkey is None or parsed_hotkey.validate() is not None:
+        issues.append(ConfigValidationIssue("Choose a valid global hotkey.", 0))
 
     stt = cfg.stt_provider()
     stt_fallback = cfg.stt_fallback_provider()
