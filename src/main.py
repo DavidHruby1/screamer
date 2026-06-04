@@ -33,6 +33,7 @@ from src.config import (
     save_config,
     validate_config,
 )
+from src import http_client
 from src.hotkey import HotkeyListener, HotkeyMode
 from src.icons import TrayState, get_icon_pixmap
 from src.injector import type_text
@@ -495,7 +496,13 @@ def main(argv: list[str] | None = None) -> None:
     tray_app = _TrayApp(startup_mode=args.startup)
     log.info("Screamer started")
 
-    app.exec()
+    try:
+        app.exec()
+    finally:
+        try:
+            http_client.close()
+        except Exception:
+            log.exception("HTTP client shutdown failed")
 
 
 if __name__ == "__main__":

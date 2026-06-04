@@ -8,6 +8,7 @@ import os
 import platform
 from dataclasses import dataclass, field, fields
 from logging.handlers import RotatingFileHandler
+from urllib.parse import urlsplit
 
 from src.utils import APP_DIR, APP_NAME, ScreamerError, AppError
 
@@ -92,6 +93,10 @@ class ProviderConfig:
     @property
     def is_complete(self) -> bool:
         return bool(self.api_key and self.base_url and self.model)
+
+    @property
+    def is_groq(self) -> bool:
+        return urlsplit(self.base_url).hostname == "api.groq.com"
 
 
 @dataclass(frozen=True)

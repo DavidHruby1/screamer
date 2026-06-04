@@ -62,7 +62,17 @@ Model: whisper-1
 API key: your_api_key
 ```
 
-For Groq or another provider, use their OpenAI-compatible base URL and model name.
+For Groq, prefer:
+
+```text
+Base URL: https://api.groq.com/openai/v1
+Model: whisper-large-v3-turbo
+Language: en
+```
+
+If accuracy matters more than speed, use `whisper-large-v3` instead.
+
+For another OpenAI-compatible provider, use its base URL and model name.
 
 The LLM rewrite step is optional. Leave it off if you want raw transcription.
 

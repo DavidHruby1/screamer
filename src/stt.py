@@ -1,11 +1,11 @@
-"""Speech-to-text via httpx: primary + fallback providers, verbose_json, no_speech_prob filter."""
+"""Speech-to-text via shared HTTP transport with Groq-aware request shaping."""
 
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 
-import httpx
-
+from src import http_client
 from src.config import AppConfig, ProviderConfig, parse_custom_headers
 from src.utils import AppError, PipelineResult, ScreamerError, log_duration
 
@@ -15,9 +15,9 @@ _NO_SPEECH_THRESHOLD = 0.7
 
 
 def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
-    """POST WAV to STT endpoint with verbose_json. Primary → fallback if enabled and primary fails.
+    """POST WAV to STT endpoint. Groq uses ``response_format=json``; others keep ``verbose_json``.
 
-    Filter: keep if ANY segment no_speech_prob < 0.7. All-above → ScreamerError(AppError.NO_SPEECH).
+    Filter: keep if ANY segment no_speech_prob < 0.7 for non-Groq providers. All-above → ScreamerError(AppError.NO_SPEECH).
     HTTP/network errors → ScreamerError(AppError.STT_FAILED).
     Fallback success → PipelineResult with AppError.STT_FALLBACK_USED in warnings.
 
@@ -34,7 +34,7 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
 
         for is_fallback, provider, language in (
             (False, primary, config.stt_language),
-            (True, fallback.provider, ""),
+            (True, fallback.provider, config.stt_language),
         ):
             if is_fallback and not fallback.enabled:
                 continue
@@ -67,6 +67,7 @@ def _call_stt(
         return None
 
     url = provider.base_url.rstrip("/") + "/audio/transcriptions"
+    response_format = "json" if provider.is_groq else "verbose_json"
 
     headers: dict[str, str] = {"Authorization": f"Bearer {provider.api_key}"}
     try:
@@ -74,33 +75,53 @@ def _call_stt(
     except ValueError as e:
         log.warning("Invalid custom headers; ignoring: %s", e)
 
-    data: dict[str, str] = {"model": provider.model, "response_format": "verbose_json"}
+    data: dict[str, str] = {"model": provider.model, "response_format": response_format}
     if language:
         data["language"] = language
 
     files = {"file": ("recording.wav", audio_wav, "audio/wav")}
 
-    with log_duration(log, f"STT request ({provider.model})"):
-        log.info("STT request: url=%s model=%s", url, provider.model)
-        resp = httpx.post(url, headers=headers, data=data, files=files, timeout=60.0)
-        resp.raise_for_status()
+    log.info(
+        "STT request: url=%s model=%s response_format=%s language=%s bytes=%d",
+        url,
+        provider.model,
+        response_format,
+        language or "auto",
+        len(audio_wav),
+    )
+    request_started = perf_counter()
+    resp = http_client.post(url, headers=headers, data=data, files=files, timeout=60.0)
+    request_elapsed = perf_counter() - request_started
 
-        result = resp.json()
-        segments = result.get("segments", [])
+    log.info(
+        "STT response: status=%s model=%s response_format=%s language=%s bytes=%d elapsed=%.3fs x_groq_region=%s cf_ray=%s",
+        resp.status_code,
+        provider.model,
+        response_format,
+        language or "auto",
+        len(audio_wav),
+        request_elapsed,
+        resp.headers.get("x-groq-region") or "-",
+        resp.headers.get("cf-ray") or "-",
+    )
+    resp.raise_for_status()
 
-        # Filter: keep if ANY segment has no_speech_prob < threshold.
-        if segments:
-            has_speech = any(seg.get("no_speech_prob", 0.0) < _NO_SPEECH_THRESHOLD for seg in segments)
-            if not has_speech:
-                log.debug("All segments above no_speech_prob threshold; filtering out")
-                raise ScreamerError(AppError.NO_SPEECH)
+    result = resp.json()
+    segments = result.get("segments", [])
 
-        text = (result.get("text") or "").strip()
-        if not text:
+    # Filter: keep if ANY segment has no_speech_prob < threshold.
+    if segments and not provider.is_groq:
+        has_speech = any(seg.get("no_speech_prob", 0.0) < _NO_SPEECH_THRESHOLD for seg in segments)
+        if not has_speech:
+            log.debug("All segments above no_speech_prob threshold; filtering out")
             raise ScreamerError(AppError.NO_SPEECH)
 
-        log.debug("STT result: %s", text[:80])
-        return text
+    text = (result.get("text") or "").strip()
+    if not text:
+        raise ScreamerError(AppError.NO_SPEECH)
+
+    log.debug("STT result: %s", text[:80])
+    return text
 
 
 # ---------------------------------------------------------------------------

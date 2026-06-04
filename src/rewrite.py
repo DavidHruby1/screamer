@@ -1,11 +1,11 @@
-"""LLM rewrite via httpx: primary + fallback providers, prompt template with system prompt."""
+"""LLM rewrite via shared HTTP transport: primary + fallback providers, prompt template with system prompt."""
 
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 
-import httpx
-
+from src import http_client
 from src.config import AppConfig, ProviderConfig, parse_custom_headers
 from src.utils import AppError, PipelineResult, ScreamerError, log_duration
 
@@ -70,7 +70,7 @@ def _call_llm(
     except ValueError as e:
         log.warning("Invalid custom headers; ignoring: %s", e)
 
-    body = {
+    body: dict[str, object] = {
         "model": provider.model,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -78,15 +78,61 @@ def _call_llm(
         ],
         "temperature": 0.0,
     }
+    output_cap = _groq_completion_cap(user_text) if provider.is_groq else None
+    if output_cap is not None:
+        body["max_completion_tokens"] = output_cap
 
-    with log_duration(log, f"LLM request ({provider.model})"):
-        log.info("LLM request: url=%s model=%s", url, provider.model)
-        resp = httpx.post(url, headers=headers, json=body, timeout=30.0)
-        resp.raise_for_status()
+    log.info(
+        "LLM request: url=%s model=%s input_chars=%d output_cap=%s",
+        url,
+        provider.model,
+        len(user_text),
+        output_cap if output_cap is not None else "none",
+    )
+    request_started = perf_counter()
+    resp = http_client.post(url, headers=headers, json=body, timeout=30.0)
+    request_elapsed = perf_counter() - request_started
 
-        data = resp.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        return content.strip() if content else None
+    log.info(
+        "LLM response: status=%s model=%s input_chars=%d output_cap=%s elapsed=%.3fs x_groq_region=%s cf_ray=%s",
+        resp.status_code,
+        provider.model,
+        len(user_text),
+        output_cap if output_cap is not None else "none",
+        request_elapsed,
+        resp.headers.get("x-groq-region") or "-",
+        resp.headers.get("cf-ray") or "-",
+    )
+
+    resp.raise_for_status()
+
+    data = resp.json()
+    choices = data.get("choices") or [{}]
+    finish_reason = choices[0].get("finish_reason")
+    log.info(
+        "LLM response detail: model=%s input_chars=%d output_cap=%s finish_reason=%s elapsed=%.3fs x_groq_region=%s cf_ray=%s",
+        provider.model,
+        len(user_text),
+        output_cap if output_cap is not None else "none",
+        finish_reason or "-",
+        request_elapsed,
+        resp.headers.get("x-groq-region") or "-",
+        resp.headers.get("cf-ray") or "-",
+    )
+
+    # Treat any truncated completion as unusable; partial rewrites are worse than no rewrite.
+    if finish_reason == "length":
+        log.warning("LLM rewrite stopped at length; leaving text unchanged")
+        return None
+
+    content = choices[0].get("message", {}).get("content", "")
+    return content.strip() if content else None
+
+
+def _groq_completion_cap(user_text: str) -> int:
+    estimated_input_tokens = max(1, len(user_text) // 4)
+    cap = int(estimated_input_tokens * 1.5) + 32
+    return max(128, min(1024, cap))
 
 
 # ---------------------------------------------------------------------------
