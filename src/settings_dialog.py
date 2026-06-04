@@ -677,9 +677,11 @@ class HotkeyCaptureEdit(QLineEdit):
         self.setText("press keys or a mouse button…")
         self.setFocus(Qt.OtherFocusReason)
         self.grabKeyboard()
+        self.grabMouse()
 
     def stop_recording(self) -> None:
         self._recording = False
+        self.releaseMouse()
         self.releaseKeyboard()
 
     def show_hotkey(self, hotkey: Hotkey) -> None:
