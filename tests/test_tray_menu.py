@@ -124,13 +124,13 @@ class TrayMenuTests(unittest.TestCase):
         tray_app._restart_hotkey = lambda: restarts.append("restarted")
 
         with patch("src.main.save_config"):
-            tray_app._set_hotkey("ctrl_alt_space")
+            tray_app._set_hotkey("ctrl+alt+key:0x20")
             self.assertEqual(rebuilds, ["rebuilt"])
             self.assertEqual(restarts, ["restarted"])
 
             rebuilds.clear()
             restarts.clear()
-            tray_app._set_hotkey("ctrl_shift_space", rebuild_menu=False)
+            tray_app._set_hotkey("ctrl+shift+key:0x20", rebuild_menu=False)
             self.assertEqual(rebuilds, [])
             self.assertEqual(restarts, ["restarted"])
 

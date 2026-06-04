@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.config import AppConfig, import_from_env, parse_custom_headers, validate_config
+from src.config import AppConfig, ProviderConfig, import_from_env, parse_custom_headers, validate_config
 
 
 class ConfigValidationTests(unittest.TestCase):
@@ -53,6 +53,10 @@ class ConfigValidationTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             parse_custom_headers(json.dumps(["not", "an", "object"]))
+
+    def test_provider_config_detects_groq_by_host(self) -> None:
+        self.assertTrue(ProviderConfig(base_url="https://api.groq.com/openai/v1").is_groq)
+        self.assertFalse(ProviderConfig(base_url="https://api.openai.com/v1").is_groq)
 
     def test_import_from_env_backfills_empty_fields_only(self) -> None:
         cwd = os.getcwd()

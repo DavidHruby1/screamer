@@ -457,14 +457,14 @@ Primary STT configuration:
 
 - `STT_API_KEY`, default empty.
 - `STT_BASE_URL`, default `https://api.groq.com/openai/v1`.
-- `STT_MODEL`, default `whisper-large-v3`.
+- `STT_MODEL`, typically `whisper-large-v3-turbo` for Groq.
 - `STT_HEADERS`, default empty.
 
 Fallback STT configuration:
 
 - `STT_FALLBACK_API_KEY`, default empty.
 - `STT_FALLBACK_BASE_URL`, default `https://api.groq.com/openai/v1`.
-- `STT_FALLBACK_MODEL`, default `whisper-large-v3`.
+- `STT_FALLBACK_MODEL`, typically `whisper-large-v3` for quality fallback.
 - `STT_FALLBACK_HEADERS`, default empty.
 
 Language configuration:
@@ -478,7 +478,7 @@ The fork overview recommends changing the preferred model defaults to:
 - Default primary: `whisper-large-v3-turbo`
 - Quality fallback: `whisper-large-v3`
 
-The current code still defaults to `whisper-large-v3` for both primary and fallback.
+The current code leaves STT model choice to the user.
 
 ### LLM Rewrite Configuration
 

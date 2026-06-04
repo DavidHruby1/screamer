@@ -28,16 +28,19 @@ from src.config import (
     HOTKEY_OPTIONS,
     POST_KEY_OPTIONS,
     AppConfig,
+    Hotkey,
     import_from_env,
     load_config,
     save_config,
     validate_config,
 )
+from src import http_client
 from src.hotkey import HotkeyListener, HotkeyMode
 from src.icons import TrayState, get_icon_pixmap
 from src.injector import type_text
 from src.rewrite import rewrite
 from src.settings_dialog import SettingsDialog
+from src.snackbar import RecordingSnackbar, snackbar_content_for
 from src.stt import transcribe
 from src.utils import AppError, PipelineResult, ScreamerError, SignalBridge
 
@@ -123,6 +126,8 @@ class _TrayApp(QObject):
         self._settings_dlg: SettingsDialog | None = None
         self._recording = False
         self._enabled = True
+
+        self._snackbar = RecordingSnackbar()
 
         self._build_tray()
         self._build_hotkey()
@@ -248,7 +253,8 @@ class _TrayApp(QObject):
     def _make_listener(self) -> None:
         """Create and start a HotkeyListener from current config, storing it on self."""
         mode = HotkeyMode.TOGGLE if self._config.recording_mode == "toggle" else HotkeyMode.HOLD
-        self._hotkey = HotkeyListener(self._config.hotkey, mode, self._bridge)
+        hotkey = Hotkey.parse(self._config.hotkey) or Hotkey(frozenset({"ctrl", "alt"}), "key", 0x20)
+        self._hotkey = HotkeyListener(hotkey, mode, self._bridge)
         self._hotkey.start()
 
     def _build_hotkey(self) -> None:
@@ -273,6 +279,12 @@ class _TrayApp(QObject):
             TrayState.PROCESSING: "Processing...",
         }
         self._tray.setToolTip(f"Screamer — {labels[state]}")
+
+        content = snackbar_content_for(state.value)
+        if content is None:
+            self._snackbar.hide_state()
+        else:
+            self._snackbar.show_state(*content)
 
     # ------------------------------------------------------------------
     # Recording lifecycle
@@ -469,6 +481,7 @@ class _TrayApp(QObject):
 
         # 5. Quit Qt.
         self._tray.hide()
+        self._snackbar.hide_state()
         QApplication.instance().quit()
 
 
@@ -495,7 +508,13 @@ def main(argv: list[str] | None = None) -> None:
     tray_app = _TrayApp(startup_mode=args.startup)
     log.info("Screamer started")
 
-    app.exec()
+    try:
+        app.exec()
+    finally:
+        try:
+            http_client.close()
+        except Exception:
+            log.exception("HTTP client shutdown failed")
 
 
 if __name__ == "__main__":

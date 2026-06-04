@@ -53,7 +53,7 @@ This repo is a small but useful prototype for a Groq-based push-to-talk dictatio
 
 ## Best fork direction
 
-- Default STT model: `whisper-large-v3-turbo`.
+- Preferred Groq STT model: `whisper-large-v3-turbo`.
 - Quality fallback: `whisper-large-v3`.
 - Add persistent config, device selection, logging, and packaging first.
 - Then add VAD, better UX, and optional always-listening / streaming behavior.

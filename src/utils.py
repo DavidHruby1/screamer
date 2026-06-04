@@ -26,6 +26,8 @@ class AppError(Enum):
     NO_SPEECH = "No speech detected. Try speaking louder or closer."
     INJECTION_FAILED = "Could not type text. Focus may have changed."
     HOTKEY_CONFLICT = "Hotkey conflict. Choose a different hotkey."
+    HOTKEY_INVALID = "That key combination can't be used. Add a modifier or pick another key."
+    HOTKEY_HOOK_FAILED = "Could not install the global hotkey listener."
     UNSUPPORTED_PLATFORM = "This feature is only available on Windows."
     KEY_STORAGE_FAILED = "Could not save or load API keys securely."
     STARTUP_REGISTRATION_FAILED = "Could not update Windows startup setting."
