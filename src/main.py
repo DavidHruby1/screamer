@@ -39,6 +39,7 @@ from src.icons import TrayState, get_icon_pixmap
 from src.injector import type_text
 from src.rewrite import rewrite
 from src.settings_dialog import SettingsDialog
+from src.snackbar import RecordingSnackbar, snackbar_content_for
 from src.stt import transcribe
 from src.utils import AppError, PipelineResult, ScreamerError, SignalBridge
 
@@ -124,6 +125,8 @@ class _TrayApp(QObject):
         self._settings_dlg: SettingsDialog | None = None
         self._recording = False
         self._enabled = True
+
+        self._snackbar = RecordingSnackbar()
 
         self._build_tray()
         self._build_hotkey()
@@ -274,6 +277,12 @@ class _TrayApp(QObject):
             TrayState.PROCESSING: "Processing...",
         }
         self._tray.setToolTip(f"Screamer — {labels[state]}")
+
+        content = snackbar_content_for(state.value)
+        if content is None:
+            self._snackbar.hide_state()
+        else:
+            self._snackbar.show_state(*content)
 
     # ------------------------------------------------------------------
     # Recording lifecycle
@@ -470,6 +479,7 @@ class _TrayApp(QObject):
 
         # 5. Quit Qt.
         self._tray.hide()
+        self._snackbar.hide_state()
         QApplication.instance().quit()
 
 
