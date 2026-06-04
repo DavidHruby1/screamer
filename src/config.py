@@ -37,20 +37,16 @@ DEFAULT_LLM_SYSTEM_PROMPT: str = (
 
 DEFAULT_RMS_THRESHOLD = 5.0
 
-MOD_CONTROL = 0x0002
-MOD_ALT = 0x0001
-MOD_SHIFT = 0x0004
-MOD_NOREPEAT = 0x4000
-
-# App-level options shared by settings and tray menus.
+# App-level options shared by settings and tray menus. Values are canonical
+# Hotkey strings (see Hotkey.to_canonical); labels come from Hotkey.to_label.
 HOTKEY_OPTIONS: list[tuple[str, str]] = [
-    ("ctrl_alt_space", "Ctrl+Alt+Space"),
-    ("ctrl_shift_space", "Ctrl+Shift+Space"),
-    ("ctrl_alt_d", "Ctrl+Alt+D"),
-    ("ctrl_alt_s", "Ctrl+Alt+S"),
-    ("ctrl_alt_v", "Ctrl+Alt+V"),
-    ("scroll_lock", "Scroll Lock"),
-    ("pause", "Pause"),
+    ("ctrl+alt+key:0x20", "Ctrl+Alt+Space"),
+    ("ctrl+shift+key:0x20", "Ctrl+Shift+Space"),
+    ("ctrl+alt+key:0x44", "Ctrl+Alt+D"),
+    ("ctrl+alt+key:0x53", "Ctrl+Alt+S"),
+    ("ctrl+alt+key:0x56", "Ctrl+Alt+V"),
+    ("key:0x91", "Scroll Lock"),
+    ("key:0x13", "Pause"),
 ]
 
 POST_KEY_OPTIONS: list[tuple[str, str]] = [
@@ -62,21 +58,140 @@ POST_KEY_OPTIONS: list[tuple[str, str]] = [
 ]
 
 
-@dataclass(frozen=True)
-class HotkeyBinding:
-    modifiers: int
-    vk: int
+# Mouse trigger ids (our own discriminators, not Win32 constants).
+MOUSE_X1 = 1       # "back" side button (XBUTTON1)
+MOUSE_X2 = 2       # "forward" side button (XBUTTON2)
+MOUSE_MIDDLE = 3   # middle / wheel button
 
+_MOUSE_TOKEN_TO_CODE = {"x1": MOUSE_X1, "x2": MOUSE_X2, "middle": MOUSE_MIDDLE}
+_MOUSE_CODE_TO_TOKEN = {v: k for k, v in _MOUSE_TOKEN_TO_CODE.items()}
+_MOUSE_CODE_TO_LABEL = {MOUSE_X1: "Mouse Back", MOUSE_X2: "Mouse Forward", MOUSE_MIDDLE: "Mouse Middle"}
 
-HOTKEY_BINDINGS: dict[str, HotkeyBinding] = {
-    "ctrl_alt_space": HotkeyBinding(MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 0x20),
-    "ctrl_shift_space": HotkeyBinding(MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 0x20),
-    "ctrl_alt_d": HotkeyBinding(MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 0x44),
-    "ctrl_alt_s": HotkeyBinding(MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 0x53),
-    "ctrl_alt_v": HotkeyBinding(MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 0x56),
-    "scroll_lock": HotkeyBinding(MOD_NOREPEAT, 0x91),
-    "pause": HotkeyBinding(MOD_NOREPEAT, 0x13),
+# Canonical modifier order for serialization/labels.
+_MOD_ORDER = ("ctrl", "alt", "shift", "win")
+_MOD_LABEL = {"ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "win": "Win"}
+
+# Win32 virtual-key codes that ARE modifiers (generic + L/R variants).
+# A trigger key may never be one of these.
+MODIFIER_VKS = frozenset({0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5})
+
+# Map a modifier VK (as reported by the LL keyboard hook) to its canonical name.
+MODIFIER_VK_TO_NAME = {
+    0x10: "shift", 0xA0: "shift", 0xA1: "shift",
+    0x11: "ctrl", 0xA2: "ctrl", 0xA3: "ctrl",
+    0x12: "alt", 0xA4: "alt", 0xA5: "alt",
+    0x5B: "win", 0x5C: "win",
 }
+
+# Keys safe to bind alone (won't eat normal typing / clicking).
+SAFE_STANDALONE_KEYS = frozenset(
+    set(range(0x70, 0x88))            # F1..F24
+    | {0x91,                          # Scroll Lock
+       0x13,                          # Pause
+       0x2D,                          # Insert
+       0x2C,                          # PrintScreen
+       0x5D,                          # Apps / Menu
+       0x90}                          # Num Lock
+)
+
+# Human-readable names for common VK codes (labels only).
+_VK_NAMES = {
+    0x08: "Backspace", 0x09: "Tab", 0x0D: "Enter", 0x13: "Pause",
+    0x1B: "Esc", 0x20: "Space", 0x21: "Page Up", 0x22: "Page Down",
+    0x23: "End", 0x24: "Home", 0x25: "Left", 0x26: "Up", 0x27: "Right",
+    0x28: "Down", 0x2C: "PrintScreen", 0x2D: "Insert", 0x2E: "Delete",
+    0x5D: "Menu", 0x90: "Num Lock", 0x91: "Scroll Lock",
+}
+_VK_NAMES.update({c: chr(c) for c in range(0x30, 0x3A)})          # 0-9
+_VK_NAMES.update({c: chr(c) for c in range(0x41, 0x5B)})          # A-Z
+_VK_NAMES.update({0x70 + i: f"F{i + 1}" for i in range(24)})      # F1..F24
+
+
+def _vk_label(vk: int) -> str:
+    return _VK_NAMES.get(vk, f"Key 0x{vk:02X}")
+
+
+# Legacy preset keys (pre-custom-hotkey format) -> (modifier string, VK code).
+_LEGACY_HOTKEYS = {
+    "ctrl_alt_space": ("ctrl+alt", 0x20),
+    "ctrl_shift_space": ("ctrl+shift", 0x20),
+    "ctrl_alt_d": ("ctrl+alt", 0x44),
+    "ctrl_alt_s": ("ctrl+alt", 0x53),
+    "ctrl_alt_v": ("ctrl+alt", 0x56),
+    "scroll_lock": ("", 0x91),
+    "pause": ("", 0x13),
+}
+
+
+@dataclass(frozen=True)
+class Hotkey:
+    """A push-to-talk binding: a set of modifiers + a single key or mouse trigger.
+
+    ``mods`` is a subset of {"ctrl","alt","shift","win"}. ``kind`` is "key" or
+    "mouse". ``code`` is a Win32 virtual-key code (kind="key") or one of the
+    ``MOUSE_*`` ids (kind="mouse").
+    """
+
+    mods: frozenset
+    kind: str
+    code: int
+
+    def to_canonical(self) -> str:
+        prefix = "".join(f"{m}+" for m in _MOD_ORDER if m in self.mods)
+        if self.kind == "mouse":
+            token = _MOUSE_CODE_TO_TOKEN.get(self.code, str(self.code))
+            return f"{prefix}mouse:{token}"
+        return f"{prefix}key:0x{self.code:02X}"
+
+    def to_label(self) -> str:
+        prefix = "".join(f"{_MOD_LABEL[m]}+" for m in _MOD_ORDER if m in self.mods)
+        if self.kind == "mouse":
+            return prefix + _MOUSE_CODE_TO_LABEL.get(self.code, f"Mouse {self.code}")
+        return prefix + _vk_label(self.code)
+
+    def validate(self) -> str | None:
+        """Return an error message if this binding is unsafe, else None."""
+        if self.kind == "mouse":
+            if self.code not in _MOUSE_CODE_TO_TOKEN:
+                return "Only the side or middle mouse buttons can be used."
+            return None
+        if self.code in MODIFIER_VKS:
+            return "Pick a non-modifier key, then add Ctrl/Alt/Shift as modifiers."
+        if self.code in SAFE_STANDALONE_KEYS:
+            return None
+        if not self.mods:
+            return "Add a modifier (Ctrl/Alt/Shift) or choose a function key."
+        return None
+
+    @classmethod
+    def parse(cls, value: str) -> "Hotkey | None":
+        """Parse a canonical string or a legacy preset key. None if invalid."""
+        if not value:
+            return None
+        if value in _LEGACY_HOTKEYS:
+            mod_str, code = _LEGACY_HOTKEYS[value]
+            mods = frozenset(p for p in mod_str.split("+") if p)
+            return cls(mods, "key", code)
+
+        parts = value.split("+")
+        trigger = parts[-1]
+        mod_parts = parts[:-1]
+        if any(m not in _MOD_ORDER for m in mod_parts):
+            return None
+        mods = frozenset(mod_parts)
+
+        if trigger.startswith("mouse:"):
+            token = trigger[len("mouse:"):]
+            if token not in _MOUSE_TOKEN_TO_CODE:
+                return None
+            return cls(mods, "mouse", _MOUSE_TOKEN_TO_CODE[token])
+        if trigger.startswith("key:"):
+            try:
+                code = int(trigger[len("key:"):], 16)
+            except ValueError:
+                return None
+            return cls(mods, "key", code)
+        return None
 
 
 @dataclass(frozen=True)
