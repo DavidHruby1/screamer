@@ -79,13 +79,24 @@ DEFAULT_LLM_SYSTEM_PROMPT: str = (
 DEFAULT_RMS_THRESHOLD: float = 5.0
 
 ```python
-@dataclass(frozen=True)
-class HotkeyBinding:
-    modifiers: int
-    vk: int
+MOUSE_X1 = 1; MOUSE_X2 = 2; MOUSE_MIDDLE = 3   # mouse trigger ids
 
-HOTKEY_OPTIONS: list[tuple[str, str]]  # (key, display_label) pairs for combo hotkeys
-HOTKEY_BINDINGS: dict[str, HotkeyBinding]  # maps hotkey name → HotkeyBinding
+HOTKEY_OPTIONS: list[tuple[str, str]]  # (canonical_string, display_label) preset pairs
+SAFE_STANDALONE_KEYS: frozenset[int]   # VKs bindable without a modifier (F-keys, locks, etc.)
+MODIFIER_VK_TO_NAME: dict[int, str]    # LL-hook modifier VK → "ctrl"/"alt"/"shift"/"win"
+
+@dataclass(frozen=True)
+class Hotkey:
+    """Modifiers + a single key/mouse trigger. Serialized to one canonical string."""
+    mods: frozenset   # subset of {"ctrl","alt","shift","win"}
+    kind: str         # "key" | "mouse"
+    code: int         # Win32 VK (kind="key") or a MOUSE_* id (kind="mouse")
+
+    def to_canonical(self) -> str: ...   # "ctrl+alt+key:0x20", "ctrl+mouse:x1", "key:0x91"
+    def to_label(self) -> str: ...       # "Ctrl+Alt+Space", "Mouse Back"
+    def validate(self) -> str | None: ...  # error message if unsafe, else None
+    @classmethod
+    def parse(cls, value: str) -> "Hotkey | None": ...  # canonical OR legacy preset key
 
 @dataclass(frozen=True)
 class ProviderConfig:
@@ -106,7 +117,7 @@ class ConfigValidationIssue:
 
 @dataclass
 class AppConfig:
-    hotkey: str = "ctrl_alt_space"
+    hotkey: str = "ctrl+alt+key:0x20"     # canonical Hotkey string (see Hotkey.parse)
     recording_mode: str = "hold"          # "hold" | "toggle"
     post_type_key: str = "none"           # "none" | "enter" | "tab" | "space" | "backspace"
     start_with_windows: bool = False
@@ -198,13 +209,17 @@ class HotkeyMode(Enum):
     HOLD = "hold"; TOGGLE = "toggle"
 
 class HotkeyListener:
-    def __init__(self, key: str, mode: HotkeyMode, bridge: SignalBridge): ...
+    def __init__(self, hotkey: Hotkey, mode: HotkeyMode, bridge: SignalBridge): ...
     def start(self) -> None: ...
-        """Create message-only window, RegisterHotKey, GetMessage pump in daemon thread.
-        Emits bridge.hotkey_pressed / bridge.hotkey_released."""
+        """Install WH_KEYBOARD_LL + WH_MOUSE_LL global hooks + GetMessage pump in a daemon thread.
+        Matches modifiers + trigger, swallows the matched trigger event (returns 1 from the hook).
+        Emits bridge.hotkey_pressed / bridge.hotkey_released; SetWindowsHookEx failure →
+        bridge.error_occurred(AppError.HOTKEY_HOOK_FAILED)."""
     def stop(self) -> None: ...
-        """Post WM_QUIT, join thread, unregister hotkey."""
+        """PostThreadMessage WM_QUIT, join thread, unhook both hooks."""
     def set_mode(self, mode: HotkeyMode) -> None: ...
+    # Pure, OS-independent matching core (unit-tested without Win32):
+    #   _on_kb_event(wparam, vk) -> bool ; _on_mouse_event(wparam, mouse_data) -> bool
 ```
 
 ### stt.py
