@@ -107,7 +107,7 @@ The LLM rewrite step is optional. Leave it off if you want raw transcription.
 
 ## Hotkeys
 
-Available hotkey options:
+Quick-pick presets:
 
 ```text
 Ctrl+Alt+Space
@@ -120,6 +120,12 @@ Pause
 ```
 
 Default: `Ctrl+Alt+Space`
+
+Or set a **custom hotkey**: in Settings, click **Record** and press any key
+combination, a function key, or a mouse side/middle button. Bare everyday keys
+need a modifier (Ctrl/Alt/Shift); function keys, lock/pause keys, and mouse
+side/middle buttons may be bound on their own. The matched trigger is swallowed
+so it won't reach the app underneath.
 
 ## For developers
 
@@ -177,7 +183,7 @@ Screamer is built for Windows.
 
 It depends on Windows-specific features including:
 
-- global hotkeys via `RegisterHotKey`
+- global hotkeys (keyboard or mouse) via low-level hooks (`WH_KEYBOARD_LL`/`WH_MOUSE_LL`)
 - text injection via `SendInput`
 - tray integration
 - DPAPI key storage

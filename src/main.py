@@ -28,6 +28,7 @@ from src.config import (
     HOTKEY_OPTIONS,
     POST_KEY_OPTIONS,
     AppConfig,
+    Hotkey,
     import_from_env,
     load_config,
     save_config,
@@ -249,7 +250,8 @@ class _TrayApp(QObject):
     def _make_listener(self) -> None:
         """Create and start a HotkeyListener from current config, storing it on self."""
         mode = HotkeyMode.TOGGLE if self._config.recording_mode == "toggle" else HotkeyMode.HOLD
-        self._hotkey = HotkeyListener(self._config.hotkey, mode, self._bridge)
+        hotkey = Hotkey.parse(self._config.hotkey) or Hotkey(frozenset({"ctrl", "alt"}), "key", 0x20)
+        self._hotkey = HotkeyListener(hotkey, mode, self._bridge)
         self._hotkey.start()
 
     def _build_hotkey(self) -> None:

@@ -1,37 +1,33 @@
 import unittest
 
 from src.config import (
-    HOTKEY_BINDINGS,
     HOTKEY_OPTIONS,
-    MOD_ALT,
-    MOD_CONTROL,
-    MOD_NOREPEAT,
     POST_KEY_OPTIONS,
     AppConfig,
+    Hotkey,
 )
 
 
 class MappingTests(unittest.TestCase):
-    def test_hotkey_options_do_not_offer_bare_modifiers(self) -> None:
-        option_keys = {key for key, _label in HOTKEY_OPTIONS}
+    def test_default_hotkey_is_ctrl_alt_space(self) -> None:
+        self.assertEqual(AppConfig().hotkey, "ctrl+alt+key:0x20")
+        parsed = Hotkey.parse(AppConfig().hotkey)
+        self.assertEqual(parsed, Hotkey(frozenset({"ctrl", "alt"}), "key", 0x20))
 
-        self.assertNotIn("ctrl", option_keys)
-        self.assertNotIn("alt", option_keys)
-        self.assertNotIn("f13", option_keys)
-        self.assertNotIn("f14", option_keys)
+    def test_first_preset_is_ctrl_alt_space(self) -> None:
+        self.assertEqual(HOTKEY_OPTIONS[0], ("ctrl+alt+key:0x20", "Ctrl+Alt+Space"))
 
-    def test_default_hotkey_is_laptop_friendly(self) -> None:
-        self.assertEqual(AppConfig().hotkey, "ctrl_alt_space")
-        self.assertEqual(HOTKEY_OPTIONS[0], ("ctrl_alt_space", "Ctrl+Alt+Space"))
+    def test_all_presets_parse_validate_and_relabel(self) -> None:
+        for value, label in HOTKEY_OPTIONS:
+            hk = Hotkey.parse(value)
+            self.assertIsNotNone(hk, f"preset {value!r} must parse")
+            self.assertIsNone(hk.validate(), f"preset {value!r} must be valid")
+            self.assertEqual(hk.to_label(), label, f"preset {value!r} label mismatch")
 
-    def test_hotkey_options_have_bindings_with_no_repeat(self) -> None:
-        for key, _label in HOTKEY_OPTIONS:
-            self.assertIn(key, HOTKEY_BINDINGS)
-            self.assertTrue(HOTKEY_BINDINGS[key].modifiers & MOD_NOREPEAT)
-
-        default = HOTKEY_BINDINGS["ctrl_alt_space"]
-        self.assertTrue(default.modifiers & MOD_CONTROL)
-        self.assertTrue(default.modifiers & MOD_ALT)
+    def test_presets_do_not_offer_bare_modifiers(self) -> None:
+        for value, _label in HOTKEY_OPTIONS:
+            hk = Hotkey.parse(value)
+            self.assertNotIn(hk.code, (0x10, 0x11, 0x12), "no bare modifier presets")
 
     def test_post_key_options_include_none(self) -> None:
         self.assertIn(("none", "None"), POST_KEY_OPTIONS)
