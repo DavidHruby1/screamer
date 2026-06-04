@@ -1,4 +1,5 @@
 import os
+import platform
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -100,6 +101,36 @@ class MouseTests(unittest.TestCase):
         listener._on_kb_event(WM_KEYDOWN, VK_LCTRL)
         self.assertFalse(listener._on_mouse_event(0x0201, 0))  # WM_LBUTTONDOWN
         self.assertEqual(pressed, [])
+
+
+class LifecycleTests(unittest.TestCase):
+    def test_stop_without_start_is_safe(self):
+        hk = Hotkey(frozenset(), "key", 0x91)
+        listener, _p, _r = _listener(hk, HotkeyMode.HOLD)
+        # Must not raise or hang regardless of platform.
+        listener.stop()
+        self.assertIsNone(listener._thread)
+
+    @unittest.skipUnless(platform.system() == "Windows", "LL hooks require Windows")
+    def test_start_then_stop_exits_cleanly(self):
+        hk = Hotkey(frozenset(), "key", 0x91)  # Scroll Lock
+        listener, _p, _r = _listener(hk, HotkeyMode.HOLD)
+        listener.start()
+        self.assertTrue(listener._ready.is_set(), "start() must wait for readiness")
+        listener.stop()
+        self.assertIsNone(listener._thread, "thread reference cleared after clean exit")
+        self.assertEqual(listener._thread_id, 0)
+        self.assertIsNone(listener._kb_hook)
+        self.assertIsNone(listener._mouse_hook)
+
+    @unittest.skipUnless(platform.system() == "Windows", "LL hooks require Windows")
+    def test_repeated_start_stop(self):
+        hk = Hotkey(frozenset(), "key", 0x91)
+        listener, _p, _r = _listener(hk, HotkeyMode.HOLD)
+        for _ in range(3):
+            listener.start()
+            listener.stop()
+            self.assertIsNone(listener._thread)
 
 
 if __name__ == "__main__":

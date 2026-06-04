@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import platform
 import threading
+import time
 from enum import Enum
 
 from src.config import (
@@ -37,6 +38,7 @@ WM_XBUTTONUP = 0x020C
 WH_KEYBOARD_LL = 13
 WH_MOUSE_LL = 14
 HC_ACTION = 0
+PM_NOREMOVE = 0x0000
 
 _KEY_DOWN = frozenset({WM_KEYDOWN, WM_SYSKEYDOWN})
 _KEY_UP = frozenset({WM_KEYUP, WM_SYSKEYUP})
@@ -61,6 +63,7 @@ class HotkeyListener:
         self._thread: threading.Thread | None = None
         self._thread_id: int = 0
         self._stop_event = threading.Event()
+        self._ready = threading.Event()
         # Matching state.
         self._held: set[str] = set()
         self._armed = False
@@ -78,24 +81,51 @@ class HotkeyListener:
         if platform.system() != "Windows":
             raise ScreamerError(AppError.UNSUPPORTED_PLATFORM, "Low-level hooks require Windows")
         self._stop_event.clear()
+        self._ready.clear()
         self._held.clear()
         self._armed = False
         self._thread = threading.Thread(target=self._message_loop, daemon=True)
         self._thread.start()
+        # Block until the loop thread has created its message queue and attempted
+        # to install the hooks, so callers know the listener is live and so a
+        # subsequent stop() can reliably post WM_QUIT.
+        if not self._ready.wait(timeout=5.0):
+            log.warning("Hotkey listener did not signal readiness within 5s")
         log.info("HotkeyListener started: %s mode=%s", self._hotkey.to_canonical(), self._mode.value)
 
     def stop(self) -> None:
         if platform.system() != "Windows":
             return
         self._stop_event.set()
-        if self._thread_id:
-            import ctypes
-            ctypes.windll.user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
-        if self._thread is not None:
-            self._thread.join(timeout=5.0)
+        thread = self._thread
+        if thread is None:
+            self._thread_id = 0
+            return
+
+        # The loop thread sets _ready once its message queue exists; wait so the
+        # WM_QUIT below is delivered instead of dropped during a startup race.
+        self._ready.wait(timeout=5.0)
+
+        import ctypes
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        tid = self._thread_id
+        if tid:
+            # Retry until the post is accepted or the thread has exited.
+            for _ in range(100):
+                if not thread.is_alive():
+                    break
+                if user32.PostThreadMessageW(tid, WM_QUIT, 0, 0):
+                    break
+                time.sleep(0.02)
+
+        thread.join(timeout=5.0)
+        if thread.is_alive():
+            log.error("Hotkey thread did not exit; hooks may remain installed")
+        else:
             self._thread = None
-        self._thread_id = 0
-        log.info("HotkeyListener stopped")
+            self._thread_id = 0
+            log.info("HotkeyListener stopped")
 
     def set_mode(self, mode: HotkeyMode) -> None:
         self._mode = mode
@@ -224,9 +254,20 @@ class HotkeyListener:
         self._thread_id = kernel32.GetCurrentThreadId()
         hmod = kernel32.GetModuleHandleW(None)
 
+        # Force-create this thread's message queue up front so a racing stop()
+        # can deliver WM_QUIT via PostThreadMessageW even before the pump runs.
+        msg = ctypes.wintypes.MSG()
+        user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_NOREMOVE)
+
         self._kb_hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._kb_proc, hmod, 0)
         self._mouse_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, self._mouse_proc, hmod, 0)
-        if not self._kb_hook or not self._mouse_hook:
+        hooks_ok = bool(self._kb_hook and self._mouse_hook)
+
+        # Signal readiness once the queue exists and hooks were attempted, so
+        # start() can return and stop() can post WM_QUIT — even on failure.
+        self._ready.set()
+
+        if not hooks_ok:
             log.error("SetWindowsHookEx failed: kb=%s mouse=%s", self._kb_hook, self._mouse_hook)
             self._bridge.error_occurred.emit(AppError.HOTKEY_HOOK_FAILED)
             self._uninstall(user32)
@@ -234,7 +275,6 @@ class HotkeyListener:
 
         log.info("Hooks installed for %s", self._hotkey.to_canonical())
 
-        msg = ctypes.wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
@@ -266,6 +306,14 @@ def _declare_win32_functions(ctypes, user32, kernel32, hookproc, lresult) -> Non
     user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
     user32.GetMessageW.restype = wintypes.BOOL
     user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+    user32.PeekMessageW.restype = wintypes.BOOL
+    user32.PeekMessageW.argtypes = [
+        ctypes.POINTER(wintypes.MSG),
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.UINT,
+        wintypes.UINT,
+    ]
     user32.TranslateMessage.restype = wintypes.BOOL
     user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
     user32.DispatchMessageW.restype = lresult
