@@ -1,4 +1,4 @@
-pyside6-essentials>=6.5.0
+pyside6-essentials>=6.11.1
 sounddevice>=0.4.6
 numpy>=1.24.0
 httpx>=0.27.0
