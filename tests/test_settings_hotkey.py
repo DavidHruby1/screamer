@@ -71,18 +71,18 @@ class _SpyCapture(HotkeyCaptureEdit):
 
 
 class CaptureGrabTests(unittest.TestCase):
-    def test_start_recording_grabs_mouse_and_keyboard(self):
+    def test_start_recording_grabs_keyboard_without_mouse(self):
         edit = _SpyCapture()
         edit.start_recording()
         self.assertIn("grab_kb", edit.events)
-        self.assertIn("grab_mouse", edit.events)
+        self.assertNotIn("grab_mouse", edit.events)
 
-    def test_stop_recording_releases_mouse_and_keyboard(self):
+    def test_stop_recording_releases_keyboard_without_mouse(self):
         edit = _SpyCapture()
         edit.start_recording()
         edit.stop_recording()
-        self.assertIn("rel_mouse", edit.events)
         self.assertIn("rel_kb", edit.events)
+        self.assertNotIn("rel_mouse", edit.events)
 
     def test_side_button_press_emits_hotkey(self):
         edit = _SpyCapture()
