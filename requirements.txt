@@ -1,5 +1,5 @@
 pyside6-essentials>=6.5.0
-sounddevice>=0.4.6
+sounddevice>=0.5.5
 numpy>=1.24.0
 httpx>=0.27.0
 python-dotenv>=1.0
