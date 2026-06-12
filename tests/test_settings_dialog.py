@@ -1,5 +1,4 @@
 import os
-import time
 import unittest
 from unittest.mock import patch
 
@@ -7,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent
 from PySide6.QtGui import QFocusEvent
+from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication, QLineEdit
 
 from src.config import AppConfig
@@ -42,23 +42,31 @@ class AcceptValidationTests(unittest.TestCase):
 
 class CalibrateThreadTests(unittest.TestCase):
     def test_calibration_runs_off_ui_thread_and_updates_spin(self) -> None:
-        dlg = SettingsDialog(AppConfig(), devices=[], calibrate_fn=lambda device_id: 7.5)
+        import threading
+
+        release = threading.Event()
+
+        def calibrate(device_id):
+            release.wait(5)
+            return 7.5
+
+        dlg = SettingsDialog(AppConfig(), devices=[], calibrate_fn=calibrate)
         try:
             with patch("src.settings_dialog.QMessageBox"):
                 dlg._on_calibrate()
                 self.assertFalse(dlg._calibrate_btn.isEnabled())
                 thread = dlg._calib_thread
                 self.assertIsNotNone(thread)
-                self.assertTrue(thread.wait(5000))
-                for _ in range(50):
-                    QApplication.processEvents()
-                    if dlg._calib_thread is None:
-                        break
-                    time.sleep(0.01)
+                spy = QSignalSpy(thread.finished)
+                release.set()
+                # wait() spins an event loop, delivering the queued result
+                # slots and _on_calibrate_finished before returning.
+                self.assertTrue(spy.wait(5000))
             self.assertIsNone(dlg._calib_thread)
             self.assertEqual(dlg._rms_spin.value(), 7.5)
             self.assertTrue(dlg._calibrate_btn.isEnabled())
         finally:
+            release.set()
             dlg.deleteLater()
 
 
