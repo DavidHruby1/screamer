@@ -630,8 +630,11 @@ class SettingsDialog(QDialog):
 
     def done(self, result: int) -> None:
         self._stop_hotkey_recording()
-        if self._calib_thread is not None:
-            # Don't let a running calibration outlive its parent dialog.
+        if self._calib_thread is not None and self._calib_thread.isRunning():
+            # Don't let a running calibration outlive its parent dialog, and
+            # don't let late results land in slots of a closing dialog.
+            self._calib_thread.succeeded.disconnect(self._on_calibrate_succeeded)
+            self._calib_thread.failed.disconnect(self._on_calibrate_failed)
             self._calib_thread.wait(5000)
         super().done(result)
 

@@ -62,6 +62,30 @@ class CalibrateThreadTests(unittest.TestCase):
             dlg.deleteLater()
 
 
+    def test_close_during_calibration_drops_late_result(self) -> None:
+        import threading
+
+        release = threading.Event()
+
+        def slow_calibrate(device_id):
+            release.wait(5)
+            return 9.9
+
+        dlg = SettingsDialog(AppConfig(), devices=[], calibrate_fn=slow_calibrate)
+        try:
+            with patch("src.settings_dialog.QMessageBox"):
+                dlg._on_calibrate()
+                before = dlg._rms_spin.value()
+                # Release the worker shortly after done() starts waiting on it.
+                threading.Timer(0.05, release.set).start()
+                dlg.reject()
+            QApplication.processEvents()
+            self.assertEqual(dlg._rms_spin.value(), before)
+        finally:
+            release.set()
+            dlg.deleteLater()
+
+
 class PasswordFieldTests(unittest.TestCase):
     def test_stays_masked_on_focus(self) -> None:
         field = PasswordField()
