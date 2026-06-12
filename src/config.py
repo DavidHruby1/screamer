@@ -305,12 +305,17 @@ class AppConfig:
         )
 
 
-# Fields that contain secret API keys and must go through DPAPI.
+# Fields that contain secrets and must go through DPAPI: API keys, plus custom
+# headers (which routinely carry tokens such as X-Api-Key).
 _SECRET_FIELDS = frozenset({
     "stt_api_key",
     "stt_fallback_api_key",
     "llm_api_key",
     "llm_fallback_api_key",
+    "stt_custom_headers",
+    "stt_fallback_custom_headers",
+    "llm_custom_headers",
+    "llm_fallback_custom_headers",
 })
 
 # DPAPI entropy string bound to this application.
@@ -483,6 +488,9 @@ def save_config(cfg: AppConfig) -> None:
     settings = _get_qsettings()
     for f in fields(AppConfig):
         if f.name in _SECRET_FIELDS:
+            # Purge any plaintext value an older version left in the ini, so it
+            # cannot shadow the DPAPI-stored value on the next load.
+            settings.remove(f.name)
             continue
         settings.setValue(f.name, getattr(cfg, f.name))
     settings.sync()

@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import sys
 import tempfile
 import unittest
@@ -78,6 +79,49 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(imported.stt_api_key, "existing")
         self.assertEqual(imported.stt_base_url, "https://env.test/v1")
         self.assertEqual(imported.stt_model, "env-model")
+
+
+class SecretHeaderTests(unittest.TestCase):
+    def test_custom_headers_are_secret_fields(self) -> None:
+        from src.config import _SECRET_FIELDS
+
+        self.assertTrue(
+            {
+                "stt_custom_headers",
+                "stt_fallback_custom_headers",
+                "llm_custom_headers",
+                "llm_fallback_custom_headers",
+            }
+            <= _SECRET_FIELDS
+        )
+
+    @unittest.skipUnless(platform.system() == "Windows", "DPAPI requires Windows")
+    def test_save_config_keeps_headers_out_of_ini_and_roundtrips(self) -> None:
+        from src.config import load_config, save_config
+
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            cfg = AppConfig(stt_custom_headers='{"X-Token": "s3cret"}')
+            save_config(cfg)
+
+            ini = Path(tmp, "settings.ini").read_text(encoding="utf-8")
+            self.assertNotIn("s3cret", ini)
+
+            self.assertEqual(load_config().stt_custom_headers, '{"X-Token": "s3cret"}')
+
+    @unittest.skipUnless(platform.system() == "Windows", "DPAPI requires Windows")
+    def test_save_config_purges_stale_plaintext_headers(self) -> None:
+        from src.config import _get_qsettings, save_config
+
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            stale = _get_qsettings()
+            stale.setValue("llm_custom_headers", '{"X-Old": "plain"}')
+            stale.sync()
+            del stale
+
+            save_config(AppConfig())
+
+            ini = Path(tmp, "settings.ini").read_text(encoding="utf-8")
+            self.assertNotIn("X-Old", ini)
 
 
 class EnvPathTests(unittest.TestCase):
