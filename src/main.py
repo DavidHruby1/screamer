@@ -30,6 +30,7 @@ from src.config import (
     POST_KEY_OPTIONS,
     AppConfig,
     Hotkey,
+    has_plaintext_secrets,
     import_from_env,
     load_config,
     save_config,
@@ -118,7 +119,9 @@ class _TrayApp(QObject):
 
         self._config = load_config()
         imported = import_from_env(copy.deepcopy(self._config))
-        if imported != self._config:
+        if imported != self._config or has_plaintext_secrets():
+            # Save when .env added values, or to purge plaintext secrets an
+            # older version left in settings.ini (save_config removes them).
             self._config = imported
             save_config(self._config)
 

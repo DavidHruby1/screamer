@@ -34,6 +34,7 @@ class TrayMenuTests(unittest.TestCase):
             patch.object(_TrayApp, "_build_tray"),
             patch.object(_TrayApp, "_build_hotkey"),
             patch.object(_TrayApp, "_apply_state"),
+            patch("src.main.has_plaintext_secrets", return_value=False),
             patch.object(_TrayApp, "_open_settings"),
         ]
 
@@ -61,6 +62,7 @@ class TrayMenuTests(unittest.TestCase):
             patch.object(_TrayApp, "_build_hotkey"),
             patch.object(_TrayApp, "_apply_state"),
             patch.object(_TrayApp, "_open_settings"),
+            patch("src.main.has_plaintext_secrets", return_value=False),
         ]
 
     def test_startup_save_skipped_when_env_adds_nothing(self):
@@ -80,6 +82,18 @@ class TrayMenuTests(unittest.TestCase):
             return cfg
 
         patches = self._startup_patches(fake_import)
+        started = [p.start() for p in patches]
+        try:
+            _TrayApp(startup_mode=True)
+            save_config_mock = started[2]
+            save_config_mock.assert_called_once()
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
+    def test_startup_save_runs_when_plaintext_secrets_linger(self):
+        patches = self._startup_patches(lambda cfg: cfg)
+        patches[-1] = patch("src.main.has_plaintext_secrets", return_value=True)
         started = [p.start() for p in patches]
         try:
             _TrayApp(startup_mode=True)
