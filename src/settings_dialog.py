@@ -11,7 +11,7 @@ import logging
 from typing import Callable
 
 from PySide6.QtCore import QCoreApplication, QEvent, Qt, Signal
-from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtGui import QAction, QIcon, QKeyEvent, QMouseEvent, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -57,20 +57,33 @@ log = logging.getLogger(__name__)
 DeviceItem = tuple[int, str]
 
 
+def _eye_icon() -> QIcon:
+    """Small glyph for the show/hide toggle (the project ships no icon assets)."""
+    pixmap = QPixmap(16, 16)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "\N{EYE}")
+    painter.end()
+    return QIcon(pixmap)
+
+
 class PasswordField(QLineEdit):
-    """Password line edit that reveals text only while focused."""
+    """Masked line edit with an explicit trailing show/hide toggle.
+
+    Stays masked on focus; the secret is only revealed while the toggle is on.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.setEchoMode(QLineEdit.EchoMode.Password)
+        reveal = QAction(_eye_icon(), "Show", self)
+        reveal.setCheckable(True)
+        reveal.setToolTip("Show/hide value")
+        reveal.toggled.connect(self._on_reveal_toggled)
+        self.addAction(reveal, QLineEdit.ActionPosition.TrailingPosition)
 
-    def focusInEvent(self, event) -> None:
-        self.setEchoMode(QLineEdit.EchoMode.Normal)
-        super().focusInEvent(event)
-
-    def focusOutEvent(self, event) -> None:
-        self.setEchoMode(QLineEdit.EchoMode.Password)
-        super().focusOutEvent(event)
+    def _on_reveal_toggled(self, checked: bool) -> None:
+        self.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password)
 
 
 class SettingsDialog(QDialog):

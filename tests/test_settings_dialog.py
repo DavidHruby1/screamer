@@ -40,5 +40,23 @@ class AcceptValidationTests(unittest.TestCase):
             dlg.deleteLater()
 
 
+class PasswordFieldTests(unittest.TestCase):
+    def test_stays_masked_on_focus(self) -> None:
+        field = PasswordField()
+        field.focusInEvent(QFocusEvent(QEvent.Type.FocusIn))
+        self.assertEqual(field.echoMode(), QLineEdit.EchoMode.Password)
+
+    def test_trailing_action_toggles_visibility(self) -> None:
+        field = PasswordField()
+        action = field.actions()[0]
+        self.assertTrue(action.isCheckable())
+
+        action.setChecked(True)
+        self.assertEqual(field.echoMode(), QLineEdit.EchoMode.Normal)
+
+        action.setChecked(False)
+        self.assertEqual(field.echoMode(), QLineEdit.EchoMode.Password)
+
+
 if __name__ == "__main__":
     unittest.main()
