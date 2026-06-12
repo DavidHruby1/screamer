@@ -2,7 +2,22 @@
 
 ## PRIORITY FEATURE**
 
-Async batching of transcriptions after 5 seconds using queue to boost performance significantly.
+Optimization of the STT transcription pipeline speed.
+
+Fix this issue:
+When dictating with Screamer, injected text appears correctly in web browsers but NOT in Windows Notepad. The app reports success - no error is shown.
+Root Cause: Modifier Key Interference
+The default hotkey is Ctrl+Alt+Space. In src/hotkey.py:215-229, the release watcher (_watch_release) only polls for the primary key (Space, VK=0x20). It does not monitor the modifier keys (Ctrl, Alt):
+state = user32.GetAsyncKeyState(vk)  # only checks 0x20 (Space)
+In toggle mode, _finalize_recording() is called directly from the hotkey-pressed handler while Ctrl+Alt+Space is still physically held. The type_text() call via SendInput with KEYEVENTF_UNICODE then runs while Ctrl/Alt are still logically down.
+Notepad uses the classic Win32 EDIT control, which respects the current keyboard modifier state. When Ctrl or Alt is held, characters injected via KEYEVENTF_UNICODE/VK_PACKET can be dropped or misinterpreted as accelerators.
+Browsers work because they use modern text frameworks (TSF, DirectInput, contenteditable) that handle VK_PACKET robustly regardless of modifier state - so the same SendInput call succeeds there.
+Possible Fixes
+Fix	What	Where
+1. Wait for all hotkey keys	Poll GetAsyncKeyState for both the primary key AND modifier keys (Ctrl, Alt) before emitting hotkey_released	src/hotkey.py:_watch_release
+2. Explicitly init KEYBDINPUT	Set wVk = 0, time = 0, dwExtraInfo = 0 explicitly in _send_unicode and _send_vk (currently relies on implicit ctypes zero-init)	src/injector.py:_send_unicode, _send_vk
+3. Log target window	Call GetForegroundWindow + GetClassNameW before SendInput to see which window actually receives the text	src/injector.py:type_text
+Fix #1 is the most important - it prevents the pipeline from injecting text while modifier keys are still physically held. Fixes #2 and #3 are low-risk hygiene improvements that help with debugging.
 
 ---
 
