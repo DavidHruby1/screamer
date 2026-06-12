@@ -1,10 +1,12 @@
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from src.config import AppConfig, ProviderConfig, import_from_env, parse_custom_headers, validate_config
+from src.config import AppConfig, ProviderConfig, _env_path, import_from_env, parse_custom_headers, validate_config
 
 
 class ConfigValidationTests(unittest.TestCase):
@@ -76,6 +78,16 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(imported.stt_api_key, "existing")
         self.assertEqual(imported.stt_base_url, "https://env.test/v1")
         self.assertEqual(imported.stt_model, "env-model")
+
+
+class EnvPathTests(unittest.TestCase):
+    def test_env_path_uses_cwd_when_not_frozen(self) -> None:
+        self.assertEqual(_env_path(), os.path.join(os.getcwd(), ".env"))
+
+    def test_env_path_uses_exe_dir_when_frozen(self) -> None:
+        exe = os.path.join("C:" + os.sep, "apps", "Screamer", "Screamer.exe")
+        with patch.object(sys, "frozen", new=True, create=True), patch.object(sys, "executable", new=exe):
+            self.assertEqual(_env_path(), os.path.join(os.path.dirname(exe), ".env"))
 
 
 if __name__ == "__main__":

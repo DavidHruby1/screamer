@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import platform
+import sys
 from dataclasses import dataclass, field, fields
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlsplit
@@ -560,15 +561,23 @@ def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]:
     return issues
 
 
+def _env_path() -> str:
+    """Locate .env: next to the executable when frozen, else at cwd (dev runs)."""
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), ".env")
+    return os.path.join(os.getcwd(), ".env")
+
+
 def import_from_env(cfg: AppConfig) -> AppConfig:
-    """Read .env at cwd; backfill ONLY empty str fields. No-op if no .env file."""
+    """Read .env (exe dir when frozen, else cwd); backfill ONLY empty str fields.
+    No-op if no .env file."""
     try:
         from dotenv import dotenv_values
     except ImportError:
         log.debug("python-dotenv not installed; skipping .env import")
         return cfg
 
-    env_path = os.path.join(os.getcwd(), ".env")
+    env_path = _env_path()
     if not os.path.exists(env_path):
         return cfg
 
