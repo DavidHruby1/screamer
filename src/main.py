@@ -424,9 +424,14 @@ class _TrayApp(QObject):
 
     def _toggle_enabled(self, checked: bool) -> None:
         self._enabled = checked
-        if not checked and self._recording:
-            # Disabling means "stop"; don't transcribe and type the leftovers.
-            self._cancel_recording()
+        if not checked:
+            if self._recording:
+                # Disabling means "stop"; don't transcribe and type the leftovers.
+                self._cancel_recording()
+            elif self._worker is not None:
+                # Mid-processing: don't type into the focused window after the
+                # user disabled us. The worker checks this before each step.
+                self._cancel_event.set()
         log.info("Screamer %s", "enabled" if checked else "disabled")
 
     def _set_recording_mode(self, mode: str, rebuild_menu: bool = True) -> None:

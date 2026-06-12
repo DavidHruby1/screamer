@@ -107,6 +107,18 @@ class TrayMenuTests(unittest.TestCase):
         self.assertEqual(finalized, [])
         self.assertEqual(states, [TrayState.IDLE])
 
+    def test_disable_while_processing_cancels_worker(self):
+        import threading
+
+        tray_app = make_tray_app()
+        tray_app._recording = False
+        tray_app._worker = Mock()
+        tray_app._cancel_event = threading.Event()
+
+        tray_app._toggle_enabled(False)
+
+        self.assertTrue(tray_app._cancel_event.is_set())
+
     def test_choice_submenu_uses_widget_actions(self):
         from PySide6.QtWidgets import QWidgetAction
 
