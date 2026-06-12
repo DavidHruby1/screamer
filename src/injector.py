@@ -124,6 +124,8 @@ def type_text(text: str, post_key: str | None = None) -> None:
                     up.ki.wScan = code
                     up.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
                 sent = user32.SendInput(count, batch, ctypes.sizeof(INPUT))
+                # Partial injection (sent < count) means a prefix of the text
+                # was already typed; there is no rollback — surface the counts.
                 if sent != count:
                     _raise_sendinput_failed(f"SendInput injected {sent}/{count} events")
 
