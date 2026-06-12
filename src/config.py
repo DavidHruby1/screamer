@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, fields
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlsplit
 
-from src.utils import APP_DIR, APP_NAME, ScreamerError, AppError
+from src.utils import APP_DIR, ScreamerError, AppError
 
 log = logging.getLogger(__name__)
 

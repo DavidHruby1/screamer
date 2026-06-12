@@ -538,7 +538,7 @@ def main(argv: list[str] | None = None) -> None:
     app = QApplication([])
     app.setQuitOnLastWindowClosed(False)
 
-    tray_app = _TrayApp(startup_mode=args.startup)
+    tray_app = _TrayApp(startup_mode=args.startup)  # noqa: F841 — keep ref alive for app lifetime
     log.info("Screamer started")
 
     try:
