@@ -132,7 +132,7 @@ def _call_llm(
 def _groq_completion_cap(user_text: str) -> int:
     estimated_input_tokens = max(1, len(user_text) // 4)
     cap = int(estimated_input_tokens * 1.5) + 32
-    return max(128, min(1024, cap))
+    return max(128, min(4096, cap))
 
 
 # ---------------------------------------------------------------------------

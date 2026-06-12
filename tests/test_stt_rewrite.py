@@ -175,6 +175,25 @@ class SttRewriteFallbackTests(unittest.TestCase):
         self.assertGreaterEqual(captured["max_completion_tokens"], 128)
         self.assertLessEqual(captured["max_completion_tokens"], 1024)
 
+    def test_rewrite_groq_cap_scales_for_long_dictation(self) -> None:
+        cfg = AppConfig(
+            llm_enabled=True,
+            llm_api_key="groq",
+            llm_base_url="https://api.groq.com/openai/v1",
+            llm_model="llama-3.1-8b-instant",
+        )
+        captured: dict[str, object] = {}
+
+        def fake_post(_url, **kwargs):
+            captured.update(kwargs["json"])
+            return FakeResponse({"choices": [{"message": {"content": "fixed text"}, "finish_reason": "stop"}]})
+
+        with patch("src.http_client.post", side_effect=fake_post):
+            rewrite("a" * 10_000, cfg)
+
+        # 10_000 chars -> ~2500 estimated input tokens -> cap int(2500 * 1.5) + 32 = 3782
+        self.assertEqual(captured["max_completion_tokens"], 3782)
+
     def test_rewrite_length_finish_keeps_original_text(self) -> None:
         cfg = AppConfig(
             llm_enabled=True,
