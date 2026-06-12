@@ -108,6 +108,19 @@ class SecretHeaderTests(unittest.TestCase):
 
             self.assertEqual(load_config().stt_custom_headers, '{"X-Token": "s3cret"}')
 
+    def test_has_plaintext_secrets_detects_stale_ini_values(self) -> None:
+        from src.config import _get_qsettings, has_plaintext_secrets
+
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            self.assertFalse(has_plaintext_secrets())
+
+            stale = _get_qsettings()
+            stale.setValue("llm_custom_headers", '{"X-Old": "plain"}')
+            stale.sync()
+            del stale
+
+            self.assertTrue(has_plaintext_secrets())
+
     @unittest.skipUnless(platform.system() == "Windows", "DPAPI requires Windows")
     def test_save_config_purges_stale_plaintext_headers(self) -> None:
         from src.config import _get_qsettings, save_config

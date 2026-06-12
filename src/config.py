@@ -497,6 +497,16 @@ def save_config(cfg: AppConfig) -> None:
     _save_secrets(cfg)
 
 
+def has_plaintext_secrets() -> bool:
+    """True if any secret field still sits as plaintext in settings.ini.
+
+    Older versions wrote custom headers to the ini; save_config purges them,
+    but the purge only happens on save — callers use this to force one.
+    """
+    settings = _get_qsettings()
+    return any(settings.contains(name) for name in _SECRET_FIELDS)
+
+
 def reset_config() -> AppConfig:
     """Fresh AppConfig with all defaults. Does not write disk."""
     return AppConfig()
