@@ -40,6 +40,28 @@ class AcceptValidationTests(unittest.TestCase):
             dlg.deleteLater()
 
 
+class CalibrateThreadTests(unittest.TestCase):
+    def test_calibration_runs_off_ui_thread_and_updates_spin(self) -> None:
+        dlg = SettingsDialog(AppConfig(), devices=[], calibrate_fn=lambda device_id: 7.5)
+        try:
+            with patch("src.settings_dialog.QMessageBox"):
+                dlg._on_calibrate()
+                self.assertFalse(dlg._calibrate_btn.isEnabled())
+                thread = dlg._calib_thread
+                self.assertIsNotNone(thread)
+                self.assertTrue(thread.wait(5000))
+                for _ in range(50):
+                    QApplication.processEvents()
+                    if dlg._calib_thread is None:
+                        break
+                    time.sleep(0.01)
+            self.assertIsNone(dlg._calib_thread)
+            self.assertEqual(dlg._rms_spin.value(), 7.5)
+            self.assertTrue(dlg._calibrate_btn.isEnabled())
+        finally:
+            dlg.deleteLater()
+
+
 class PasswordFieldTests(unittest.TestCase):
     def test_stays_masked_on_focus(self) -> None:
         field = PasswordField()

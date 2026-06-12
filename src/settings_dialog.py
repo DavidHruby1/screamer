@@ -10,7 +10,7 @@ import copy
 import logging
 from typing import Callable
 
-from PySide6.QtCore import QCoreApplication, QEvent, Qt, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, Qt, QThread, Signal
 from PySide6.QtGui import QAction, QIcon, QKeyEvent, QMouseEvent, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -55,6 +55,26 @@ log = logging.getLogger(__name__)
 
 # Type alias for device list items: (id, display_name).
 DeviceItem = tuple[int, str]
+
+_CALIBRATE_LABEL = "Recalibrate RMS Threshold"
+
+
+class _CalibrateThread(QThread):
+    """Runs the blocking RMS calibration off the UI thread."""
+
+    succeeded = Signal(float)
+    failed = Signal(str)
+
+    def __init__(self, fn: Callable[[int | None], float], device_id: int | None, parent=None) -> None:
+        super().__init__(parent)
+        self._fn = fn
+        self._device_id = device_id
+
+    def run(self) -> None:
+        try:
+            self.succeeded.emit(self._fn(self._device_id))
+        except Exception as e:  # surface any calibration failure to the dialog
+            self.failed.emit(str(e))
 
 
 def _eye_icon() -> QIcon:
@@ -111,6 +131,7 @@ class SettingsDialog(QDialog):
 
         self._devices = devices if devices is not None else []
         self._calibrate_fn = calibrate_fn
+        self._calib_thread: _CalibrateThread | None = None
 
         # Edit a deep copy so the original is untouched until accept.
         self._working = copy.deepcopy(config)
@@ -371,7 +392,7 @@ class SettingsDialog(QDialog):
         self._populate_devices()
         form.addRow("Input Device:", self._device_combo)
 
-        self._calibrate_btn = QPushButton("Recalibrate RMS Threshold")
+        self._calibrate_btn = QPushButton(_CALIBRATE_LABEL)
         self._calibrate_btn.clicked.connect(self._on_calibrate)
         if self._calibrate_fn is None:
             self._calibrate_btn.setEnabled(False)
@@ -522,23 +543,40 @@ class SettingsDialog(QDialog):
                     return
 
     def _on_calibrate(self) -> None:
-        """Run RMS auto-calibration via the provided callback."""
-        if self._calibrate_fn is None:
+        """Run RMS auto-calibration in a worker thread; keep the dialog responsive."""
+        if self._calibrate_fn is None or self._calib_thread is not None:
             return
 
-        device_id = self._device_combo.currentData()
-        try:
-            QMessageBox.information(
-                self,
-                "Calibrating",
-                "Silence please — measuring ambient noise for 2 seconds...",
-            )
-            threshold = self._calibrate_fn(device_id)
-            self._working.rms_threshold = threshold
-            self._rms_spin.setValue(threshold)
-            self._rms_label.setText(f"Threshold: {threshold:.1f}")
-        except Exception as e:
-            QMessageBox.warning(self, "Calibration Failed", str(e))
+        QMessageBox.information(
+            self,
+            "Calibrating",
+            "Silence please — measuring ambient noise for 2 seconds...",
+        )
+        self._calibrate_btn.setEnabled(False)
+        self._calibrate_btn.setText("Calibrating...")
+
+        thread = _CalibrateThread(self._calibrate_fn, self._device_combo.currentData(), self)
+        thread.succeeded.connect(self._on_calibrate_succeeded)
+        thread.failed.connect(self._on_calibrate_failed)
+        thread.finished.connect(self._on_calibrate_finished)
+        self._calib_thread = thread
+        thread.start()
+
+    def _on_calibrate_succeeded(self, threshold: float) -> None:
+        self._working.rms_threshold = threshold
+        self._rms_spin.setValue(threshold)
+        self._rms_label.setText(f"Threshold: {threshold:.1f}")
+
+    def _on_calibrate_failed(self, message: str) -> None:
+        QMessageBox.warning(self, "Calibration Failed", message)
+
+    def _on_calibrate_finished(self) -> None:
+        thread = self._calib_thread
+        self._calib_thread = None
+        self._calibrate_btn.setEnabled(True)
+        self._calibrate_btn.setText(_CALIBRATE_LABEL)
+        if thread is not None:
+            thread.deleteLater()
 
     # ------------------------------------------------------------------
     # Validation
@@ -596,6 +634,9 @@ class SettingsDialog(QDialog):
 
     def done(self, result: int) -> None:
         self._stop_hotkey_recording()
+        if self._calib_thread is not None:
+            # Don't let a running calibration outlive its parent dialog.
+            self._calib_thread.wait(5000)
         super().done(result)
 
     def is_hotkey_capture_active(self) -> bool:
