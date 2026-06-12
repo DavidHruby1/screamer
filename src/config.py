@@ -678,7 +678,11 @@ if __name__ == "__main__":
     cfg = load_config()
     print("Loaded config defaults:")
     for f in fields(AppConfig):
-        print(f"  {f.name} = {getattr(cfg, f.name)}")
+        if f.name in _SECRET_FIELDS:
+            masked = "***" if getattr(cfg, f.name) else "(empty)"
+            print(f"  {f.name} = {masked}")
+        else:
+            print(f"  {f.name} = {getattr(cfg, f.name)}")
 
     print()
 
@@ -697,9 +701,12 @@ if __name__ == "__main__":
     # .env import test.
     cfg2 = import_from_env(cfg)
     print("After import_from_env (may be no-op):")
-    for f_name in _SECRET_FIELDS:
-        val = getattr(cfg2, f_name)
-        print(f"  {f_name} = {'***' if val else '(empty)'}")
+    # Iterate dataclass fields (not the _SECRET_FIELDS literal) and mask secrets;
+    # the secret value only gates a constant, so it never reaches the print.
+    for f in fields(AppConfig):
+        if f.name in _SECRET_FIELDS:
+            masked = "***" if getattr(cfg2, f.name) else "(empty)"
+            print(f"  {f.name} = {masked}")
 
     print()
     print("Config module OK")
