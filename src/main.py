@@ -325,6 +325,9 @@ class _TrayApp(QObject):
         self._worker.succeeded.connect(self._on_worker_succeeded)
         self._worker.failed.connect(self._on_worker_failed)
         self._worker.cancelled.connect(self._on_worker_cancelled)
+        # Result slots run first (queued in emission order), then the QThread
+        # object frees itself — otherwise one worker leaks per dictation.
+        self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
     # ------------------------------------------------------------------
