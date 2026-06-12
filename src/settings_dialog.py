@@ -140,7 +140,7 @@ class SettingsDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel
             | QDialogButtonBox.StandardButton.Apply
         )
-        self._button_box.accepted.connect(self._validate_and_accept)
+        self._button_box.accepted.connect(self.accept)
         self._button_box.rejected.connect(self.reject)
         self._button_box.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(
             self._on_apply
@@ -531,16 +531,6 @@ class SettingsDialog(QDialog):
     # Validation
     # ------------------------------------------------------------------
 
-    def _validate_and_accept(self) -> None:
-        """Validate required fields, then accept."""
-        self._collect()
-        if not self._show_validation_issue():
-            return
-        if not self._sync_startup_or_warn():
-            return
-
-        super().accept()
-
     # ------------------------------------------------------------------
     # Bottom bar actions
     # ------------------------------------------------------------------
@@ -578,8 +568,13 @@ class SettingsDialog(QDialog):
     # ------------------------------------------------------------------
 
     def accept(self) -> None:
+        """Validate on every accept path (OK button, direct accept() calls)."""
         self._stop_hotkey_recording()
         self._collect()
+        if not self._show_validation_issue():
+            return
+        if not self._sync_startup_or_warn():
+            return
         super().accept()
 
     def reject(self) -> None:
