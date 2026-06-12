@@ -159,7 +159,10 @@ def load_config() -> AppConfig: ...
     """Load QSettings + DPAPI. Unknown keys get field defaults."""
 
 def save_config(cfg: AppConfig) -> None: ...
-    """Persist to QSettings + DPAPI. api_key fields go through DPAPI."""
+    """Persist to QSettings + DPAPI. api_key and custom-header fields go through DPAPI."""
+
+def has_plaintext_secrets() -> bool: ...
+    """True if any secret field still sits as plaintext in settings.ini."""
 
 def reset_config() -> AppConfig: ...
     """Fresh AppConfig with all defaults. Does not write disk."""
@@ -282,7 +285,7 @@ class RecordingSnackbar(QWidget):
 
 ```python
 class PasswordField(QLineEdit):
-    """Password line edit that reveals text only while focused."""
+    """Masked line edit with an explicit trailing show/hide toggle action."""
 
 class SettingsDialog(QDialog):
     def __init__(
@@ -477,5 +480,5 @@ Do not proceed to Phase 2 until review passes.
 - No modules beyond the 11 listed. No new dependencies.
 - Do not implement packaging (PyInstaller), code signing, or cross-platform hotkey backends.
 - Autostart registration is implemented in `startup.py`.
-- All paths: `%LOCALAPPDATA%/Screamer/`. API keys: DPAPI. Plain settings: QSettings (IniFormat).
+- All paths: `%LOCALAPPDATA%/Screamer/`. API keys + custom headers: DPAPI. Plain settings: QSettings (IniFormat).
 - If a Phase 2 bug forces a Phase 1 API change, document it in the review checkpoint and get re-approval.

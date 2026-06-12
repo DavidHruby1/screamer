@@ -7,6 +7,7 @@ No public exports. Nothing imports main.py.
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 from typing import Any
@@ -29,6 +30,7 @@ from src.config import (
     POST_KEY_OPTIONS,
     AppConfig,
     Hotkey,
+    has_plaintext_secrets,
     import_from_env,
     load_config,
     save_config,
@@ -116,8 +118,12 @@ class _TrayApp(QObject):
         super().__init__()
 
         self._config = load_config()
-        self._config = import_from_env(self._config)
-        save_config(self._config)
+        imported = import_from_env(copy.deepcopy(self._config))
+        if imported != self._config or has_plaintext_secrets():
+            # Save when .env added values, or to purge plaintext secrets an
+            # older version left in settings.ini (save_config removes them).
+            self._config = imported
+            save_config(self._config)
 
         self._recorder = AudioRecorder()
         self._bridge = SignalBridge()
@@ -325,7 +331,19 @@ class _TrayApp(QObject):
         self._worker.succeeded.connect(self._on_worker_succeeded)
         self._worker.failed.connect(self._on_worker_failed)
         self._worker.cancelled.connect(self._on_worker_cancelled)
+        # Result slots run first (queued in emission order), then the QThread
+        # object frees itself — otherwise one worker leaks per dictation.
+        self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
+
+    def _cancel_recording(self) -> None:
+        """Stop and discard the in-flight recording without processing it."""
+        self._recording = False
+        try:
+            self._recorder.stop()
+        except ScreamerError:
+            pass
+        self._apply_state(TrayState.IDLE)
 
     # ------------------------------------------------------------------
     # Hotkey callbacks (called from hotkey thread via SignalBridge → Qt main)
@@ -409,8 +427,14 @@ class _TrayApp(QObject):
 
     def _toggle_enabled(self, checked: bool) -> None:
         self._enabled = checked
-        if not checked and self._recording:
-            self._finalize_recording()
+        if not checked:
+            if self._recording:
+                # Disabling means "stop"; don't transcribe and type the leftovers.
+                self._cancel_recording()
+            elif self._worker is not None:
+                # Mid-processing: don't type into the focused window after the
+                # user disabled us. The worker checks this before each step.
+                self._cancel_event.set()
         log.info("Screamer %s", "enabled" if checked else "disabled")
 
     def _set_recording_mode(self, mode: str, rebuild_menu: bool = True) -> None:

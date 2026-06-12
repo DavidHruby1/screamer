@@ -19,6 +19,12 @@ _POST_KEY_VK: dict[str, int] = {
 }
 
 
+def _utf16_units(value: str) -> list[str]:
+    """Split *value* into UTF-16 code units (surrogate pairs become two units)."""
+    encoded = value.encode("utf-16-le", errors="surrogatepass")
+    return [chr(int.from_bytes(encoded[i : i + 2], "little")) for i in range(0, len(encoded), 2)]
+
+
 def type_text(text: str, post_key: str | None = None) -> None:
     """Type *text* into the active window via Win32 SendInput.
 
@@ -90,14 +96,6 @@ def type_text(text: str, post_key: str | None = None) -> None:
             detail = f"{detail} (WinError {err})"
         raise ScreamerError(AppError.INJECTION_FAILED, detail)
 
-    def _send_unicode(char: str, key_up: bool = False) -> None:
-        inp = INPUT()
-        inp.type = INPUT_KEYBOARD
-        inp.ki.wScan = ord(char)
-        inp.ki.dwFlags = KEYEVENTF_UNICODE | (KEYEVENTF_KEYUP if key_up else 0)
-        if user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
-            _raise_sendinput_failed(f"SendInput failed for U+{ord(char):04X}")
-
     def _send_vk(vk: int, key_up: bool = False) -> None:
         inp = INPUT()
         inp.type = INPUT_KEYBOARD
@@ -106,16 +104,30 @@ def type_text(text: str, post_key: str | None = None) -> None:
         if user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
             _raise_sendinput_failed(f"SendInput failed for VK 0x{vk:02X}")
 
-    def _utf16_units(value: str) -> list[str]:
-        encoded = value.encode("utf-16-le", errors="surrogatepass")
-        return [chr(int.from_bytes(encoded[i : i + 2], "little")) for i in range(0, len(encoded), 2)]
-
     try:
         with log_duration(log, f"Text injection ({len(text)} chars)"):
             log.info("Typing %d characters", len(text))
-            for ch in _utf16_units(text):
-                _send_unicode(ch)
-                _send_unicode(ch, key_up=True)
+            # One batched SendInput call: atomic with respect to concurrent
+            # user input and far fewer syscalls than per-character sends.
+            units = _utf16_units(text)
+            if units:
+                count = 2 * len(units)
+                batch = (INPUT * count)()
+                for i, unit in enumerate(units):
+                    code = ord(unit)
+                    down = batch[2 * i]
+                    down.type = INPUT_KEYBOARD
+                    down.ki.wScan = code
+                    down.ki.dwFlags = KEYEVENTF_UNICODE
+                    up = batch[2 * i + 1]
+                    up.type = INPUT_KEYBOARD
+                    up.ki.wScan = code
+                    up.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+                sent = user32.SendInput(count, batch, ctypes.sizeof(INPUT))
+                # Partial injection (sent < count) means a prefix of the text
+                # was already typed; there is no rollback — surface the counts.
+                if sent != count:
+                    _raise_sendinput_failed(f"SendInput injected {sent}/{count} events")
 
             # Post-type key with 0.05s delay.
             if post_key and post_key != "none":

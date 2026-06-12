@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -34,6 +34,7 @@ class TrayMenuTests(unittest.TestCase):
             patch.object(_TrayApp, "_build_tray"),
             patch.object(_TrayApp, "_build_hotkey"),
             patch.object(_TrayApp, "_apply_state"),
+            patch("src.main.has_plaintext_secrets", return_value=False),
             patch.object(_TrayApp, "_open_settings"),
         ]
 
@@ -47,6 +48,90 @@ class TrayMenuTests(unittest.TestCase):
         finally:
             for p in reversed(patches):
                 p.stop()
+
+    def _startup_patches(self, import_side_effect):
+        from src.config import AppConfig
+
+        return [
+            patch("src.main.load_config", return_value=AppConfig()),
+            patch("src.main.import_from_env", side_effect=import_side_effect),
+            patch("src.main.save_config"),
+            patch("src.main.validate_config", return_value=[]),
+            patch("src.main.AudioRecorder"),
+            patch.object(_TrayApp, "_build_tray"),
+            patch.object(_TrayApp, "_build_hotkey"),
+            patch.object(_TrayApp, "_apply_state"),
+            patch.object(_TrayApp, "_open_settings"),
+            patch("src.main.has_plaintext_secrets", return_value=False),
+        ]
+
+    def test_startup_save_skipped_when_env_adds_nothing(self):
+        patches = self._startup_patches(lambda cfg: cfg)
+        started = [p.start() for p in patches]
+        try:
+            _TrayApp(startup_mode=True)
+            save_config_mock = started[2]
+            save_config_mock.assert_not_called()
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
+    def test_startup_save_runs_when_env_imports_values(self):
+        def fake_import(cfg):
+            cfg.stt_api_key = "imported"
+            return cfg
+
+        patches = self._startup_patches(fake_import)
+        started = [p.start() for p in patches]
+        try:
+            _TrayApp(startup_mode=True)
+            save_config_mock = started[2]
+            save_config_mock.assert_called_once()
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
+    def test_startup_save_runs_when_plaintext_secrets_linger(self):
+        patches = self._startup_patches(lambda cfg: cfg)
+        patches[-1] = patch("src.main.has_plaintext_secrets", return_value=True)
+        started = [p.start() for p in patches]
+        try:
+            _TrayApp(startup_mode=True)
+            save_config_mock = started[2]
+            save_config_mock.assert_called_once()
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
+    def test_disable_while_recording_discards_audio(self):
+        from src.icons import TrayState
+
+        tray_app = make_tray_app()
+        tray_app._recording = True
+        tray_app._recorder = Mock()
+        states = []
+        tray_app._apply_state = lambda s: states.append(s)
+        finalized = []
+        tray_app._finalize_recording = lambda: finalized.append(True)
+
+        tray_app._toggle_enabled(False)
+
+        self.assertFalse(tray_app._recording)
+        tray_app._recorder.stop.assert_called_once()
+        self.assertEqual(finalized, [])
+        self.assertEqual(states, [TrayState.IDLE])
+
+    def test_disable_while_processing_cancels_worker(self):
+        import threading
+
+        tray_app = make_tray_app()
+        tray_app._recording = False
+        tray_app._worker = Mock()
+        tray_app._cancel_event = threading.Event()
+
+        tray_app._toggle_enabled(False)
+
+        self.assertTrue(tray_app._cancel_event.is_set())
 
     def test_choice_submenu_uses_widget_actions(self):
         from PySide6.QtWidgets import QWidgetAction

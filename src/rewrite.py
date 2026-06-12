@@ -23,7 +23,7 @@ def rewrite(text: str, config: AppConfig) -> PipelineResult:
             return PipelineResult(text=text)
 
         system_prompt = config.llm_system_prompt or ""
-        language = getattr(config, "stt_language", "")
+        language = config.stt_language
         if language:
             system_prompt += f"\nThe speech language is {language}."
 
@@ -132,7 +132,7 @@ def _call_llm(
 def _groq_completion_cap(user_text: str) -> int:
     estimated_input_tokens = max(1, len(user_text) // 4)
     cap = int(estimated_input_tokens * 1.5) + 32
-    return max(128, min(1024, cap))
+    return max(128, min(4096, cap))
 
 
 # ---------------------------------------------------------------------------

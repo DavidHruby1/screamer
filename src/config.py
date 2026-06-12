@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import platform
+import sys
 from dataclasses import dataclass, field, fields
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlsplit
@@ -304,12 +305,17 @@ class AppConfig:
         )
 
 
-# Fields that contain secret API keys and must go through DPAPI.
+# Fields that contain secrets and must go through DPAPI: API keys, plus custom
+# headers (which routinely carry tokens such as X-Api-Key).
 _SECRET_FIELDS = frozenset({
     "stt_api_key",
     "stt_fallback_api_key",
     "llm_api_key",
     "llm_fallback_api_key",
+    "stt_custom_headers",
+    "stt_fallback_custom_headers",
+    "llm_custom_headers",
+    "llm_fallback_custom_headers",
 })
 
 # DPAPI entropy string bound to this application.
@@ -482,10 +488,23 @@ def save_config(cfg: AppConfig) -> None:
     settings = _get_qsettings()
     for f in fields(AppConfig):
         if f.name in _SECRET_FIELDS:
+            # Purge any plaintext value an older version left in the ini, so it
+            # cannot shadow the DPAPI-stored value on the next load.
+            settings.remove(f.name)
             continue
         settings.setValue(f.name, getattr(cfg, f.name))
     settings.sync()
     _save_secrets(cfg)
+
+
+def has_plaintext_secrets() -> bool:
+    """True if any secret field still sits as plaintext in settings.ini.
+
+    Older versions wrote custom headers to the ini; save_config purges them,
+    but the purge only happens on save — callers use this to force one.
+    """
+    settings = _get_qsettings()
+    return any(settings.contains(name) for name in _SECRET_FIELDS)
 
 
 def reset_config() -> AppConfig:
@@ -560,15 +579,23 @@ def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]:
     return issues
 
 
+def _env_path() -> str:
+    """Locate .env: next to the executable when frozen, else at cwd (dev runs)."""
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), ".env")
+    return os.path.join(os.getcwd(), ".env")
+
+
 def import_from_env(cfg: AppConfig) -> AppConfig:
-    """Read .env at cwd; backfill ONLY empty str fields. No-op if no .env file."""
+    """Read .env (exe dir when frozen, else cwd); backfill ONLY empty str fields.
+    No-op if no .env file."""
     try:
         from dotenv import dotenv_values
     except ImportError:
         log.debug("python-dotenv not installed; skipping .env import")
         return cfg
 
-    env_path = os.path.join(os.getcwd(), ".env")
+    env_path = _env_path()
     if not os.path.exists(env_path):
         return cfg
 
