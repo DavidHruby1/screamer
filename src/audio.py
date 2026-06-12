@@ -76,10 +76,7 @@ def default_input_device_id() -> int | None:
         else:
             dev_name = str(dev["name"])
             for i, candidate in enumerate(sd.query_devices()):
-                if (
-                    candidate["max_input_channels"] > 0
-                    and str(candidate["name"]) == dev_name
-                ):
+                if candidate["max_input_channels"] > 0 and str(candidate["name"]) == dev_name:
                     resolved_id = i
                     break
             else:
@@ -135,7 +132,9 @@ class AudioRecorder:
                 if threshold < DEFAULT_RMS_THRESHOLD:
                     threshold = DEFAULT_RMS_THRESHOLD
                 self._rms_threshold = threshold
-                log.info("Calibration done: noise_floor=%.1f, threshold=%.1f", noise_floor, threshold)
+                log.info(
+                    "Calibration done: noise_floor=%.1f, threshold=%.1f", noise_floor, threshold
+                )
                 return threshold
         except Exception as e:
             log.warning("Calibration failed: %s; using fallback %.1f", e, DEFAULT_RMS_THRESHOLD)
@@ -192,7 +191,9 @@ class AudioRecorder:
             audio_data = np.concatenate(self._frames, axis=0)
 
         rms = float(np.sqrt(np.mean(audio_data.astype(np.float64) ** 2)))
-        log.info("Recording stopped: %.2fs, RMS=%.1f, threshold=%.1f", duration, rms, self._rms_threshold)
+        log.info(
+            "Recording stopped: %.2fs, RMS=%.1f, threshold=%.1f", duration, rms, self._rms_threshold
+        )
         if rms < self._rms_threshold:
             log.info("Below RMS threshold; discarding")
             return b""

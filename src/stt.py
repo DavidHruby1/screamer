@@ -54,7 +54,9 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
                 if not fallback.enabled:
                     raise ScreamerError(AppError.STT_FAILED, str(e)) from e
 
-        raise ScreamerError(AppError.STT_FAILED, "Both primary and fallback STT failed or returned no speech")
+        raise ScreamerError(
+            AppError.STT_FAILED, "Both primary and fallback STT failed or returned no speech"
+        )
 
 
 def _call_stt(

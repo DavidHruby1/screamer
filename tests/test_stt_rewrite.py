@@ -11,7 +11,9 @@ from src.utils import AppError, ScreamerError
 
 
 class FakeResponse:
-    def __init__(self, payload: dict, *, status_code: int = 200, headers: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, payload: dict, *, status_code: int = 200, headers: dict[str, str] | None = None
+    ) -> None:
         self._payload = payload
         self.status_code = status_code
         self.headers = headers or {}
@@ -48,7 +50,13 @@ class SttRewriteFallbackTests(unittest.TestCase):
 
         self.assertEqual(result.text, "fallback text")
         self.assertEqual(result.warnings, [AppError.STT_FALLBACK_USED])
-        self.assertEqual(calls, ["https://primary.test/v1/audio/transcriptions", "https://fallback.test/v1/audio/transcriptions"])
+        self.assertEqual(
+            calls,
+            [
+                "https://primary.test/v1/audio/transcriptions",
+                "https://fallback.test/v1/audio/transcriptions",
+            ],
+        )
 
     def test_stt_merges_custom_headers(self) -> None:
         cfg = AppConfig(
@@ -97,7 +105,13 @@ class SttRewriteFallbackTests(unittest.TestCase):
 
         self.assertEqual(result.text, "fixed text")
         self.assertEqual(result.warnings, [])
-        self.assertEqual(calls, ["https://primary.test/v1/chat/completions", "https://fallback.test/v1/chat/completions"])
+        self.assertEqual(
+            calls,
+            [
+                "https://primary.test/v1/chat/completions",
+                "https://fallback.test/v1/chat/completions",
+            ],
+        )
 
     def test_stt_groq_uses_json_response_format(self) -> None:
         cfg = AppConfig(
@@ -164,7 +178,9 @@ class SttRewriteFallbackTests(unittest.TestCase):
 
         def fake_post(_url, **kwargs):
             captured.update(kwargs["json"])
-            return FakeResponse({"choices": [{"message": {"content": "fixed text"}, "finish_reason": "stop"}]})
+            return FakeResponse(
+                {"choices": [{"message": {"content": "fixed text"}, "finish_reason": "stop"}]}
+            )
 
         with patch("src.http_client.post", side_effect=fake_post):
             result = rewrite("hello world" * 80, cfg)
@@ -184,7 +200,9 @@ class SttRewriteFallbackTests(unittest.TestCase):
         )
 
         def fake_post(_url, **kwargs):
-            return FakeResponse({"choices": [{"message": {"content": "partial"}, "finish_reason": "length"}]})
+            return FakeResponse(
+                {"choices": [{"message": {"content": "partial"}, "finish_reason": "length"}]}
+            )
 
         with patch("src.http_client.post", side_effect=fake_post):
             result = rewrite("raw text", cfg)
@@ -201,7 +219,9 @@ class SttRewriteFallbackTests(unittest.TestCase):
         )
 
         def fake_post(_url, **kwargs):
-            return FakeResponse({"choices": [{"message": {"content": "partial"}, "finish_reason": "length"}]})
+            return FakeResponse(
+                {"choices": [{"message": {"content": "partial"}, "finish_reason": "length"}]}
+            )
 
         with patch("src.http_client.post", side_effect=fake_post):
             result = rewrite("raw text", cfg)

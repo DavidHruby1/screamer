@@ -36,13 +36,13 @@ class SnackbarGeometryTests(unittest.TestCase):
         from PySide6.QtCore import QPoint, QRect, QSize
         from src.snackbar import bottom_center_xy
 
-        avail = QRect(0, 0, 1920, 1040)   # 1920x1080 minus a 40px taskbar
+        avail = QRect(0, 0, 1920, 1040)  # 1920x1080 minus a 40px taskbar
         size = QSize(160, 40)
         point = bottom_center_xy(avail, size, margin=48)
 
         self.assertIsInstance(point, QPoint)
-        self.assertEqual(point.x(), (1920 - 160) // 2)      # 880
-        self.assertEqual(point.y(), 0 + 1040 - 40 - 48)     # 952
+        self.assertEqual(point.x(), (1920 - 160) // 2)  # 880
+        self.assertEqual(point.y(), 0 + 1040 - 40 - 48)  # 952
 
     def test_respects_non_zero_screen_origin(self):
         from PySide6.QtCore import QRect, QSize
@@ -53,7 +53,7 @@ class SnackbarGeometryTests(unittest.TestCase):
         point = bottom_center_xy(avail, size, margin=10)
 
         self.assertEqual(point.x(), 100 + (800 - 200) // 2)  # 400
-        self.assertEqual(point.y(), 50 + 600 - 50 - 10)      # 590
+        self.assertEqual(point.y(), 50 + 600 - 50 - 10)  # 590
 
 
 class SnackbarWidgetTests(unittest.TestCase):

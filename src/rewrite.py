@@ -39,7 +39,12 @@ def rewrite(text: str, config: AppConfig) -> PipelineResult:
             try:
                 result = _call_llm(provider=provider, system_prompt=system_prompt, user_text=text)
                 if result:
-                    log.debug("%s LLM rewrite: %r → %r", "Fallback" if is_fallback else "Primary", text[:60], result[:60])
+                    log.debug(
+                        "%s LLM rewrite: %r → %r",
+                        "Fallback" if is_fallback else "Primary",
+                        text[:60],
+                        result[:60],
+                    )
                     return PipelineResult(text=result)
             except Exception as e:
                 log.warning("%s LLM failed: %s", "Fallback" if is_fallback else "Primary", e)
