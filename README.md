@@ -157,26 +157,18 @@ python -m PyInstaller --noconfirm --clean screamer.spec
 
 ## Releases
 
-Pushing a version tag builds and publishes a Windows release automatically:
+Releases are automated with [Release Please](https://github.com/googleapis/release-please) from [Conventional Commits](https://www.conventionalcommits.org/).
 
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-The release workflow:
-
-1. Installs dependencies.
-2. Runs the test suite.
-3. Builds Screamer with PyInstaller.
-4. Packages the app as:
+1. Merging commits to `main` keeps a **Release PR** up to date — it bumps the version and updates `CHANGELOG.md`.
+2. Merging that Release PR tags the version (`vX.Y.Z`) and publishes a GitHub Release with generated notes.
+3. A Windows build job then runs the test suite, builds with PyInstaller, and attaches the packaged app:
 
 ```text
-Screamer-v1.0.0-windows-x64.zip
-Screamer-v1.0.0-windows-x64.zip.sha256
+Screamer-vX.Y.Z-windows-x64.zip
+Screamer-vX.Y.Z-windows-x64.zip.sha256
 ```
 
-Hyphenated tags like `v1.0.0-rc1` are published as pre-releases.
+Version bumps follow the commit types: `fix:` → patch, `feat:` → minor, and `feat!:` / `BREAKING CHANGE:` → major.
 
 ## Platform
 

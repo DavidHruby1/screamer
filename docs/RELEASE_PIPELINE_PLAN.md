@@ -1,5 +1,10 @@
 # Plan — GitHub Release Pipeline
 
+> **Superseded (2026-06):** This tag-triggered `release.yml` pipeline has been replaced by
+> [Release Please](https://github.com/googleapis/release-please). The build/publish steps now live in
+> `.github/workflows/release-please.yml` (run on release creation), and `release.yml` has been removed.
+> See `docs/superpowers/plans/2026-06-04-release-please.md`. Kept below for historical context.
+
 ## Goal
 On a version tag push, automatically build the Windows `.exe`, package it, and publish a GitHub Release with the artifact attached. No manual build/upload steps.
 
