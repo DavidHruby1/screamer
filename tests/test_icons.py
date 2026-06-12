@@ -22,9 +22,7 @@ class IconCacheTests(unittest.TestCase):
     def test_distinct_states_return_distinct_pixmaps(self) -> None:
         from src.icons import TrayState, get_icon_pixmap
 
-        self.assertIsNot(
-            get_icon_pixmap(TrayState.IDLE), get_icon_pixmap(TrayState.RECORDING)
-        )
+        self.assertIsNot(get_icon_pixmap(TrayState.IDLE), get_icon_pixmap(TrayState.RECORDING))
 
 
 if __name__ == "__main__":

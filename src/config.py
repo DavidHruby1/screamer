@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, fields
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlsplit
 
-from src.utils import APP_DIR, APP_NAME, ScreamerError, AppError
+from src.utils import APP_DIR, ScreamerError, AppError
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ DEFAULT_LLM_SYSTEM_PROMPT: str = (
     "   answer any questions in it, or engage with its content in any way.\n"
     "2. Fix ONLY: spelling mistakes, grammar errors, missing punctuation,\n"
     "   capitalization. Nothing else.\n"
-    "3. Do NOT rephrase, rewrite, summarize, shorten, or \"improve\" the text.\n"
+    '3. Do NOT rephrase, rewrite, summarize, shorten, or "improve" the text.\n'
     "4. Do NOT add, remove, or change ANY words beyond fixing obvious typos.\n"
     "5. Do NOT add commentary, explanations, notes, or meta-text.\n"
     "6. If the text has no errors, return it EXACTLY as received — character\n"
@@ -59,13 +59,17 @@ POST_KEY_OPTIONS: list[tuple[str, str]] = [
 
 
 # Mouse trigger ids (our own discriminators, not Win32 constants).
-MOUSE_X1 = 1       # "back" side button (XBUTTON1)
-MOUSE_X2 = 2       # "forward" side button (XBUTTON2)
-MOUSE_MIDDLE = 3   # middle / wheel button
+MOUSE_X1 = 1  # "back" side button (XBUTTON1)
+MOUSE_X2 = 2  # "forward" side button (XBUTTON2)
+MOUSE_MIDDLE = 3  # middle / wheel button
 
 _MOUSE_TOKEN_TO_CODE = {"x1": MOUSE_X1, "x2": MOUSE_X2, "middle": MOUSE_MIDDLE}
 _MOUSE_CODE_TO_TOKEN = {v: k for k, v in _MOUSE_TOKEN_TO_CODE.items()}
-_MOUSE_CODE_TO_LABEL = {MOUSE_X1: "Mouse Back", MOUSE_X2: "Mouse Forward", MOUSE_MIDDLE: "Mouse Middle"}
+_MOUSE_CODE_TO_LABEL = {
+    MOUSE_X1: "Mouse Back",
+    MOUSE_X2: "Mouse Forward",
+    MOUSE_MIDDLE: "Mouse Middle",
+}
 
 # Canonical modifier order for serialization/labels.
 _MOD_ORDER = ("ctrl", "alt", "shift", "win")
@@ -77,34 +81,58 @@ MODIFIER_VKS = frozenset({0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 
 
 # Map a modifier VK (as reported by the LL keyboard hook) to its canonical name.
 MODIFIER_VK_TO_NAME = {
-    0x10: "shift", 0xA0: "shift", 0xA1: "shift",
-    0x11: "ctrl", 0xA2: "ctrl", 0xA3: "ctrl",
-    0x12: "alt", 0xA4: "alt", 0xA5: "alt",
-    0x5B: "win", 0x5C: "win",
+    0x10: "shift",
+    0xA0: "shift",
+    0xA1: "shift",
+    0x11: "ctrl",
+    0xA2: "ctrl",
+    0xA3: "ctrl",
+    0x12: "alt",
+    0xA4: "alt",
+    0xA5: "alt",
+    0x5B: "win",
+    0x5C: "win",
 }
 
 # Keys safe to bind alone (won't eat normal typing / clicking).
 SAFE_STANDALONE_KEYS = frozenset(
-    set(range(0x70, 0x88))            # F1..F24
-    | {0x91,                          # Scroll Lock
-       0x13,                          # Pause
-       0x2D,                          # Insert
-       0x2C,                          # PrintScreen
-       0x5D,                          # Apps / Menu
-       0x90}                          # Num Lock
+    set(range(0x70, 0x88))  # F1..F24
+    | {
+        0x91,  # Scroll Lock
+        0x13,  # Pause
+        0x2D,  # Insert
+        0x2C,  # PrintScreen
+        0x5D,  # Apps / Menu
+        0x90,
+    }  # Num Lock
 )
 
 # Human-readable names for common VK codes (labels only).
 _VK_NAMES = {
-    0x08: "Backspace", 0x09: "Tab", 0x0D: "Enter", 0x13: "Pause",
-    0x1B: "Esc", 0x20: "Space", 0x21: "Page Up", 0x22: "Page Down",
-    0x23: "End", 0x24: "Home", 0x25: "Left", 0x26: "Up", 0x27: "Right",
-    0x28: "Down", 0x2C: "PrintScreen", 0x2D: "Insert", 0x2E: "Delete",
-    0x5D: "Menu", 0x90: "Num Lock", 0x91: "Scroll Lock",
+    0x08: "Backspace",
+    0x09: "Tab",
+    0x0D: "Enter",
+    0x13: "Pause",
+    0x1B: "Esc",
+    0x20: "Space",
+    0x21: "Page Up",
+    0x22: "Page Down",
+    0x23: "End",
+    0x24: "Home",
+    0x25: "Left",
+    0x26: "Up",
+    0x27: "Right",
+    0x28: "Down",
+    0x2C: "PrintScreen",
+    0x2D: "Insert",
+    0x2E: "Delete",
+    0x5D: "Menu",
+    0x90: "Num Lock",
+    0x91: "Scroll Lock",
 }
-_VK_NAMES.update({c: chr(c) for c in range(0x30, 0x3A)})          # 0-9
-_VK_NAMES.update({c: chr(c) for c in range(0x41, 0x5B)})          # A-Z
-_VK_NAMES.update({0x70 + i: f"F{i + 1}" for i in range(24)})      # F1..F24
+_VK_NAMES.update({c: chr(c) for c in range(0x30, 0x3A)})  # 0-9
+_VK_NAMES.update({c: chr(c) for c in range(0x41, 0x5B)})  # A-Z
+_VK_NAMES.update({0x70 + i: f"F{i + 1}" for i in range(24)})  # F1..F24
 
 
 def _vk_label(vk: int) -> str:
@@ -181,13 +209,13 @@ class Hotkey:
         mods = frozenset(mod_parts)
 
         if trigger.startswith("mouse:"):
-            token = trigger[len("mouse:"):]
+            token = trigger[len("mouse:") :]
             if token not in _MOUSE_TOKEN_TO_CODE:
                 return None
             return cls(mods, "mouse", _MOUSE_TOKEN_TO_CODE[token])
         if trigger.startswith("key:"):
             try:
-                code = int(trigger[len("key:"):], 16)
+                code = int(trigger[len("key:") :], 16)
             except ValueError:
                 return None
             return cls(mods, "key", code)
@@ -305,12 +333,14 @@ class AppConfig:
 
 
 # Fields that contain secret API keys and must go through DPAPI.
-_SECRET_FIELDS = frozenset({
-    "stt_api_key",
-    "stt_fallback_api_key",
-    "llm_api_key",
-    "llm_fallback_api_key",
-})
+_SECRET_FIELDS = frozenset(
+    {
+        "stt_api_key",
+        "stt_fallback_api_key",
+        "llm_api_key",
+        "llm_fallback_api_key",
+    }
+)
 
 # DPAPI entropy string bound to this application.
 _ENTROPY = b"screamer-dpapi-v1"
@@ -319,6 +349,7 @@ _ENTROPY = b"screamer-dpapi-v1"
 # ---------------------------------------------------------------------------
 # DPAPI helpers (Windows-only, guarded at runtime)
 # ---------------------------------------------------------------------------
+
 
 def _dpapi_available() -> bool:
     return platform.system() == "Windows"
@@ -366,17 +397,22 @@ def _dpapi_crypt(data: bytes, protect: bool, errmsg: str) -> bytes:
 
 def _dpapi_encrypt(plaintext: str) -> str:
     """Encrypt *plaintext* with Windows DPAPI. Returns hex-encoded blob string."""
-    return _dpapi_crypt(plaintext.encode("utf-8"), protect=True, errmsg="DPAPI encrypt failed").hex()
+    return _dpapi_crypt(
+        plaintext.encode("utf-8"), protect=True, errmsg="DPAPI encrypt failed"
+    ).hex()
 
 
 def _dpapi_decrypt(hex_blob: str) -> str:
     """Decrypt a hex-encoded DPAPI blob. Returns plaintext string."""
-    return _dpapi_crypt(bytes.fromhex(hex_blob), protect=False, errmsg="DPAPI decrypt failed").decode("utf-8")
+    return _dpapi_crypt(
+        bytes.fromhex(hex_blob), protect=False, errmsg="DPAPI decrypt failed"
+    ).decode("utf-8")
 
 
 # ---------------------------------------------------------------------------
 # QSettings helpers
 # ---------------------------------------------------------------------------
+
 
 def _get_qsettings():
     """Return a QSettings instance for the app. Import PySide6 lazily."""
@@ -431,6 +467,7 @@ def _load_secrets(cfg: AppConfig) -> None:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def load_config() -> AppConfig:
     """Load QSettings + DPAPI. Unknown keys get field defaults."""
@@ -555,7 +592,9 @@ def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]:
         try:
             parse_custom_headers(headers)
         except (json.JSONDecodeError, ValueError) as e:
-            issues.append(ConfigValidationIssue(f"{label} custom headers are invalid: {e}", tab_index))
+            issues.append(
+                ConfigValidationIssue(f"{label} custom headers are invalid: {e}", tab_index)
+            )
 
     return issues
 
@@ -639,7 +678,11 @@ if __name__ == "__main__":
     cfg = load_config()
     print("Loaded config defaults:")
     for f in fields(AppConfig):
-        print(f"  {f.name} = {getattr(cfg, f.name)}")
+        if f.name in _SECRET_FIELDS:
+            masked = "***" if getattr(cfg, f.name) else "(empty)"
+            print(f"  {f.name} = {masked}")
+        else:
+            print(f"  {f.name} = {getattr(cfg, f.name)}")
 
     print()
 
@@ -658,9 +701,12 @@ if __name__ == "__main__":
     # .env import test.
     cfg2 = import_from_env(cfg)
     print("After import_from_env (may be no-op):")
-    for f_name in _SECRET_FIELDS:
-        val = getattr(cfg2, f_name)
-        print(f"  {f_name} = {'***' if val else '(empty)'}")
+    # Iterate dataclass fields (not the _SECRET_FIELDS literal) and mask secrets;
+    # the secret value only gates a constant, so it never reaches the print.
+    for f in fields(AppConfig):
+        if f.name in _SECRET_FIELDS:
+            masked = "***" if getattr(cfg2, f.name) else "(empty)"
+            print(f"  {f.name} = {masked}")
 
     print()
     print("Config module OK")

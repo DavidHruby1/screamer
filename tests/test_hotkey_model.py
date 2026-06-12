@@ -33,7 +33,9 @@ class HotkeyModelTests(unittest.TestCase):
         self.assertEqual(Hotkey.parse("mouse:middle"), Hotkey(frozenset(), "mouse", MOUSE_MIDDLE))
 
     def test_parse_legacy_keys_migrate(self):
-        self.assertEqual(Hotkey.parse("ctrl_alt_space"), Hotkey(frozenset({"ctrl", "alt"}), "key", 0x20))
+        self.assertEqual(
+            Hotkey.parse("ctrl_alt_space"), Hotkey(frozenset({"ctrl", "alt"}), "key", 0x20)
+        )
         self.assertEqual(Hotkey.parse("scroll_lock"), Hotkey(frozenset(), "key", 0x91))
         self.assertEqual(Hotkey.parse("pause"), Hotkey(frozenset(), "key", 0x13))
 
@@ -43,17 +45,21 @@ class HotkeyModelTests(unittest.TestCase):
         self.assertIsNone(Hotkey.parse("ctrl+mouse:x9"))
 
     def test_label_human_readable(self):
-        self.assertEqual(Hotkey(frozenset({"ctrl", "alt"}), "key", 0x20).to_label(), "Ctrl+Alt+Space")
+        self.assertEqual(
+            Hotkey(frozenset({"ctrl", "alt"}), "key", 0x20).to_label(), "Ctrl+Alt+Space"
+        )
         self.assertEqual(Hotkey(frozenset(), "key", 0x91).to_label(), "Scroll Lock")
-        self.assertEqual(Hotkey(frozenset({"ctrl"}), "mouse", MOUSE_X1).to_label(), "Ctrl+Mouse Back")
+        self.assertEqual(
+            Hotkey(frozenset({"ctrl"}), "mouse", MOUSE_X1).to_label(), "Ctrl+Mouse Back"
+        )
         self.assertEqual(Hotkey(frozenset(), "mouse", MOUSE_MIDDLE).to_label(), "Mouse Middle")
 
     def test_validate_ok_with_modifier(self):
         self.assertIsNone(Hotkey(frozenset({"ctrl", "alt"}), "key", 0x20).validate())
 
     def test_validate_ok_safe_standalone(self):
-        self.assertIsNone(Hotkey(frozenset(), "key", 0x91).validate())   # Scroll Lock
-        self.assertIsNone(Hotkey(frozenset(), "key", 0x70).validate())   # F1
+        self.assertIsNone(Hotkey(frozenset(), "key", 0x91).validate())  # Scroll Lock
+        self.assertIsNone(Hotkey(frozenset(), "key", 0x70).validate())  # F1
         self.assertIsNone(Hotkey(frozenset(), "mouse", MOUSE_X1).validate())
 
     def test_validate_rejects_bare_normal_key(self):

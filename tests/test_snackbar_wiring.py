@@ -16,8 +16,8 @@ def _bare_app():
     QApplication.instance() or QApplication([])
     app = _TrayApp.__new__(_TrayApp)
     QObject.__init__(app)
-    app._tray = MagicMock()       # _apply_state calls setIcon/setToolTip
-    app._snackbar = MagicMock()   # what we assert on
+    app._tray = MagicMock()  # _apply_state calls setIcon/setToolTip
+    app._snackbar = MagicMock()  # what we assert on
     return app
 
 

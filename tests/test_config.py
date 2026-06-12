@@ -4,7 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.config import AppConfig, ProviderConfig, import_from_env, parse_custom_headers, validate_config
+from src.config import (
+    AppConfig,
+    ProviderConfig,
+    import_from_env,
+    parse_custom_headers,
+    validate_config,
+)
 
 
 class ConfigValidationTests(unittest.TestCase):
