@@ -23,7 +23,7 @@ def rewrite(text: str, config: AppConfig) -> PipelineResult:
             return PipelineResult(text=text)
 
         system_prompt = config.llm_system_prompt or ""
-        language = getattr(config, "stt_language", "")
+        language = config.stt_language
         if language:
             system_prompt += f"\nThe speech language is {language}."
 
