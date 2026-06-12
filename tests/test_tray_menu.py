@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -47,6 +47,24 @@ class TrayMenuTests(unittest.TestCase):
         finally:
             for p in reversed(patches):
                 p.stop()
+
+    def test_disable_while_recording_discards_audio(self):
+        from src.icons import TrayState
+
+        tray_app = make_tray_app()
+        tray_app._recording = True
+        tray_app._recorder = Mock()
+        states = []
+        tray_app._apply_state = lambda s: states.append(s)
+        finalized = []
+        tray_app._finalize_recording = lambda: finalized.append(True)
+
+        tray_app._toggle_enabled(False)
+
+        self.assertFalse(tray_app._recording)
+        tray_app._recorder.stop.assert_called_once()
+        self.assertEqual(finalized, [])
+        self.assertEqual(states, [TrayState.IDLE])
 
     def test_choice_submenu_uses_widget_actions(self):
         from PySide6.QtWidgets import QWidgetAction

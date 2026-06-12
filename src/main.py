@@ -330,6 +330,15 @@ class _TrayApp(QObject):
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
+    def _cancel_recording(self) -> None:
+        """Stop and discard the in-flight recording without processing it."""
+        self._recording = False
+        try:
+            self._recorder.stop()
+        except ScreamerError:
+            pass
+        self._apply_state(TrayState.IDLE)
+
     # ------------------------------------------------------------------
     # Hotkey callbacks (called from hotkey thread via SignalBridge → Qt main)
     # ------------------------------------------------------------------
@@ -413,7 +422,8 @@ class _TrayApp(QObject):
     def _toggle_enabled(self, checked: bool) -> None:
         self._enabled = checked
         if not checked and self._recording:
-            self._finalize_recording()
+            # Disabling means "stop"; don't transcribe and type the leftovers.
+            self._cancel_recording()
         log.info("Screamer %s", "enabled" if checked else "disabled")
 
     def _set_recording_mode(self, mode: str, rebuild_menu: bool = True) -> None:
