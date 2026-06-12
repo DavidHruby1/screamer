@@ -11,8 +11,9 @@ import logging
 from typing import Callable
 
 from PySide6.QtCore import QCoreApplication, QEvent, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QIcon, QKeyEvent, QMouseEvent, QPainter, QPixmap
+from PySide6.QtGui import QAction, QIcon, QKeyEvent, QMouseEvent, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -82,6 +83,8 @@ def _eye_icon() -> QIcon:
     pixmap = QPixmap(16, 16)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
+    # Default pen is black — invisible on dark themes; follow the palette.
+    painter.setPen(QApplication.palette().color(QPalette.ColorRole.Text))
     painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "\N{EYE}")
     painter.end()
     return QIcon(pixmap)
