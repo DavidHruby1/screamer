@@ -7,6 +7,7 @@ No public exports. Nothing imports main.py.
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 from typing import Any
@@ -116,8 +117,10 @@ class _TrayApp(QObject):
         super().__init__()
 
         self._config = load_config()
-        self._config = import_from_env(self._config)
-        save_config(self._config)
+        imported = import_from_env(copy.deepcopy(self._config))
+        if imported != self._config:
+            self._config = imported
+            save_config(self._config)
 
         self._recorder = AudioRecorder()
         self._bridge = SignalBridge()

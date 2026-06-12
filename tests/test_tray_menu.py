@@ -48,6 +48,47 @@ class TrayMenuTests(unittest.TestCase):
             for p in reversed(patches):
                 p.stop()
 
+    def _startup_patches(self, import_side_effect):
+        from src.config import AppConfig
+
+        return [
+            patch("src.main.load_config", return_value=AppConfig()),
+            patch("src.main.import_from_env", side_effect=import_side_effect),
+            patch("src.main.save_config"),
+            patch("src.main.validate_config", return_value=[]),
+            patch("src.main.AudioRecorder"),
+            patch.object(_TrayApp, "_build_tray"),
+            patch.object(_TrayApp, "_build_hotkey"),
+            patch.object(_TrayApp, "_apply_state"),
+            patch.object(_TrayApp, "_open_settings"),
+        ]
+
+    def test_startup_save_skipped_when_env_adds_nothing(self):
+        patches = self._startup_patches(lambda cfg: cfg)
+        started = [p.start() for p in patches]
+        try:
+            _TrayApp(startup_mode=True)
+            save_config_mock = started[2]
+            save_config_mock.assert_not_called()
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
+    def test_startup_save_runs_when_env_imports_values(self):
+        def fake_import(cfg):
+            cfg.stt_api_key = "imported"
+            return cfg
+
+        patches = self._startup_patches(fake_import)
+        started = [p.start() for p in patches]
+        try:
+            _TrayApp(startup_mode=True)
+            save_config_mock = started[2]
+            save_config_mock.assert_called_once()
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
     def test_disable_while_recording_discards_audio(self):
         from src.icons import TrayState
 
