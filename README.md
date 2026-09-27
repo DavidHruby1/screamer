@@ -155,6 +155,8 @@ Build the Windows executable:
 python -m PyInstaller --noconfirm --clean screamer.spec
 ```
 
+CI also builds the Windows executable on pull requests to catch packaging failures before merge.
+
 ## Releases
 
 Pushing a version tag builds and publishes a Windows release automatically:
