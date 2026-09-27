@@ -1,5 +1,9 @@
 # Plan — GitHub Release Pipeline
 
+> **Historical plan (superseded):** The current implementation uses the reviewed-main
+> pipeline described in [RELEASES.md](RELEASES.md). The tag-triggered workflow and the
+> later Release Please proposal were not retained. Kept below for historical context.
+
 ## Goal
 On a version tag push, automatically build the Windows `.exe`, package it, and publish a GitHub Release with the artifact attached. No manual build/upload steps.
 

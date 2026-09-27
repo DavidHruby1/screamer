@@ -159,26 +159,19 @@ CI also builds the Windows executable on pull requests to catch packaging failur
 
 ## Releases
 
-Pushing a version tag builds and publishes a Windows release automatically:
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-The release workflow:
-
-1. Installs dependencies.
-2. Runs the test suite.
-3. Builds Screamer with PyInstaller.
-4. Packages the app as:
+After a reviewed merge to `main`, successful CI and CodeQL, the release workflow
+chooses a version relative to the latest published stable release. It builds and tests
+on Windows, then publishes a GitHub Release only once both assets are attached:
 
 ```text
-Screamer-v1.0.0-windows-x64.zip
-Screamer-v1.0.0-windows-x64.zip.sha256
+Screamer-vX.Y.Z-windows-x64.zip
+Screamer-vX.Y.Z-windows-x64.zip.sha256
 ```
 
-Hyphenated tags like `v1.0.0-rc1` are published as pre-releases.
+Version bumps follow the commits since that release: breaking changes cause a major
+bump, `feat:` a minor bump, and other changes a patch bump. No second release PR,
+personal token or manual tag is needed. For permissions, recovery and limitations,
+see [release operations](docs/RELEASES.md).
 
 ## Platform
 
