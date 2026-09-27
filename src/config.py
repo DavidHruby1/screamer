@@ -6,6 +6,8 @@ import json
 import logging
 import os
 import platform
+import sys
+import tempfile
 from dataclasses import dataclass, field, fields
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlsplit
@@ -332,13 +334,18 @@ class AppConfig:
         )
 
 
-# Fields that contain secret API keys and must go through DPAPI.
+# Fields that contain secrets and must go through DPAPI: API keys, plus custom
+# headers (which routinely carry tokens such as X-Api-Key).
 _SECRET_FIELDS = frozenset(
     {
         "stt_api_key",
         "stt_fallback_api_key",
         "llm_api_key",
         "llm_fallback_api_key",
+        "stt_custom_headers",
+        "stt_fallback_custom_headers",
+        "llm_custom_headers",
+        "llm_fallback_custom_headers",
     }
 )
 
@@ -404,9 +411,12 @@ def _dpapi_encrypt(plaintext: str) -> str:
 
 def _dpapi_decrypt(hex_blob: str) -> str:
     """Decrypt a hex-encoded DPAPI blob. Returns plaintext string."""
-    return _dpapi_crypt(
-        bytes.fromhex(hex_blob), protect=False, errmsg="DPAPI decrypt failed"
-    ).decode("utf-8")
+    try:
+        return _dpapi_crypt(
+            bytes.fromhex(hex_blob), protect=False, errmsg="DPAPI decrypt failed"
+        ).decode("utf-8")
+    except (ValueError, UnicodeError) as e:
+        raise ScreamerError(AppError.KEY_STORAGE_FAILED, "Invalid encrypted key data") from e
 
 
 # ---------------------------------------------------------------------------
@@ -424,21 +434,40 @@ def _get_qsettings():
     return settings
 
 
-def _save_secrets(cfg: AppConfig) -> None:
+def _save_secrets(cfg: AppConfig) -> bool:
     """Persist secret fields via DPAPI to APP_DIR/keys.enc."""
     if not _dpapi_available():
         log.debug("DPAPI unavailable; skipping secret persistence")
-        return
+        return False
 
-    os.makedirs(APP_DIR, exist_ok=True)
     blob = {}
     for name in _SECRET_FIELDS:
         val = getattr(cfg, name)
         if val:
             blob[name] = _dpapi_encrypt(val)
-    path = os.path.join(APP_DIR, "keys.enc")
-    with open(path, "w") as f:
-        json.dump(blob, f)
+    temp_path = None
+    try:
+        os.makedirs(APP_DIR, exist_ok=True)
+        path = os.path.join(APP_DIR, "keys.enc")
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=APP_DIR, prefix=".keys-", delete=False
+        ) as f:
+            temp_path = f.name
+            json.dump(blob, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, path)
+    except OSError as e:
+        raise ScreamerError(AppError.KEY_STORAGE_FAILED, "Encrypted key file write failed") from e
+    finally:
+        if temp_path is not None:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                log.warning("Could not remove temporary encrypted key file")
+    return True
 
 
 def _load_secrets(cfg: AppConfig) -> None:
@@ -447,21 +476,24 @@ def _load_secrets(cfg: AppConfig) -> None:
         return
 
     path = os.path.join(APP_DIR, "keys.enc")
-    if not os.path.exists(path):
-        return
     try:
         with open(path) as f:
             blob = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        log.warning("Failed to read keys.enc; ignoring")
+    except FileNotFoundError:
         return
+    except (json.JSONDecodeError, OSError) as e:
+        raise ScreamerError(AppError.KEY_STORAGE_FAILED, "Encrypted key file unreadable") from e
+
+    if not isinstance(blob, dict) or any(
+        not isinstance(name, str) or not isinstance(value, str) for name, value in blob.items()
+    ):
+        raise ScreamerError(AppError.KEY_STORAGE_FAILED, "Invalid encrypted key data")
 
     for name, hex_val in blob.items():
-        if name in _SECRET_FIELDS and not getattr(cfg, name):
-            try:
-                setattr(cfg, name, _dpapi_decrypt(hex_val))
-            except ScreamerError:
-                log.warning("Failed to decrypt %s; skipping", name)
+        if name in _SECRET_FIELDS:
+            value = _dpapi_decrypt(hex_val)
+            if not getattr(cfg, name):
+                setattr(cfg, name, value)
 
 
 # ---------------------------------------------------------------------------
@@ -515,14 +547,30 @@ def load_config() -> AppConfig:
 
 
 def save_config(cfg: AppConfig) -> None:
-    """Persist to QSettings + DPAPI. api_key fields go through DPAPI."""
+    """Persist plain settings in QSettings and secrets via DPAPI."""
+    secrets_saved = _save_secrets(cfg)
     settings = _get_qsettings()
     for f in fields(AppConfig):
         if f.name in _SECRET_FIELDS:
+            if secrets_saved:
+                settings.remove(f.name)
             continue
         settings.setValue(f.name, getattr(cfg, f.name))
     settings.sync()
-    _save_secrets(cfg)
+    from PySide6.QtCore import QSettings
+
+    if settings.status() != QSettings.Status.NoError:
+        raise ScreamerError(AppError.KEY_STORAGE_FAILED, "Settings file write failed")
+
+
+def has_plaintext_secrets() -> bool:
+    """True if any secret field still sits as plaintext in settings.ini.
+
+    Older versions wrote custom headers to the ini; save_config purges them,
+    but the purge only happens on save — callers use this to force one.
+    """
+    settings = _get_qsettings()
+    return any(settings.contains(name) for name in _SECRET_FIELDS)
 
 
 def reset_config() -> AppConfig:
@@ -599,15 +647,23 @@ def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]:
     return issues
 
 
+def _env_path() -> str:
+    """Locate .env: next to the executable when frozen, else at cwd (dev runs)."""
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), ".env")
+    return os.path.join(os.getcwd(), ".env")
+
+
 def import_from_env(cfg: AppConfig) -> AppConfig:
-    """Read .env at cwd; backfill ONLY empty str fields. No-op if no .env file."""
+    """Read .env (exe dir when frozen, else cwd); backfill ONLY empty str fields.
+    No-op if no .env file."""
     try:
         from dotenv import dotenv_values
     except ImportError:
         log.debug("python-dotenv not installed; skipping .env import")
         return cfg
 
-    env_path = os.path.join(os.getcwd(), ".env")
+    env_path = _env_path()
     if not os.path.exists(env_path):
         return cfg
 
