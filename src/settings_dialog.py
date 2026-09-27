@@ -10,7 +10,7 @@ import copy
 import logging
 from typing import Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, Qt, Signal
 from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -81,6 +81,9 @@ class SettingsDialog(QDialog):
     *calibrate_fn*: ``fn(device_id) -> float`` that runs RMS calibration.
         ``None`` disables the calibrate button.
     """
+
+    hotkey_capture_active_changed = Signal(bool)
+    applied = Signal()
 
     def __init__(
         self,
@@ -168,7 +171,7 @@ class SettingsDialog(QDialog):
         self._hotkey_capture = HotkeyCaptureEdit()
         self._hotkey_capture.captured.connect(self._on_hotkey_captured)
         self._hotkey_capture.cancelled.connect(self._stop_hotkey_recording)
-        self._hotkey_record_btn = QPushButton("Record")
+        self._hotkey_record_btn = QPushButton("Register Hotkey")
         self._hotkey_record_btn.setCheckable(True)
         self._hotkey_record_btn.clicked.connect(self._on_hotkey_record_clicked)
         capture_row = QHBoxLayout()
@@ -224,17 +227,23 @@ class SettingsDialog(QDialog):
             self._set_captured_hotkey(hotkey)
 
     def _start_hotkey_recording(self) -> None:
+        if self._hotkey_capture.is_recording():
+            return
         self._hotkey_record_btn.setChecked(True)
         self._hotkey_record_btn.setText("Cancel")
         self._hotkey_error.setVisible(False)
+        self.hotkey_capture_active_changed.emit(True)
         self._hotkey_capture.start_recording()
 
     def _stop_hotkey_recording(self) -> None:
+        if not self._hotkey_capture.is_recording():
+            return
         self._hotkey_record_btn.setChecked(False)
-        self._hotkey_record_btn.setText("Record")
+        self._hotkey_record_btn.setText("Register Hotkey")
         self._hotkey_capture.stop_recording()
         if self._captured_hotkey is not None:
             self._hotkey_capture.show_hotkey(self._captured_hotkey)
+        self.hotkey_capture_active_changed.emit(False)
 
     def _on_hotkey_record_clicked(self, checked: bool) -> None:
         if checked:
@@ -554,12 +563,14 @@ class SettingsDialog(QDialog):
     def _on_apply(self) -> None:
         """Apply: collect and persist without closing."""
         with log_duration(log, "Settings apply"):
+            self._stop_hotkey_recording()
             self._collect()
             if not self._show_validation_issue():
                 return
             if not self._sync_startup_or_warn():
                 return
             save_config(self._working)
+            self.applied.emit()
             log.info("Settings applied")
 
     # ------------------------------------------------------------------
@@ -567,8 +578,20 @@ class SettingsDialog(QDialog):
     # ------------------------------------------------------------------
 
     def accept(self) -> None:
+        self._stop_hotkey_recording()
         self._collect()
         super().accept()
+
+    def reject(self) -> None:
+        self._stop_hotkey_recording()
+        super().reject()
+
+    def done(self, result: int) -> None:
+        self._stop_hotkey_recording()
+        super().done(result)
+
+    def is_hotkey_capture_active(self) -> bool:
+        return self._hotkey_capture.is_recording()
 
     def _show_validation_issue(self) -> bool:
         issue = next(iter(validate_config(self._working)), None)
@@ -673,15 +696,23 @@ class HotkeyCaptureEdit(QLineEdit):
         return self._recording
 
     def start_recording(self) -> None:
+        if self._recording:
+            return
         self._recording = True
-        self.setText("press keys or a mouse button…")
+        self.setText("press the new hotkey…")
         self.setFocus(Qt.OtherFocusReason)
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
         self.grabKeyboard()
-        self.grabMouse()
 
     def stop_recording(self) -> None:
+        if not self._recording:
+            return
         self._recording = False
-        self.releaseMouse()
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
         self.releaseKeyboard()
 
     def show_hotkey(self, hotkey: Hotkey) -> None:
@@ -712,6 +743,16 @@ class HotkeyCaptureEdit(QLineEdit):
             return
         event.accept()
         self.captured.emit(Hotkey(_mods_from_qt(event.modifiers()), "mouse", code))
+
+    def eventFilter(self, watched, event) -> bool:
+        if not self._recording or event.type() != QEvent.Type.MouseButtonPress:
+            return False
+        code = _mouse_button_to_code(event.button())
+        if code is None:
+            return False
+        event.accept()
+        self.captured.emit(Hotkey(_mods_from_qt(event.modifiers()), "mouse", code))
+        return True
 
 
 def _combo_index(combo: QComboBox, data: str) -> int:
