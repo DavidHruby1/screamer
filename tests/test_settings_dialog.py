@@ -61,9 +61,11 @@ class CalibrateThreadTests(unittest.TestCase):
                 self.assertIsNotNone(thread)
                 spy = QSignalSpy(thread.finished)
                 release.set()
-                # wait() spins an event loop, delivering the queued result
-                # slots and _on_calibrate_finished before returning.
-                self.assertTrue(spy.wait(5000))
+                # The thread may finish before wait() starts; don't wait for a
+                # second finished signal that will never be emitted.
+                self.assertTrue(spy.count() or spy.wait(5000))
+                self.assertTrue(thread.wait(5000))
+                QApplication.processEvents()
             self.assertIsNone(dlg._calib_thread)
             self.assertEqual(dlg._rms_spin.value(), 7.5)
             self.assertTrue(dlg._calibrate_btn.isEnabled())
@@ -84,10 +86,11 @@ class CalibrateThreadTests(unittest.TestCase):
         try:
             with patch("src.settings_dialog.QMessageBox"):
                 dlg._on_calibrate()
+                thread = dlg._calib_thread
                 before = dlg._rms_spin.value()
-                # Release the worker shortly after done() starts waiting on it.
-                threading.Timer(0.05, release.set).start()
                 dlg.reject()
+                release.set()
+                self.assertTrue(thread.wait(5000))
             QApplication.processEvents()
             self.assertEqual(dlg._rms_spin.value(), before)
         finally:
@@ -111,14 +114,14 @@ class CalibrateThreadTests(unittest.TestCase):
                 dlg._on_calibrate()
                 self.assertTrue(started.wait(5))
                 thread = dlg._calib_thread
-                spy = QSignalSpy(thread.finished)
                 before = dlg._rms_spin.value()
                 dlg.reject()
                 self.assertIsNotNone(dlg._calib_thread)
                 self.assertEqual(dlg.result(), 0)
                 self.assertFalse(dlg._button_box.isEnabled())
                 release.set()
-                self.assertTrue(spy.wait(5000))
+                self.assertTrue(thread.wait(5000))
+                QApplication.processEvents()
             self.assertIsNone(dlg._calib_thread)
             self.assertEqual(dlg._rms_spin.value(), before)
         finally:
