@@ -6,7 +6,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent
 from PySide6.QtGui import QFocusEvent
-from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication, QLineEdit
 
 from src.config import AppConfig
@@ -46,9 +45,11 @@ class CalibrateThreadTests(unittest.TestCase):
     def test_calibration_runs_off_ui_thread_and_updates_spin(self) -> None:
         import threading
 
+        started = threading.Event()
         release = threading.Event()
 
         def calibrate(device_id):
+            started.set()
             release.wait(5)
             return 7.5
 
@@ -59,11 +60,8 @@ class CalibrateThreadTests(unittest.TestCase):
                 self.assertFalse(dlg._calibrate_btn.isEnabled())
                 thread = dlg._calib_thread
                 self.assertIsNotNone(thread)
-                spy = QSignalSpy(thread.finished)
+                self.assertTrue(started.wait(5))
                 release.set()
-                # The thread may finish before wait() starts; don't wait for a
-                # second finished signal that will never be emitted.
-                self.assertTrue(spy.count() or spy.wait(5000))
                 self.assertTrue(thread.wait(5000))
                 QApplication.processEvents()
             self.assertIsNone(dlg._calib_thread)
