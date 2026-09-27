@@ -10,9 +10,10 @@ import copy
 import logging
 from typing import Callable
 
-from PySide6.QtCore import QCoreApplication, QEvent, Qt, Signal
-from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtCore import QCoreApplication, QEvent, Qt, QThread, Signal
+from PySide6.QtGui import QAction, QIcon, QKeyEvent, QMouseEvent, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -56,21 +57,58 @@ log = logging.getLogger(__name__)
 # Type alias for device list items: (id, display_name).
 DeviceItem = tuple[int, str]
 
+_CALIBRATE_LABEL = "Recalibrate RMS Threshold"
+
+
+class _CalibrateThread(QThread):
+    """Runs the blocking RMS calibration off the UI thread."""
+
+    succeeded = Signal(float)
+    failed = Signal(str)
+
+    def __init__(
+        self, fn: Callable[[int | None], float], device_id: int | None, parent=None
+    ) -> None:
+        super().__init__(parent)
+        self._fn = fn
+        self._device_id = device_id
+
+    def run(self) -> None:
+        try:
+            self.succeeded.emit(self._fn(self._device_id))
+        except Exception as e:  # surface any calibration failure to the dialog
+            self.failed.emit(str(e))
+
+
+def _eye_icon() -> QIcon:
+    """Small glyph for the show/hide toggle (the project ships no icon assets)."""
+    pixmap = QPixmap(16, 16)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    # Default pen is black — invisible on dark themes; follow the palette.
+    painter.setPen(QApplication.palette().color(QPalette.ColorRole.Text))
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "\N{EYE}")
+    painter.end()
+    return QIcon(pixmap)
+
 
 class PasswordField(QLineEdit):
-    """Password line edit that reveals text only while focused."""
+    """Masked line edit with an explicit trailing show/hide toggle.
+
+    Stays masked on focus; the secret is only revealed while the toggle is on.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.setEchoMode(QLineEdit.EchoMode.Password)
+        reveal = QAction(_eye_icon(), "Show", self)
+        reveal.setCheckable(True)
+        reveal.setToolTip("Show/hide value")
+        reveal.toggled.connect(self._on_reveal_toggled)
+        self.addAction(reveal, QLineEdit.ActionPosition.TrailingPosition)
 
-    def focusInEvent(self, event) -> None:
-        self.setEchoMode(QLineEdit.EchoMode.Normal)
-        super().focusInEvent(event)
-
-    def focusOutEvent(self, event) -> None:
-        self.setEchoMode(QLineEdit.EchoMode.Password)
-        super().focusOutEvent(event)
+    def _on_reveal_toggled(self, checked: bool) -> None:
+        self.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password)
 
 
 class SettingsDialog(QDialog):
@@ -98,6 +136,8 @@ class SettingsDialog(QDialog):
 
         self._devices = devices if devices is not None else []
         self._calibrate_fn = calibrate_fn
+        self._calib_thread: _CalibrateThread | None = None
+        self._pending_result: int | None = None
 
         # Edit a deep copy so the original is untouched until accept.
         self._working = copy.deepcopy(config)
@@ -140,7 +180,7 @@ class SettingsDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel
             | QDialogButtonBox.StandardButton.Apply
         )
-        self._button_box.accepted.connect(self._validate_and_accept)
+        self._button_box.accepted.connect(self.accept)
         self._button_box.rejected.connect(self.reject)
         self._button_box.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(
             self._on_apply
@@ -358,7 +398,7 @@ class SettingsDialog(QDialog):
         self._populate_devices()
         form.addRow("Input Device:", self._device_combo)
 
-        self._calibrate_btn = QPushButton("Recalibrate RMS Threshold")
+        self._calibrate_btn = QPushButton(_CALIBRATE_LABEL)
         self._calibrate_btn.clicked.connect(self._on_calibrate)
         if self._calibrate_fn is None:
             self._calibrate_btn.setEnabled(False)
@@ -511,37 +551,52 @@ class SettingsDialog(QDialog):
                     return
 
     def _on_calibrate(self) -> None:
-        """Run RMS auto-calibration via the provided callback."""
-        if self._calibrate_fn is None:
+        """Run RMS auto-calibration in a worker thread; keep the dialog responsive."""
+        if (
+            self._calibrate_fn is None
+            or self._calib_thread is not None
+            or self._pending_result is not None
+        ):
             return
 
-        device_id = self._device_combo.currentData()
-        try:
-            QMessageBox.information(
-                self,
-                "Calibrating",
-                "Silence please — measuring ambient noise for 2 seconds...",
-            )
-            threshold = self._calibrate_fn(device_id)
-            self._working.rms_threshold = threshold
-            self._rms_spin.setValue(threshold)
-            self._rms_label.setText(f"Threshold: {threshold:.1f}")
-        except Exception as e:
-            QMessageBox.warning(self, "Calibration Failed", str(e))
+        QMessageBox.information(
+            self,
+            "Calibrating",
+            "Silence please — measuring ambient noise for 2 seconds...",
+        )
+        self._calibrate_btn.setEnabled(False)
+        self._calibrate_btn.setText("Calibrating...")
 
-    # ------------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------------
+        thread = _CalibrateThread(self._calibrate_fn, self._device_combo.currentData(), self)
+        thread.succeeded.connect(self._on_calibrate_succeeded)
+        thread.failed.connect(self._on_calibrate_failed)
+        thread.finished.connect(self._on_calibrate_finished)
+        self._calib_thread = thread
+        thread.start()
 
-    def _validate_and_accept(self) -> None:
-        """Validate required fields, then accept."""
-        self._collect()
-        if not self._show_validation_issue():
+    def _on_calibrate_succeeded(self, threshold: float) -> None:
+        if self._pending_result is not None:
             return
-        if not self._sync_startup_or_warn():
-            return
+        self._working.rms_threshold = threshold
+        self._rms_spin.setValue(threshold)
+        self._rms_label.setText(f"Threshold: {threshold:.1f}")
 
-        super().accept()
+    def _on_calibrate_failed(self, message: str) -> None:
+        if self._pending_result is not None:
+            return
+        QMessageBox.warning(self, "Calibration Failed", message)
+
+    def _on_calibrate_finished(self) -> None:
+        thread = self._calib_thread
+        self._calib_thread = None
+        self._calibrate_btn.setEnabled(True)
+        self._calibrate_btn.setText(_CALIBRATE_LABEL)
+        if thread is not None:
+            thread.deleteLater()
+        if self._pending_result is not None:
+            result = self._pending_result
+            self._pending_result = None
+            super().done(result)
 
     # ------------------------------------------------------------------
     # Bottom bar actions
@@ -564,6 +619,8 @@ class SettingsDialog(QDialog):
 
     def _on_apply(self) -> None:
         """Apply: collect and persist without closing."""
+        if self._pending_result is not None:
+            return
         with log_duration(log, "Settings apply"):
             self._stop_hotkey_recording()
             self._collect()
@@ -580,16 +637,34 @@ class SettingsDialog(QDialog):
     # ------------------------------------------------------------------
 
     def accept(self) -> None:
+        """Validate on every accept path (OK button, direct accept() calls)."""
+        if self._pending_result is not None:
+            return
         self._stop_hotkey_recording()
         self._collect()
+        if not self._show_validation_issue():
+            return
+        if not self._sync_startup_or_warn():
+            return
         super().accept()
 
     def reject(self) -> None:
+        if self._pending_result is not None:
+            return
         self._stop_hotkey_recording()
         super().reject()
 
     def done(self, result: int) -> None:
+        if self._pending_result is not None:
+            return
         self._stop_hotkey_recording()
+        if self._calib_thread is not None:
+            # A result may be queued before finished; keep the dialog alive until
+            # the thread ends and ignore results after closing was requested.
+            self._pending_result = result
+            self._button_box.setEnabled(False)
+            self._calibrate_btn.setEnabled(False)
+            return
         super().done(result)
 
     def is_hotkey_capture_active(self) -> bool:

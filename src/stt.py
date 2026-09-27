@@ -48,6 +48,8 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
                         warnings.append(AppError.STT_FALLBACK_USED)
                     return PipelineResult(text=text, warnings=warnings)
             except ScreamerError:
+                # NO_SPEECH is final: silence in the primary's result will not
+                # become speech at the fallback, so don't retry it there.
                 raise
             except Exception as e:
                 log.warning("%s STT failed: %s", "Fallback" if is_fallback else "Primary", e)

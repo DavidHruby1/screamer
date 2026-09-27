@@ -159,13 +159,16 @@ def load_config() -> AppConfig: ...
     """Load QSettings + DPAPI. Unknown keys get field defaults."""
 
 def save_config(cfg: AppConfig) -> None: ...
-    """Persist to QSettings + DPAPI. api_key fields go through DPAPI."""
+    """Persist to QSettings + DPAPI. api_key and custom-header fields go through DPAPI."""
+
+def has_plaintext_secrets() -> bool: ...
+    """True if any secret field still sits as plaintext in settings.ini."""
 
 def reset_config() -> AppConfig: ...
     """Fresh AppConfig with all defaults. Does not write disk."""
 
 def import_from_env(cfg: AppConfig) -> AppConfig: ...
-    """Read .env at cwd; backfill ONLY empty str fields. No-op if no .env file."""
+    """Read .env at cwd (next to the exe when frozen); backfill ONLY empty str fields."""
 
 def setup_logging(debug: bool = False) -> None: ...
     """Rotating file at APP_DIR/screamer.log. Never log api_key values.
@@ -282,7 +285,7 @@ class RecordingSnackbar(QWidget):
 
 ```python
 class PasswordField(QLineEdit):
-    """Password line edit that reveals text only while focused."""
+    """Masked line edit with an explicit trailing show/hide toggle action."""
 
 class SettingsDialog(QDialog):
     def __init__(
@@ -364,7 +367,8 @@ Windows-first project. Agents may run on Linux/macOS.
 Phase 1 modules have standalone `__main__` blocks for smoke testing. STT/LLM defaults are empty. CLI scripts must resolve credentials as follows:
 
 1. `load_config()` → read QSettings + DPAPI.
-2. If `.env` exists at cwd, `import_from_env(config)` backfills empty fields.
+2. If `.env` exists in the working directory (or next to `Screamer.exe` in a frozen build),
+   `import_from_env(config)` backfills empty fields.
 3. If required API fields are still empty, print to stderr and `exit(1)`:
 
    ```
@@ -454,8 +458,12 @@ Do not proceed to Phase 2 until review passes.
 - Tray menu quick-toggles sync bidirectionally with Settings dialog values.
 - Tray icon: grey (idle) → red (recording) → yellow (processing) → grey.
 - Errors appear as tray balloons (user-facing `AppError` messages).
-- Exit triggers graceful shutdown: cancel worker (Event, 5s timeout), stop audio, save settings, quit Qt.
-- During active processing, Exit aborts within 5 seconds.
+- Exit cancels queued processing, stops audio, and waits for the active network call and
+  calibration thread to finish before saving settings and quitting Qt. A stalled network
+  request can delay exit; the worker is never force-terminated.
+- Disable discards an active recording and cancels processing before injection starts.
+  Final text injection runs on the Qt thread so a Disable action cannot interleave with its
+  final check; already-sent `SendInput` events cannot be undone.
 
 ---
 
@@ -466,7 +474,7 @@ Do not proceed to Phase 2 until review passes.
 - [ ] Tray app starts and exits cleanly (no zombie threads).
 - [ ] Tray menu and Settings dialog values stay in sync bidirectionally.
 - [ ] Full dictation loop works on Windows: hotkey → speak → processing → text appears.
-- [ ] Worker shutdown is graceful (cancellation Event, 5s timeout, audio stream stopped).
+- [ ] Worker shutdown is graceful (cancellation Event, active work finishes, audio stream stopped).
 - [ ] User-facing errors appear through tray balloons.
 - [ ] Phase 2 does not modify Phase 1 APIs except for reviewed bug fixes. Any API change to Phase 1 during Phase 2 must be documented and re-reviewed.
 
@@ -477,5 +485,8 @@ Do not proceed to Phase 2 until review passes.
 - No modules beyond the 11 listed. No new dependencies.
 - Do not implement packaging (PyInstaller), code signing, or cross-platform hotkey backends.
 - Autostart registration is implemented in `startup.py`.
-- All paths: `%LOCALAPPDATA%/Screamer/`. API keys: DPAPI. Plain settings: QSettings (IniFormat).
+- All paths: `%LOCALAPPDATA%/Screamer/`. API keys + custom headers: DPAPI in atomically
+  replaced `keys.enc`; only after successful encryption are legacy plaintext values purged
+  from QSettings (IniFormat). A failed encrypted read fails closed rather than overwriting
+  stored credentials. Source runs read `.env` at cwd; frozen runs read it beside the exe.
 - If a Phase 2 bug forces a Phase 1 API change, document it in the review checkpoint and get re-approval.

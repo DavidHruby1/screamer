@@ -7,6 +7,7 @@ No public exports. Nothing imports main.py.
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 from typing import Any
@@ -29,6 +30,7 @@ from src.config import (
     POST_KEY_OPTIONS,
     AppConfig,
     Hotkey,
+    has_plaintext_secrets,
     import_from_env,
     load_config,
     save_config,
@@ -48,12 +50,12 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Worker thread — runs the full pipeline off the Qt main thread.
+# Worker thread — computes pipeline output off the Qt main thread.
 # ---------------------------------------------------------------------------
 
 
 class _WorkerThread(QThread):
-    """Daemon thread: transcribe → rewrite → type.
+    """Thread: transcribe → rewrite; main thread owns final injection.
 
     Communicates results back to the Qt main thread via explicit signals.
     Checks cancel_event before each blocking step.
@@ -96,9 +98,6 @@ class _WorkerThread(QThread):
                 self.cancelled.emit()
                 return
 
-            post_key = self._config.post_type_key
-            type_text(result.text, post_key if post_key != "none" else None)
-
             self.succeeded.emit(PipelineResult(text=result.text, warnings=all_warnings))
         except Exception as e:
             self.failed.emit(e)
@@ -116,8 +115,12 @@ class _TrayApp(QObject):
         super().__init__()
 
         self._config = load_config()
-        self._config = import_from_env(self._config)
-        save_config(self._config)
+        imported = import_from_env(copy.deepcopy(self._config))
+        if imported != self._config or has_plaintext_secrets():
+            # Save when .env added values, or to purge plaintext secrets an
+            # older version left in settings.ini (save_config removes them).
+            self._config = imported
+            save_config(self._config)
 
         self._recorder = AudioRecorder()
         self._bridge = SignalBridge()
@@ -127,6 +130,7 @@ class _TrayApp(QObject):
         self._settings_hotkey_capture_paused = False
         self._recording = False
         self._enabled = True
+        self._exiting = False
 
         self._snackbar = RecordingSnackbar()
 
@@ -329,14 +333,25 @@ class _TrayApp(QObject):
         self._worker.succeeded.connect(self._on_worker_succeeded)
         self._worker.failed.connect(self._on_worker_failed)
         self._worker.cancelled.connect(self._on_worker_cancelled)
+        self._worker.finished.connect(self._on_worker_finished)
+        self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
+
+    def _cancel_recording(self) -> None:
+        """Stop and discard the in-flight recording without processing it."""
+        self._recording = False
+        try:
+            self._recorder.stop()
+        except ScreamerError as e:
+            self._on_error(e.code, e.detail)
+        self._apply_state(TrayState.IDLE)
 
     # ------------------------------------------------------------------
     # Hotkey callbacks (called from hotkey thread via SignalBridge → Qt main)
     # ------------------------------------------------------------------
 
     def _on_hotkey_pressed(self) -> None:
-        if not self._enabled:
+        if not self._enabled or self._exiting:
             return
 
         if self._is_hotkey_capture_active() and not self._recording:
@@ -379,13 +394,20 @@ class _TrayApp(QObject):
     # ------------------------------------------------------------------
 
     def _on_worker_succeeded(self, result: PipelineResult) -> None:
-        self._worker = None
+        if not self._cancel_event.is_set() and self._enabled and not self._exiting:
+            # Disable and injection share the UI thread: once this check passes,
+            # no Disable event can interleave with the batched SendInput call.
+            try:
+                post_key = self._config.post_type_key
+                type_text(result.text, post_key if post_key != "none" else None)
+            except Exception as e:
+                self._on_worker_failed(e)
+                return
         for warning in result.warnings:
             self._on_error(warning)
         self._apply_state(TrayState.IDLE)
 
     def _on_worker_failed(self, error: Exception) -> None:
-        self._worker = None
         if isinstance(error, ScreamerError):
             self._on_error(error.code, error.detail)
         else:
@@ -393,8 +415,12 @@ class _TrayApp(QObject):
         self._apply_state(TrayState.IDLE)
 
     def _on_worker_cancelled(self) -> None:
-        self._worker = None
         self._apply_state(TrayState.IDLE)
+
+    def _on_worker_finished(self) -> None:
+        self._worker = None
+        if self._exiting:
+            self._finish_exit()
 
     # ------------------------------------------------------------------
     # Error → balloon
@@ -413,8 +439,14 @@ class _TrayApp(QObject):
 
     def _toggle_enabled(self, checked: bool) -> None:
         self._enabled = checked
-        if not checked and self._recording:
-            self._finalize_recording()
+        if not checked:
+            if self._recording:
+                # Disabling means "stop"; don't transcribe and type the leftovers.
+                self._cancel_recording()
+            elif self._worker is not None:
+                # Mid-processing: don't type into the focused window after the
+                # user disabled us. The main-thread success slot checks again.
+                self._cancel_event.set()
         log.info("Screamer %s", "enabled" if checked else "disabled")
 
     def _set_recording_mode(self, mode: str, rebuild_menu: bool = True) -> None:
@@ -450,7 +482,7 @@ class _TrayApp(QObject):
             self._open_settings()
 
     def _open_settings(self) -> None:
-        if self._settings_dlg is not None:
+        if self._settings_dlg is not None or self._exiting:
             return  # Already open.
 
         devices = self._get_device_list()
@@ -473,6 +505,8 @@ class _TrayApp(QObject):
             # Always reload from disk — Apply may have written new values,
             # and the user may have changed fields before Cancel.
             self._sync_settings_from_disk()
+            if self._exiting:
+                self._finish_exit()
 
         if result == SettingsDialog.DialogCode.Accepted:
             log.info("Settings updated from dialog")
@@ -492,19 +526,17 @@ class _TrayApp(QObject):
     # ------------------------------------------------------------------
 
     def _exit(self) -> None:
+        if self._exiting:
+            return
         log.info("Exit requested")
+        self._exiting = True
 
         # 1. Stop hotkey listener (prevents new recordings).
         self._hotkey.stop()
 
-        # 2. Cancel worker if running.
+        # 2. Cancel worker; finished will complete shutdown without blocking UI.
         if self._worker is not None:
             self._cancel_event.set()
-            self._worker.wait(5000)
-            if self._worker.isRunning():
-                log.warning("Worker did not stop within 5s; terminating")
-                self._worker.terminate()
-            self._worker = None
 
         # 3. Stop audio if recording.
         try:
@@ -513,10 +545,17 @@ class _TrayApp(QObject):
         except Exception:
             pass
 
-        # 4. Save settings.
+        if self._settings_dlg is not None:
+            self._settings_dlg.done(SettingsDialog.DialogCode.Rejected)
+        self._finish_exit()
+
+    def _finish_exit(self) -> None:
+        if self._worker is not None or self._settings_dlg is not None:
+            return
+        # Save settings only after both threads have finished.
         save_config(self._config)
 
-        # 5. Quit Qt.
+        # Quit Qt.
         self._tray.hide()
         self._snackbar.hide_state()
         QApplication.instance().quit()

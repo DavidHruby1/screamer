@@ -1,16 +1,21 @@
 import json
 import os
+import platform
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.config import (
     AppConfig,
     ProviderConfig,
+    _env_path,
     import_from_env,
     parse_custom_headers,
     validate_config,
 )
+from src.utils import AppError, ScreamerError
 
 
 class ConfigValidationTests(unittest.TestCase):
@@ -82,6 +87,183 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(imported.stt_api_key, "existing")
         self.assertEqual(imported.stt_base_url, "https://env.test/v1")
         self.assertEqual(imported.stt_model, "env-model")
+
+
+class SecretHeaderTests(unittest.TestCase):
+    def test_custom_headers_are_secret_fields(self) -> None:
+        from src.config import _SECRET_FIELDS
+
+        self.assertTrue(
+            {
+                "stt_custom_headers",
+                "stt_fallback_custom_headers",
+                "llm_custom_headers",
+                "llm_fallback_custom_headers",
+            }
+            <= _SECRET_FIELDS
+        )
+
+    @unittest.skipUnless(platform.system() == "Windows", "DPAPI requires Windows")
+    def test_save_config_keeps_headers_out_of_ini_and_roundtrips(self) -> None:
+        from src.config import load_config, save_config
+
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            cfg = AppConfig(stt_custom_headers='{"X-Token": "s3cret"}')
+            save_config(cfg)
+
+            ini = Path(tmp, "settings.ini").read_text(encoding="utf-8")
+            self.assertNotIn("s3cret", ini)
+
+            self.assertEqual(load_config().stt_custom_headers, '{"X-Token": "s3cret"}')
+
+    def test_has_plaintext_secrets_detects_stale_ini_values(self) -> None:
+        from src.config import _get_qsettings, has_plaintext_secrets
+
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            self.assertFalse(has_plaintext_secrets())
+
+            stale = _get_qsettings()
+            stale.setValue("llm_custom_headers", '{"X-Old": "plain"}')
+            stale.sync()
+            del stale
+
+            self.assertTrue(has_plaintext_secrets())
+
+    @unittest.skipUnless(platform.system() == "Windows", "DPAPI requires Windows")
+    def test_save_config_purges_stale_plaintext_headers(self) -> None:
+        from src.config import _get_qsettings, save_config
+
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            stale = _get_qsettings()
+            stale.setValue("llm_custom_headers", '{"X-Old": "plain"}')
+            stale.sync()
+            del stale
+
+            save_config(AppConfig())
+
+            ini = Path(tmp, "settings.ini").read_text(encoding="utf-8")
+            self.assertNotIn("X-Old", ini)
+
+    def test_migration_preserves_plaintext_if_encrypted_write_fails(self) -> None:
+        from src.config import _get_qsettings, has_plaintext_secrets, save_config
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("src.config.APP_DIR", tmp),
+            patch("src.config._dpapi_available", return_value=True),
+            patch("src.config._dpapi_encrypt", return_value="encrypted"),
+            patch("src.config.os.replace", side_effect=OSError("disk full")),
+        ):
+            settings = _get_qsettings()
+            settings.setValue("stt_custom_headers", '{"X-Token": "old"}')
+            settings.sync()
+
+            with self.assertRaises(ScreamerError) as error:
+                save_config(AppConfig(stt_custom_headers='{"X-Token": "old"}'))
+
+            self.assertEqual(error.exception.code, AppError.KEY_STORAGE_FAILED)
+            self.assertTrue(has_plaintext_secrets())
+            self.assertEqual(_get_qsettings().value("stt_custom_headers"), '{"X-Token": "old"}')
+            self.assertFalse(Path(tmp, "keys.enc").exists())
+            self.assertEqual(list(Path(tmp).glob(".keys-*")), [])
+
+    def test_existing_encrypted_store_survives_failed_replacement(self) -> None:
+        from src.config import save_config
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("src.config.APP_DIR", tmp),
+            patch("src.config._dpapi_available", return_value=True),
+            patch("src.config._dpapi_encrypt", return_value="new-blob"),
+        ):
+            path = Path(tmp, "keys.enc")
+            path.write_text('{"stt_api_key":"old-blob"}', encoding="utf-8")
+            with patch("src.config.os.replace", side_effect=OSError("disk full")):
+                with self.assertRaises(ScreamerError):
+                    save_config(AppConfig(stt_api_key="new"))
+            self.assertEqual(path.read_text(encoding="utf-8"), '{"stt_api_key":"old-blob"}')
+
+    def test_encryption_failure_leaves_plaintext_untouched(self) -> None:
+        from src.config import _get_qsettings, save_config
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("src.config.APP_DIR", tmp),
+            patch("src.config._dpapi_available", return_value=True),
+            patch(
+                "src.config._dpapi_encrypt", side_effect=ScreamerError(AppError.KEY_STORAGE_FAILED)
+            ),
+        ):
+            settings = _get_qsettings()
+            settings.setValue("llm_custom_headers", "legacy")
+            settings.sync()
+            with self.assertRaises(ScreamerError):
+                save_config(AppConfig(llm_custom_headers="legacy"))
+            self.assertEqual(_get_qsettings().value("llm_custom_headers"), "legacy")
+
+    def test_unreadable_store_fails_closed_instead_of_overwriting(self) -> None:
+        from src.config import load_config
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("src.config.APP_DIR", tmp),
+            patch("src.config._dpapi_available", return_value=True),
+        ):
+            Path(tmp, "keys.enc").write_text("not-json", encoding="utf-8")
+            with self.assertRaises(ScreamerError) as error:
+                load_config()
+            self.assertEqual(error.exception.code, AppError.KEY_STORAGE_FAILED)
+
+    def test_non_windows_save_does_not_purge_legacy_secret(self) -> None:
+        from src.config import _get_qsettings, save_config
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("src.config.APP_DIR", tmp),
+            patch("src.config._dpapi_available", return_value=False),
+        ):
+            settings = _get_qsettings()
+            settings.setValue("stt_custom_headers", "legacy")
+            settings.sync()
+            save_config(AppConfig(stt_custom_headers="legacy"))
+            self.assertEqual(_get_qsettings().value("stt_custom_headers"), "legacy")
+
+    def test_migration_roundtrips_headers_after_successful_encrypted_save(self) -> None:
+        from src.config import _get_qsettings, has_plaintext_secrets, load_config, save_config
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("src.config.APP_DIR", tmp),
+            patch("src.config._dpapi_available", return_value=True),
+            patch("src.config._dpapi_encrypt", side_effect=lambda value: value.encode().hex()),
+            patch(
+                "src.config._dpapi_decrypt", side_effect=lambda value: bytes.fromhex(value).decode()
+            ),
+        ):
+            settings = _get_qsettings()
+            settings.setValue("stt_custom_headers", '{"X-Token": "legacy"}')
+            settings.sync()
+            config = load_config()
+            self.assertTrue(has_plaintext_secrets())
+
+            save_config(config)
+
+            self.assertFalse(has_plaintext_secrets())
+            self.assertEqual(load_config().stt_custom_headers, '{"X-Token": "legacy"}')
+            self.assertNotIn("legacy", Path(tmp, "keys.enc").read_text(encoding="utf-8"))
+
+
+class EnvPathTests(unittest.TestCase):
+    def test_env_path_uses_cwd_when_not_frozen(self) -> None:
+        self.assertEqual(_env_path(), os.path.join(os.getcwd(), ".env"))
+
+    def test_env_path_uses_exe_dir_when_frozen(self) -> None:
+        exe = os.path.join("C:" + os.sep, "apps", "Screamer", "Screamer.exe")
+        with (
+            patch.object(sys, "frozen", new=True, create=True),
+            patch.object(sys, "executable", new=exe),
+        ):
+            self.assertEqual(_env_path(), os.path.join(os.path.dirname(exe), ".env"))
 
 
 if __name__ == "__main__":
