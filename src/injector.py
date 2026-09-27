@@ -108,7 +108,9 @@ def type_text(text: str, post_key: str | None = None) -> None:
 
     def _utf16_units(value: str) -> list[str]:
         encoded = value.encode("utf-16-le", errors="surrogatepass")
-        return [chr(int.from_bytes(encoded[i : i + 2], "little")) for i in range(0, len(encoded), 2)]
+        return [
+            chr(int.from_bytes(encoded[i : i + 2], "little")) for i in range(0, len(encoded), 2)
+        ]
 
     try:
         with log_duration(log, f"Text injection ({len(text)} chars)"):
@@ -143,7 +145,9 @@ if __name__ == "__main__":
 
     if platform.system() != "Windows":
         print("injector.py requires Windows for SendInput.")
-        print("On non-Windows: import succeeds, runtime raises ScreamerError(UNSUPPORTED_PLATFORM).")
+        print(
+            "On non-Windows: import succeeds, runtime raises ScreamerError(UNSUPPORTED_PLATFORM)."
+        )
         print("Import test passed — no crash at import time.")
         raise SystemExit(0)
 

@@ -495,7 +495,9 @@ class SettingsDialog(QDialog):
         if cfg.audio_device_id is not None:
             for i in range(self._device_combo.count()):
                 if self._device_combo.itemData(i) == cfg.audio_device_id:
-                    item_name = _clean_device_name(self._device_combo.itemText(i).split("] ", 1)[-1])
+                    item_name = _clean_device_name(
+                        self._device_combo.itemText(i).split("] ", 1)[-1]
+                    )
                     if not saved_name or saved_name in item_name.lower():
                         self._device_combo.setCurrentIndex(i)
                         return
@@ -685,7 +687,7 @@ class HotkeyCaptureEdit(QLineEdit):
     """
 
     captured = Signal(object)  # Hotkey
-    cancelled = Signal()       # Esc pressed during recording
+    cancelled = Signal()  # Esc pressed during recording
 
     def __init__(self) -> None:
         super().__init__()

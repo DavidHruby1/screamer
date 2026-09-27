@@ -11,7 +11,7 @@ from src.main import _TrayApp
 
 
 def make_tray_app():
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     tray_app = _TrayApp.__new__(_TrayApp)
     QObject.__init__(tray_app)
     tray_app._menu = QMenu()
