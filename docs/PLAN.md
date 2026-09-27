@@ -1,5 +1,8 @@
 # Screamer — Architecture Plan (v3 — Grilled and Resolved)
 
+> Historical design plan. For current architecture, behavior and public APIs, see
+> [IMPLEMENTATION.md](IMPLEMENTATION.md).
+
 ---
 
 ## 1. Vision

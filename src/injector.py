@@ -96,12 +96,14 @@ def type_text(text: str, post_key: str | None = None) -> None:
             detail = f"{detail} (WinError {err})"
         raise ScreamerError(AppError.INJECTION_FAILED, detail)
 
-    def _send_vk(vk: int, key_up: bool = False) -> None:
-        inp = INPUT()
-        inp.type = INPUT_KEYBOARD
-        inp.ki.wVk = vk
-        inp.ki.dwFlags = KEYEVENTF_KEYUP if key_up else 0
-        if user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
+    def _send_vk(vk: int) -> None:
+        batch = (INPUT * 2)()
+        batch[0].type = INPUT_KEYBOARD
+        batch[0].ki.wVk = vk
+        batch[1].type = INPUT_KEYBOARD
+        batch[1].ki.wVk = vk
+        batch[1].ki.dwFlags = KEYEVENTF_KEYUP
+        if user32.SendInput(2, batch, ctypes.sizeof(INPUT)) != 2:
             _raise_sendinput_failed(f"SendInput failed for VK 0x{vk:02X}")
 
     try:
@@ -135,7 +137,6 @@ def type_text(text: str, post_key: str | None = None) -> None:
                 if vk is not None:
                     time.sleep(0.05)
                     _send_vk(vk)
-                    _send_vk(vk, key_up=True)
                     log.info("Post-type key pressed: %s", post_key)
                 else:
                     log.warning("Unknown post-type key: %s", post_key)

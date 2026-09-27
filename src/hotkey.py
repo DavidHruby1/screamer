@@ -65,8 +65,9 @@ class HotkeyListener:
         self._stop_event = threading.Event()
         self._ready = threading.Event()
         # Matching state.
-        self._held: set[str] = set()
+        self._held: set[int] = set()
         self._armed = False
+        self._trigger_held = False
         # Keep ctypes callbacks alive across the message loop's lifetime.
         self._kb_proc = None
         self._mouse_proc = None
@@ -84,6 +85,7 @@ class HotkeyListener:
         self._ready.clear()
         self._held.clear()
         self._armed = False
+        self._trigger_held = False
         self._thread = threading.Thread(target=self._message_loop, daemon=True)
         self._thread.start()
         # Block until the loop thread has created its message queue and attempted
@@ -143,9 +145,9 @@ class HotkeyListener:
         mod = MODIFIER_VK_TO_NAME.get(vk)
         if mod is not None:
             if wparam in _KEY_DOWN:
-                self._held.add(mod)
+                self._held.add(vk)
             elif wparam in _KEY_UP:
-                self._held.discard(mod)
+                self._held.discard(vk)
             return False  # modifiers always pass through
 
         if self._hotkey.kind != "key" or vk != self._hotkey.code:
@@ -180,15 +182,17 @@ class HotkeyListener:
         return self._trigger_down() if is_down else self._trigger_up()
 
     def _trigger_down(self) -> bool:
-        if self._armed:
-            return True  # autorepeat / duplicate down while held
-        if self._held != self._hotkey.mods:
+        if self._trigger_held:
+            return self._armed  # suppress repeats only for a matched trigger cycle
+        self._trigger_held = True
+        if {MODIFIER_VK_TO_NAME[vk] for vk in self._held} != self._hotkey.mods:
             return False
         self._armed = True
         self._bridge.hotkey_pressed.emit()
         return True
 
     def _trigger_up(self) -> bool:
+        self._trigger_held = False
         if not self._armed:
             return False
         self._armed = False

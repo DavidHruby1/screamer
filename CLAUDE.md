@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Screamer is a Windows desktop push-to-talk dictation tool. Hold a hotkey, speak, release; audio is recorded at 16 kHz mono, sent to a Whisper-compatible STT endpoint, optionally cleaned up by an LLM rewrite, and typed into the active window via Win32 `SendInput`. It runs as a system-tray app with a settings dialog. Stack: Python 3 + PySide6 (Qt), `sounddevice`, `numpy`, `httpx`. Packaged with PyInstaller.
 
-> Note: `docs/OVERVIEW.md` is a stale pre-fork scouting note (it references PyQt6 and a `transcriber.py` that no longer exists). The authoritative design doc is `docs/IMPLEMENTATION.md` + `docs/PLAN.md`, which match the current code.
+> Note: `docs/OVERVIEW.md` is a historical pre-fork scouting note. The current config and public API are documented in `docs/IMPLEMENTATION.md`; release operations are in `docs/RELEASES.md`.
 
 ## Commands
 
@@ -28,7 +28,7 @@ python -c "import src; print('OK')"
 
 ### Per-module smoke tests
 
-There is **no pytest suite**. Each backend module has a `__main__` block used as its smoke test:
+The regression suite uses `python -m unittest discover -s tests -v`. Each backend module also has a `__main__` smoke test:
 
 ```powershell
 python -m src.icons              # writes 3 test PNGs (32x32)
@@ -45,18 +45,17 @@ CLI scripts resolve credentials in this order: `load_config()` (QSettings + DPAP
 
 ## Architecture
 
-The codebase is a strict DAG rooted at `main.py` (the composition root). These dependency rules are load-bearing — preserve them when editing:
+`main.py` is the composition root. Current dependency boundaries:
 
 - **`main.py` imports everything; nothing imports `main.py`.** It owns the tray icon, the `idle → recording → processing → idle` state machine, and the worker thread lifecycle.
-- **The five backend modules (`audio`, `hotkey`, `stt`, `rewrite`, `injector`) must NOT import each other.** They may import only `utils.py`.
-- **`stt.py` and `rewrite.py` receive `AppConfig` as a parameter** — they do not import `config.py`. `audio.py` receives device id / name / RMS threshold from `main.py`.
-- **Qt (PySide6) lives only in `utils.py`, `icons.py`, `settings_dialog.py`, `main.py`.** The backend modules are Qt-free.
-- **`settings_dialog.py` imports only `config.py` and `utils.py`.** It edits a *copy* of the config; the original is untouched until accept.
+- Backend modules do not import one another; `stt.py` and `rewrite.py` share `http_client.py` and receive `AppConfig` from `main.py`. `audio.py` and `hotkey.py` use config constants and value objects.
+- Qt is used in the UI modules and the signal bridge in `utils.py`; audio, STT, rewrite, injection and HTTP transport remain Qt-free.
+- `settings_dialog.py` edits a *copy* of the config. Apply and OK persist the validated values, while Cancel discards unapplied edits.
 
 ### Threading model
 
 - The Qt main thread owns all UI. Recording start/stop runs on the main thread.
-- The full pipeline (`transcribe → rewrite → type_text`) runs in `_WorkerThread` (a `QThread`) so it never blocks the UI. It checks a `threading.Event` (`cancel_event`) before each blocking step and emits results back via `finished_signal`.
+- Network steps (`transcribe → rewrite`) run in `_WorkerThread` (a `QThread`). It checks a `threading.Event` (`cancel_event`) before each blocking step, then signals the Qt main thread, which performs final `type_text` injection.
 - The hotkey listener runs its own daemon thread with a Win32 `GetMessage` pump. It communicates to the Qt main thread through `SignalBridge` (the `QObject`-with-`Signal` bridge in `utils.py`) — this cross-thread signal pattern is how worker/hotkey threads safely touch the UI.
 
 ### Error handling
@@ -65,16 +64,16 @@ Backend code raises `ScreamerError(AppError.X, detail=...)` — never bare `prin
 
 ### Config & secrets
 
-- Plain settings persist via `QSettings` (IniFormat). API-key fields are encrypted with **Windows DPAPI** before being written (see `_SECRET_FIELDS` in `config.py`).
+- Settings, including provider URLs and DPAPI-encrypted API keys and custom headers, persist in one atomically replaced INI serialized with `QSettings` (see `_SECRET_FIELDS` in `config.py`). Existing `keys.enc` files migrate after a successful save.
 - All app data lives under `%LOCALAPPDATA%/Screamer/` (`APP_DIR` in `utils.py`). Logs go to a rotating `screamer.log` there.
 - **Never log `api_key` values. Never log transcript text unless `setup_logging(debug=True)`.**
 
 ### Platform guards
 
-Windows-first, but every module must **import** cleanly on any OS (agents may run on Linux/macOS). Windows-only runtime paths (`hotkey.py`, `injector.py`, DPAPI in `config.py`) guard Win32 calls behind `platform.system() == "Windows"` and raise `ScreamerError(AppError.UNSUPPORTED_PLATFORM)` at *runtime* rather than crashing at import time. DPAPI roundtrip, `RegisterHotKey`, and `SendInput` can only be fully verified on Windows.
+Windows-first, but every module must **import** cleanly on any OS (agents may run on Linux/macOS). Windows-only runtime paths guard Win32 calls at runtime. DPAPI roundtrip, low-level hook installation, and `SendInput` can only be fully verified on Windows.
 
 ## Conventions
 
-- Public API surface of each module is fixed by the contracts in `docs/IMPLEMENTATION.md`. Phase 2 (`main.py`, `settings_dialog.py`) wires Phase 1 modules using only those exports — if you change a backend signature, update that doc.
-- No new third-party dependencies and no new modules beyond the 10 in `src/` without a strong reason; the project is deliberately small.
+- Public API contracts are maintained in `docs/IMPLEMENTATION.md`. If you change a backend signature or a persistence guarantee, update that doc alongside code.
+- Avoid unnecessary third-party dependencies or new modules; the project is deliberately small.
 - Hotkeys are `config.Hotkey` value objects (modifiers + one key/mouse trigger), serialized to a canonical string (`ctrl+alt+key:0x20`, `ctrl+mouse:x1`); legacy preset keys auto-migrate via `Hotkey.parse`. Presets live in `HOTKEY_OPTIONS` (`config.py`); the listener uses low-level hooks (`WH_KEYBOARD_LL`/`WH_MOUSE_LL`) and swallows the matched trigger. Add safe-bind-alone keys via `SAFE_STANDALONE_KEYS` in `config.py`.

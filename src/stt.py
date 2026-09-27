@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from time import perf_counter
 
+import httpx
+
 from src import http_client
 from src.config import AppConfig, ProviderConfig, parse_custom_headers
 from src.utils import AppError, PipelineResult, ScreamerError, log_duration
@@ -52,9 +54,11 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
                 # become speech at the fallback, so don't retry it there.
                 raise
             except Exception as e:
-                log.warning("%s STT failed: %s", "Fallback" if is_fallback else "Primary", e)
+                log.warning(
+                    "%s STT failed: %s", "Fallback" if is_fallback else "Primary", type(e).__name__
+                )
                 if not fallback.enabled:
-                    raise ScreamerError(AppError.STT_FAILED, str(e)) from e
+                    raise ScreamerError(AppError.STT_FAILED, type(e).__name__) from None
 
         raise ScreamerError(
             AppError.STT_FAILED, "Both primary and fallback STT failed or returned no speech"
@@ -73,7 +77,7 @@ def _call_stt(
     url = provider.base_url.rstrip("/") + "/audio/transcriptions"
     response_format = "json" if provider.is_groq else "verbose_json"
 
-    headers: dict[str, str] = {"Authorization": f"Bearer {provider.api_key}"}
+    headers = httpx.Headers({"Authorization": f"Bearer {provider.api_key}"})
     try:
         headers.update(parse_custom_headers(provider.custom_headers))
     except ValueError as e:
@@ -86,8 +90,7 @@ def _call_stt(
     files = {"file": ("recording.wav", audio_wav, "audio/wav")}
 
     log.info(
-        "STT request: url=%s model=%s response_format=%s language=%s bytes=%d",
-        url,
+        "STT request: model=%s response_format=%s language=%s bytes=%d",
         provider.model,
         response_format,
         language or "auto",
@@ -108,7 +111,7 @@ def _call_stt(
         resp.headers.get("x-groq-region") or "-",
         resp.headers.get("cf-ray") or "-",
     )
-    resp.raise_for_status()
+    http_client.raise_for_status(resp)
 
     result = resp.json()
     segments = result.get("segments", [])

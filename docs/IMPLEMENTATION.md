@@ -1,8 +1,10 @@
-# Screamer — Implementation Plan
+# Screamer Implementation
 
-> Full architecture rationale, line budgets, threading model, and design decisions are in `docs/PLAN.md`. Read that first.
+This is the current architecture and public API reference. The original build plan is
+historical context in [PLAN.md](PLAN.md); release operations are in [RELEASES.md](RELEASES.md).
 
-This document defines a two-phase build sequence with explicit public API contracts, acceptance gates, and a mandatory review step between phases.
+`main.py` owns the tray UI, recording state machine and worker lifecycle. Network work
+runs in a QThread; final text injection runs on the Qt main thread.
 
 ---
 
@@ -20,8 +22,10 @@ src/
 ├── hotkey.py
 ├── stt.py
 ├── rewrite.py
+├── http_client.py
 ├── injector.py
 ├── icons.py
+├── snackbar.py
 ├── utils.py
 └── startup.py
 requirements.txt         (repo root)
@@ -31,7 +35,7 @@ requirements.txt         (repo root)
 
 ## Public API Contracts
 
-Phase 2 must import Phase 1 modules **only** through these exports. No internal helpers, private attrs, or module-level state outside this list.
+Application wiring uses these contracts; private helpers are implementation details.
 
 ### utils.py
 
@@ -44,8 +48,11 @@ class AppError(Enum):
     LLM_FAILED = "AI rewrite failed. Using raw transcription."
     NETWORK_ERROR = "Network error. Please check your connection."
     NO_SPEECH = "No speech detected. Try speaking louder or closer."
+    DICTATION_ACTIVE = "Finish the current dictation before opening Settings."
     INJECTION_FAILED = "Could not type text. Focus may have changed."
     HOTKEY_CONFLICT = "Hotkey conflict. Choose a different hotkey."
+    HOTKEY_INVALID = "That key combination can't be used. Add a modifier or pick another key."
+    HOTKEY_HOOK_FAILED = "Could not install the global hotkey listener."
     UNSUPPORTED_PLATFORM = "This feature is only available on Windows."
     KEY_STORAGE_FAILED = "Could not save or load API keys securely."
     STARTUP_REGISTRATION_FAILED = "Could not update Windows startup setting."
@@ -69,16 +76,11 @@ APP_DIR: str            # resolved %LOCALAPPDATA%/Screamer/
 
 ### config.py
 
-DEFAULT_LLM_SYSTEM_PROMPT: str = (
-    "You are a text correction assistant. Fix grammar, spelling, and punctuation "
-    "errors in the input text. Preserve the original meaning and tone. "
-    "Return only the corrected text with no explanations."
-)
-
 ```python
+DEFAULT_LLM_SYSTEM_PROMPT: str  # Full cleanup-only dictation prompt is defined in config.py.
+
 DEFAULT_RMS_THRESHOLD: float = 5.0
 
-```python
 MOUSE_X1 = 1; MOUSE_X2 = 2; MOUSE_MIDDLE = 3   # mouse trigger ids
 
 HOTKEY_OPTIONS: list[tuple[str, str]]  # (canonical_string, display_label) preset pairs
@@ -159,10 +161,10 @@ def load_config() -> AppConfig: ...
     """Load QSettings + DPAPI. Unknown keys get field defaults."""
 
 def save_config(cfg: AppConfig) -> None: ...
-    """Persist to QSettings + DPAPI. api_key and custom-header fields go through DPAPI."""
+    """Serialize plain and DPAPI-encrypted fields to an INI, then atomically replace settings.ini."""
 
 def has_plaintext_secrets() -> bool: ...
-    """True if any secret field still sits as plaintext in settings.ini."""
+    """True if legacy plaintext INI or keys.enc secrets need migration."""
 
 def reset_config() -> AppConfig: ...
     """Fresh AppConfig with all defaults. Does not write disk."""
@@ -175,7 +177,7 @@ def setup_logging(debug: bool = False) -> None: ...
     Never log transcripts unless debug=True."""
 
 def parse_custom_headers(custom_headers: str) -> dict[str, str]: ...
-    """Parse provider custom headers as a JSON object of string-ish values."""
+    """Parse a JSON object of string-ish values; validate HTTP names and sendable ASCII values."""
 
 def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]: ...
     """Return all startup/settings validation issues for the current config."""
@@ -196,13 +198,14 @@ class AudioRecorder:
     @property
     def rms_threshold(self) -> float: ...
     def calibrate(self, duration: float = 2.0) -> float: ...
-        """Record ambient noise, return noise_floor * 2.0. Fallback: 50."""
+        """Return max(noise_floor * 2.0, DEFAULT_RMS_THRESHOLD); measurement failure falls back to 5.0."""
     def start(self) -> None: ...
+        """Open and start the microphone; on failure close the stream and raise MIC_UNAVAILABLE."""
     def stop(self) -> bytes: ...
         """Return 16kHz mono int16 WAV bytes. Raise ScreamerError(AppError.MIC_DISCONNECTED) on failure."""
 
 def resolve_device(preferred_id: int | None, preferred_name: str) -> int | None: ...
-    """ID → name search → None (use default)."""
+    """Matching ID/name, then exact name, then substring, then current system default input."""
 ```
 
 ### hotkey.py
@@ -229,7 +232,7 @@ class HotkeyListener:
 
 ```python
 def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult: ...
-    """POST WAV to STT endpoint with verbose_json. Primary → fallback if enabled and primary fails.
+    """POST WAV to STT endpoint with verbose_json (json for Groq). Primary → fallback on failure.
     Filter: keep if ANY segment no_speech_prob < 0.7. All-above → ScreamerError(AppError.NO_SPEECH).
     HTTP/network errors → ScreamerError(AppError.STT_FAILED).
     Fallback success → PipelineResult with AppError.STT_FALLBACK_USED in warnings."""
@@ -239,7 +242,7 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult: ...
 
 ```python
 def rewrite(text: str, config: AppConfig) -> PipelineResult: ...
-    """Send text to LLM with system prompt. Primary → fallback. Error → ScreamerError(AppError.LLM_FAILED).
+    """Send text to LLM with system prompt. Primary → fallback. Failure keeps raw text with LLM_FAILED warning.
     Returns input text unchanged in PipelineResult.text if config.llm_enabled is False."""
 ```
 
@@ -248,6 +251,7 @@ def rewrite(text: str, config: AppConfig) -> PipelineResult: ...
 ```python
 def type_text(text: str, post_key: str | None = None) -> None: ...
     """Win32 SendInput (KEYEVENTF_UNICODE). 0.05s delay then press post_key if not None.
+    Text is batched; post-key down/up form a separate single batch. Partial input has no rollback.
     Raises ScreamerError(AppError.INJECTION_FAILED) on failure."""
 ```
 
@@ -296,7 +300,7 @@ class SettingsDialog(QDialog):
         calibrate_fn: Callable[[int | None], float] | None = None,
     ): ...
         """4-tab dialog (General, STT, LLM, Audio) prefilled from config.
-        Edits a copy; original untouched until accept.
+        Edits a copy; Apply and OK persist validated settings.
         *devices*: list of (device_id, display_name) for the Audio tab.
         *calibrate_fn*: fn(device_id) -> float for RMS calibration."""
     def get_config(self) -> AppConfig: ...
@@ -340,11 +344,12 @@ No public exports. Entry point only:
 | Rule | Detail |
 |------|--------|
 | Composition root | `main.py` imports all other modules. Nothing imports `main.py`. |
-| Settings dialog | `settings_dialog.py` imports only `config.py` and `startup.py` (and `utils.py` for constants). |
+| Settings dialog | `settings_dialog.py` imports `config.py`, `startup.py`, and `utils.py`. |
 | Shared utilities | `audio.py`, `hotkey.py`, `stt.py`, `rewrite.py`, `injector.py`, `startup.py` may import `utils.py`. |
 | Zero peer imports | The six backend modules must NOT import each other. |
-| Config consumer | `stt.py` and `rewrite.py` receive `AppConfig` as a parameter — they do not import `config.py`. `audio.py` receives device ID, device name, and RMS threshold from `main.py`. `main.py` passes config values to all backends. |
-| Qt in backend | Only `utils.py`, `icons.py`, `settings_dialog.py`, `main.py` import PySide6. Backend modules (`audio`, `hotkey`, `stt`, `rewrite`, `injector`, `startup`) do not. |
+| Config consumer | `stt.py` and `rewrite.py` import config value types and receive `AppConfig` as a parameter; `audio.py` and `hotkey.py` use config constants and value objects. |
+| Shared HTTP | `stt.py` and `rewrite.py` call `http_client.py` for synchronous requests. |
+| Qt in backend | `utils.py` contains the signal bridge; audio, STT, rewrite, injection, startup and HTTP transport remain Qt-free. |
 | No circular imports | The graph is a DAG rooted at `main.py`. Structural guarantee. |
 
 ---
@@ -358,13 +363,13 @@ Windows-first project. Agents may run on Linux/macOS.
 | Import safety | Every module must import on any OS. No crash at import time. |
 | Windows-only runtime | `hotkey.py`, `injector.py`, and DPAPI in `config.py` must guard Win32 calls behind `platform.system() == "Windows"`. On non-Windows, raise `ScreamerError(AppError.UNSUPPORTED_PLATFORM)` (never crash at import time). |
 | Non-Windows fallback | `audio.py`, `stt.py`, `rewrite.py`, `icons.py`, `config.py` (QSettings paths), `utils.py`, `settings_dialog.py` should work cross-platform where deps are installed. |
-| Full verification | DPAPI roundtrip, `RegisterHotKey`, and `SendInput` can only be fully verified on Windows. |
+| Full verification | DPAPI roundtrip, low-level hotkey hooks, and `SendInput` can only be fully verified on Windows. |
 
 ---
 
 ## Configuration for CLI Tests
 
-Phase 1 modules have standalone `__main__` blocks for smoke testing. STT/LLM defaults are empty. CLI scripts must resolve credentials as follows:
+Backend modules have standalone `__main__` blocks for smoke testing. STT/LLM defaults are empty. CLI scripts resolve credentials as follows:
 
 1. `load_config()` → read QSettings + DPAPI.
 2. If `.env` exists in the working directory (or next to `Screamer.exe` in a frozen build),
@@ -381,112 +386,59 @@ No hardcoded provider defaults. No silent fallback to unconfigured endpoints.
 
 ---
 
-## Phase 1 — Backend Pipeline
+## Verification
 
-**Goal:** All backend and support modules built, importable, standalone CLI smoke tests passing.
+The regression suite runs without real microphones or provider credentials. Windows-only
+DPAPI and hook checks are skipped elsewhere. A real Windows desktop smoke test is still
+required for input focus, tray interaction and audio-driver behavior.
 
-| # | File | Verification |
-|---|------|-------------|
-| 1 | `requirements.txt` | `pip install -r requirements.txt` succeeds |
-| 2 | `src/__init__.py` | Empty; enables package imports |
-| 3 | `src/utils.py` | `python -c "from src.utils import SignalBridge, AppError"` |
-| 4 | `src/icons.py` | `python -m src.icons` writes 3 test PNGs (32x32) |
-| 5 | `src/config.py` | `python -m src.config` prints defaults, DPAPI roundtrip, creates APP_DIR |
-| 6 | `src/audio.py` | `python -m src.audio` records 3s → `test.wav`, prints duration+RMS |
-| 7 | `src/hotkey.py` | `python -m src.hotkey` prints "pressed"/"released" (Windows), graceful message otherwise |
-| 8 | `src/stt.py` | `python -m src.stt test.wav` prints transcription (needs API config) |
-| 9 | `src/rewrite.py` | `python -m src.rewrite "test sentense wit erors"` prints corrected text (needs API config) |
-| 10 | `src/injector.py` | `python -m src.injector "hello world"` types into active window (Windows), message otherwise |
-| 11 | `src/startup.py` | `python -m src.startup` checks/sets Windows startup registry key |
-
-**Verification commands:**
 ```bash
 pip install -r requirements.txt
-python -m compileall src/           # must pass on all platforms
+python -m unittest discover -s tests -v
+python -m compileall src/ tests/ .github/scripts/
 python -c "import src; print('OK')"
+ruff check src/ tests/ .github/scripts/
+ruff format --check src/ tests/ .github/scripts/
 ```
 
----
+## Runtime Behavior
 
-## Phase 1 Acceptance Gates
-
-- [ ] `pip install -r requirements.txt` completes without errors.
-- [ ] `python -m compileall src/` passes with zero failures.
-- [ ] Every Phase 1 module imports on the current OS without crashing.
-- [ ] Windows-only functions raise clear `ScreamerError(AppError.X)` on non-Windows (never crash at import time).
-- [ ] Standalone CLI tests pass where OS/API keys allow; graceful exit with setup message otherwise.
-- [ ] No `api_key` values appear in log output.
-- [ ] Transcript text appears in logs only when `debug=True`.
-- [ ] Public exports match the API Contracts section above.
-- [ ] `audio`, `hotkey`, `stt`, `rewrite`, `injector`, `startup` do not import each other.
-
----
-
-## Review Checkpoint — STOP HERE
-
-**After Phase 1 completes, the agent MUST stop and request review before starting Phase 2.**
-
-The reviewer should inspect:
-
-| Check | What to verify |
-|-------|---------------|
-| API shape | Exports match contracts. Can Phase 2 wire everything with only these imports? |
-| Line budget | Each module within ~30% of PLAN.md Section 10 targets. |
-| Error handling | Backend modules raise `ScreamerError(AppError.X)`; no bare `print()` or swallowed exceptions. |
-| Logging | Secrets excluded from logs. Transcripts only logged with `debug=True`. |
-| Platform guards | Windows-only modules raise clean errors on Linux/macOS at runtime, not import time. |
-| Phase 2 readiness | Can `main.py` + `settings_dialog.py` be built **without modifying any Phase 1 file**? If not, fix Phase 1 now. |
-| Windows-only guard | `startup.py` raises `ScreamerError(UNSUPPORTED_PLATFORM)` on non-Windows at runtime, not import time. |
-
-Do not proceed to Phase 2 until review passes.
-
----
-
-## Phase 2 — UI Shell
-
-**Goal:** System tray application + settings dialog wrapping Phase 1 modules.
-
-**Prerequisite:** Phase 1 reviewed and approved.
-
-| # | File | Verification |
-|---|------|-------------|
-| 11 | `src/settings_dialog.py` | `python -m src.settings_dialog` launches standalone 4-tab dialog; fields persist across reopen |
-| 12 | `src/main.py` | `python -m src.main` starts tray app; full dictation loop works |
-
-**Key behaviors to test:**
 - Settings survive dialog close/reopen and full app restart.
 - Tray menu quick-toggles sync bidirectionally with Settings dialog values.
 - Tray icon: grey (idle) → red (recording) → yellow (processing) → grey.
 - Errors appear as tray balloons (user-facing `AppError` messages).
+- Initial Settings opens only after the main Qt event loop starts. Settings cannot open
+  during dictation, and hotkey presses cannot start dictation while Settings is open.
+- Binding/mode changes during recording are saved immediately but the listener restarts
+  only after the current recording ends. The old HOLD release remains effective.
+- Apply and OK save before updating the Windows startup registration. A registry failure
+  leaves the requested setting saved, reports the partial result and permits retrying Apply/OK.
+- Unavailable saved microphones remain visible as unavailable; unrelated edits do not
+  replace the saved selection with the system default.
 - Exit cancels queued processing, stops audio, and waits for the active network call and
   calibration thread to finish before saving settings and quitting Qt. A stalled network
-  request can delay exit; the worker is never force-terminated.
+  request can delay exit; the worker is never force-terminated. A failed shutdown save is
+  logged but does not prevent quitting.
 - Disable discards an active recording and cancels processing before injection starts.
   Final text injection runs on the Qt thread so a Disable action cannot interleave with its
   final check; already-sent `SendInput` events cannot be undone.
 
----
+## Storage and Limits
 
-## Phase 2 Acceptance Gates
-
-- [ ] `python -m src.settings_dialog` launches standalone; all tabs render.
-- [ ] Settings persist across dialog reopen and full app restart.
-- [ ] Tray app starts and exits cleanly (no zombie threads).
-- [ ] Tray menu and Settings dialog values stay in sync bidirectionally.
-- [ ] Full dictation loop works on Windows: hotkey → speak → processing → text appears.
-- [ ] Worker shutdown is graceful (cancellation Event, active work finishes, audio stream stopped).
-- [ ] User-facing errors appear through tray balloons.
-- [ ] Phase 2 does not modify Phase 1 APIs except for reviewed bug fixes. Any API change to Phase 1 during Phase 2 must be documented and re-reviewed.
-
----
-
-## Boundaries
-
-- No modules beyond the 11 listed. No new dependencies.
-- Do not implement packaging (PyInstaller), code signing, or cross-platform hotkey backends.
-- Autostart registration is implemented in `startup.py`.
-- All paths: `%LOCALAPPDATA%/Screamer/`. API keys + custom headers: DPAPI in atomically
-  replaced `keys.enc`; only after successful encryption are legacy plaintext values purged
-  from QSettings (IniFormat). A failed encrypted read fails closed rather than overwriting
-  stored credentials. Source runs read `.env` at cwd; frozen runs read it beside the exe.
-- If a Phase 2 bug forces a Phase 1 API change, document it in the review checkpoint and get re-approval.
+- All paths: `%LOCALAPPDATA%/Screamer/`. API keys + custom headers: DPAPI ciphertext
+  in the same QSettings (IniFormat) file as provider URLs and models. Saving serializes
+  a complete temporary INI, syncs it and atomically replaces `settings.ini`. The format
+  marker `secret_storage=dpapi-v1` distinguishes encrypted fields from legacy plaintext.
+  Existing `keys.enc` data takes precedence over older plaintext INI values and migrates
+  on the next successful save; the legacy file is then removed. A migrated INI is authoritative
+  even if legacy-file cleanup fails. A failed encrypted read
+  fails closed rather than overwriting stored credentials. On non-Windows, secret
+  persistence is unsupported. Source runs read `.env` at cwd; frozen runs read it beside the exe.
+- HTTP diagnostics omit provider URLs and raw transport exception strings. The shared
+  client suppresses URL-bearing HTTP library INFO/DEBUG logs; custom header names are
+  case-insensitive. Plain HTTP remains supported; no new TLS policy is imposed.
+- Recording buffers the full dictation in memory, with a fixed five-minute limit.
+  At the limit, recording stops and the captured audio is processed as on a manual stop.
+  Completed/discarded frame lists are released.
+- Source autostart inserts the absolute package root before loading `src.main`, so it
+  does not depend on the working directory. The packaged executable command is unchanged.

@@ -152,14 +152,22 @@ class AudioRecorder:
         _require_sd()
         self._frames = []
         self._start_time = time.monotonic()
-        self._stream = sd.InputStream(
-            samplerate=self._sample_rate,
-            channels=CHANNELS,
-            dtype=DTYPE,
-            device=self._device_id,
-            callback=self._callback,
-        )
-        self._stream.start()
+        try:
+            stream = sd.InputStream(
+                samplerate=self._sample_rate,
+                channels=CHANNELS,
+                dtype=DTYPE,
+                device=self._device_id,
+                callback=self._callback,
+            )
+            try:
+                stream.start()
+            except Exception:
+                stream.close()
+                raise
+        except Exception as e:
+            raise ScreamerError(AppError.MIC_UNAVAILABLE, str(e)) from e
+        self._stream = stream
         log.info("Recording started (device=%s)", self._device_id)
 
     def stop(self) -> bytes:
@@ -171,16 +179,22 @@ class AudioRecorder:
         if self._stream is None:
             return b""
 
-        try:
-            self._stream.stop()
-            self._stream.close()
-        except Exception as e:
-            self._stream = None
-            raise ScreamerError(AppError.MIC_DISCONNECTED, str(e)) from e
+        stream = self._stream
         self._stream = None
+        try:
+            try:
+                stream.stop()
+            finally:
+                stream.close()
+        except Exception as e:
+            with self._lock:
+                self._frames.clear()
+            raise ScreamerError(AppError.MIC_DISCONNECTED, str(e)) from e
 
         duration = time.monotonic() - self._start_time
         if duration < MIN_DURATION:
+            with self._lock:
+                self._frames.clear()
             log.info("Recording too short (%.2fs); discarding", duration)
             return b""
 
@@ -189,6 +203,7 @@ class AudioRecorder:
                 log.info("No frames captured; discarding")
                 return b""
             audio_data = np.concatenate(self._frames, axis=0)
+            self._frames.clear()
 
         rms = float(np.sqrt(np.mean(audio_data.astype(np.float64) ** 2)))
         log.info(
@@ -220,7 +235,7 @@ def resolve_device(preferred_id: int | None, preferred_name: str) -> int | None:
             dev = sd.query_devices(preferred_id)
             dev_name = str(dev["name"])
             if dev["max_input_channels"] > 0 and (
-                not clean_name or clean_name.lower() in dev_name.lower()
+                not clean_name or clean_name.lower() == dev_name.lower()
             ):
                 return preferred_id
             if dev["max_input_channels"] > 0:
@@ -235,8 +250,14 @@ def resolve_device(preferred_id: int | None, preferred_name: str) -> int | None:
 
     if clean_name:
         devices = sd.query_devices()
-        for i, dev in enumerate(devices):
-            if dev["max_input_channels"] > 0 and clean_name.lower() in dev["name"].lower():
+        expected = clean_name.lower()
+        for exact in (True, False):
+            for i, dev in enumerate(devices):
+                if dev["max_input_channels"] <= 0:
+                    continue
+                name = str(dev["name"]).lower()
+                if (exact and name != expected) or (not exact and expected not in name):
+                    continue
                 log.info("Resolved device '%s' to ID %d", clean_name, i)
                 return i
 

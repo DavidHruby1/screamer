@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import platform
+import re
 import sys
 import tempfile
 from dataclasses import dataclass, field, fields
@@ -428,59 +429,30 @@ def _get_qsettings():
     """Return a QSettings instance for the app. Import PySide6 lazily."""
     from PySide6.QtCore import QSettings
 
-    os.makedirs(APP_DIR, exist_ok=True)
+    try:
+        os.makedirs(APP_DIR, exist_ok=True)
+    except OSError as e:
+        raise ScreamerError(AppError.KEY_STORAGE_FAILED, "Settings directory unavailable") from e
     ini_path = os.path.join(APP_DIR, "settings.ini")
     settings = QSettings(ini_path, QSettings.Format.IniFormat)
+    settings.setAtomicSyncRequired(True)
+    settings.sync()
+    if settings.status() != QSettings.Status.NoError:
+        raise ScreamerError(AppError.KEY_STORAGE_FAILED, "Settings file unreadable")
     return settings
 
 
-def _save_secrets(cfg: AppConfig) -> bool:
-    """Persist secret fields via DPAPI to APP_DIR/keys.enc."""
+def _load_secrets() -> dict[str, str]:
+    """Read the legacy keys.enc store for migration to encrypted INI values."""
     if not _dpapi_available():
-        log.debug("DPAPI unavailable; skipping secret persistence")
-        return False
-
-    blob = {}
-    for name in _SECRET_FIELDS:
-        val = getattr(cfg, name)
-        if val:
-            blob[name] = _dpapi_encrypt(val)
-    temp_path = None
-    try:
-        os.makedirs(APP_DIR, exist_ok=True)
-        path = os.path.join(APP_DIR, "keys.enc")
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=APP_DIR, prefix=".keys-", delete=False
-        ) as f:
-            temp_path = f.name
-            json.dump(blob, f)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temp_path, path)
-    except OSError as e:
-        raise ScreamerError(AppError.KEY_STORAGE_FAILED, "Encrypted key file write failed") from e
-    finally:
-        if temp_path is not None:
-            try:
-                os.unlink(temp_path)
-            except FileNotFoundError:
-                pass
-            except OSError:
-                log.warning("Could not remove temporary encrypted key file")
-    return True
-
-
-def _load_secrets(cfg: AppConfig) -> None:
-    """Load secret fields from DPAPI blob, backfilling empty fields only."""
-    if not _dpapi_available():
-        return
+        return {}
 
     path = os.path.join(APP_DIR, "keys.enc")
     try:
         with open(path) as f:
             blob = json.load(f)
     except FileNotFoundError:
-        return
+        return {}
     except (json.JSONDecodeError, OSError) as e:
         raise ScreamerError(AppError.KEY_STORAGE_FAILED, "Encrypted key file unreadable") from e
 
@@ -489,11 +461,7 @@ def _load_secrets(cfg: AppConfig) -> None:
     ):
         raise ScreamerError(AppError.KEY_STORAGE_FAILED, "Invalid encrypted key data")
 
-    for name, hex_val in blob.items():
-        if name in _SECRET_FIELDS:
-            value = _dpapi_decrypt(hex_val)
-            if not getattr(cfg, name):
-                setattr(cfg, name, value)
+    return {name: _dpapi_decrypt(value) for name, value in blob.items() if name in _SECRET_FIELDS}
 
 
 # ---------------------------------------------------------------------------
@@ -505,12 +473,35 @@ def load_config() -> AppConfig:
     """Load QSettings + DPAPI. Unknown keys get field defaults."""
     settings = _get_qsettings()
     cfg = AppConfig()
+    # A complete encrypted INI is authoritative even if an old keys.enc could
+    # not be deleted after a successful migration.
+    migrated = settings.value("secret_storage") == "dpapi-v1"
+    if migrated and any(not settings.contains(name) for name in _SECRET_FIELDS):
+        raise ScreamerError(AppError.KEY_STORAGE_FAILED, "Incomplete encrypted settings")
+    legacy_secrets = {} if migrated else _load_secrets()
+    for name, value in legacy_secrets.items():
+        setattr(cfg, name, value)
 
     # Load plain fields from QSettings.
     known = {f.name for f in fields(AppConfig)}
     for key in settings.allKeys():
         if key in known:
             val = settings.value(key)
+            if key in _SECRET_FIELDS:
+                if migrated:
+                    if not _dpapi_available():
+                        continue
+                    if not isinstance(val, str) or not val.startswith("dpapi:"):
+                        raise ScreamerError(
+                            AppError.KEY_STORAGE_FAILED, "Invalid encrypted settings"
+                        )
+                    blob = val[len("dpapi:") :]
+                    val = _dpapi_decrypt(blob) if blob else ""
+                elif key in legacy_secrets:
+                    # Older plaintext must never shadow the encrypted legacy store.
+                    continue
+                setattr(cfg, key, val)
+                continue
             current = getattr(cfg, key)
             # Coerce types to match dataclass fields.
             if isinstance(current, bool):
@@ -535,7 +526,6 @@ def load_config() -> AppConfig:
                     continue
             setattr(cfg, key, val)
 
-    _load_secrets(cfg)
     parsed_hotkey = Hotkey.parse(cfg.hotkey)
     if parsed_hotkey is None or parsed_hotkey.validate() is not None:
         cfg.hotkey = "ctrl+alt+key:0x20"
@@ -547,30 +537,73 @@ def load_config() -> AppConfig:
 
 
 def save_config(cfg: AppConfig) -> None:
-    """Persist plain settings in QSettings and secrets via DPAPI."""
-    secrets_saved = _save_secrets(cfg)
-    settings = _get_qsettings()
-    for f in fields(AppConfig):
-        if f.name in _SECRET_FIELDS:
-            if secrets_saved:
-                settings.remove(f.name)
-            continue
-        settings.setValue(f.name, getattr(cfg, f.name))
-    settings.sync()
+    """Serialize plain fields and DPAPI ciphertext, then atomically replace the INI."""
     from PySide6.QtCore import QSettings
 
-    if settings.status() != QSettings.Status.NoError:
-        raise ScreamerError(AppError.KEY_STORAGE_FAILED, "Settings file write failed")
+    encrypted = (
+        {
+            name: "dpapi:" + (_dpapi_encrypt(getattr(cfg, name)) if getattr(cfg, name) else "")
+            for name in _SECRET_FIELDS
+        }
+        if _dpapi_available()
+        else {}
+    )
+    current = _get_qsettings()
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=APP_DIR, prefix=".settings-", suffix=".ini", delete=False
+        ) as temp:
+            temp_path = temp.name
+        pending = QSettings(temp_path, QSettings.Format.IniFormat)
+        pending.setAtomicSyncRequired(True)
+        # Never dirty the live QSettings cache: a failed sync must not be retried
+        # implicitly by Qt after the caller has already seen a save failure.
+        for key in current.allKeys():
+            if key not in _SECRET_FIELDS or not encrypted:
+                pending.setValue(key, current.value(key))
+        for f in fields(AppConfig):
+            if f.name in _SECRET_FIELDS:
+                if encrypted:
+                    pending.setValue(f.name, encrypted[f.name])
+                continue
+            pending.setValue(f.name, getattr(cfg, f.name))
+        if encrypted:
+            pending.setValue("secret_storage", "dpapi-v1")
+        pending.sync()
+        status = pending.status()
+        del pending
+        if status != QSettings.Status.NoError:
+            raise ScreamerError(AppError.KEY_STORAGE_FAILED, "Settings file write failed")
+        with open(temp_path, "r+b") as temp:
+            os.fsync(temp.fileno())
+        os.replace(temp_path, current.fileName())
+    except OSError as e:
+        raise ScreamerError(AppError.KEY_STORAGE_FAILED, "Settings file write failed") from e
+    finally:
+        if temp_path is not None:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                log.warning("Could not remove temporary settings file")
+    if _dpapi_available():
+        try:
+            os.unlink(os.path.join(APP_DIR, "keys.enc"))
+        except FileNotFoundError:
+            pass
+        except OSError:
+            log.warning("Could not remove legacy encrypted key file")
 
 
 def has_plaintext_secrets() -> bool:
-    """True if any secret field still sits as plaintext in settings.ini.
-
-    Older versions wrote custom headers to the ini; save_config purges them,
-    but the purge only happens on save — callers use this to force one.
-    """
+    """True if secret storage still needs migration to encrypted INI values."""
     settings = _get_qsettings()
-    return any(settings.contains(name) for name in _SECRET_FIELDS)
+    return os.path.exists(os.path.join(APP_DIR, "keys.enc")) or (
+        settings.value("secret_storage") != "dpapi-v1"
+        and any(settings.contains(name) for name in _SECRET_FIELDS)
+    )
 
 
 def reset_config() -> AppConfig:
@@ -587,7 +620,19 @@ def parse_custom_headers(custom_headers: str) -> dict[str, str]:
     if not isinstance(parsed, dict):
         raise ValueError("Custom headers must be a JSON object")
 
-    return {str(key): str(value) for key, value in parsed.items()}
+    result = {str(key): str(value) for key, value in parsed.items()}
+    for name, value in result.items():
+        if not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
+            raise ValueError("Invalid HTTP header name")
+        try:
+            value.encode("ascii")
+        except UnicodeEncodeError as e:
+            raise ValueError("HTTP header values must be ASCII") from e
+        if value != value.strip(" \t") or any(
+            (ord(char) < 32 and char != "\t") or ord(char) == 127 for char in value
+        ):
+            raise ValueError("Invalid HTTP header value")
+    return result
 
 
 def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]:
@@ -643,6 +688,28 @@ def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]:
             issues.append(
                 ConfigValidationIssue(f"{label} custom headers are invalid: {e}", tab_index)
             )
+
+    for url, label, tab_index in (
+        (cfg.stt_base_url, "Primary STT", 1),
+        (cfg.stt_fallback_base_url, "Fallback STT", 1),
+        (cfg.llm_base_url, "Primary LLM", 2),
+        (cfg.llm_fallback_base_url, "Fallback LLM", 2),
+    ):
+        if not url:
+            continue
+        try:
+            parsed = urlsplit(url)
+            valid = (
+                parsed.scheme in ("http", "https")
+                and bool(parsed.hostname)
+                and parsed.port != 0
+                and not parsed.fragment
+                and not any(char.isspace() or ord(char) < 32 for char in url)
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            issues.append(ConfigValidationIssue(f"{label} base URL is invalid.", tab_index))
 
     return issues
 

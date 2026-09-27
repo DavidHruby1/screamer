@@ -12,7 +12,7 @@ import logging
 import threading
 from typing import Any
 
-from PySide6.QtCore import QObject, Signal, QThread
+from PySide6.QtCore import QObject, Signal, QThread, QTimer, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -128,9 +128,16 @@ class _TrayApp(QObject):
         self._worker: _WorkerThread | None = None
         self._settings_dlg: SettingsDialog | None = None
         self._settings_hotkey_capture_paused = False
+        self._hotkey_restart_pending = False
         self._recording = False
         self._enabled = True
         self._exiting = False
+
+        self._recording_timer = QTimer(self)
+        self._recording_timer.setSingleShot(True)
+        self._recording_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._recording_timer.setInterval(5 * 60 * 1000)
+        self._recording_timer.timeout.connect(self._finalize_recording)
 
         self._snackbar = RecordingSnackbar()
 
@@ -141,7 +148,7 @@ class _TrayApp(QObject):
         # Auto-open settings on manual launch only if startup config is incomplete.
         if not startup_mode and validate_config(self._config):
             log.info("Incomplete configuration; opening settings on startup")
-            self._open_settings()
+            QTimer.singleShot(0, self._open_settings)
 
     # ------------------------------------------------------------------
     # Device / calibrate helpers (passed to SettingsDialog)
@@ -273,8 +280,15 @@ class _TrayApp(QObject):
         self._make_listener()
 
     def _restart_hotkey(self) -> None:
+        if self._exiting:
+            return
+        if self._recording:
+            # Keep the old binding alive until its release finishes this recording.
+            self._hotkey_restart_pending = True
+            return
         self._hotkey.stop()
         self._make_listener()
+        self._hotkey_restart_pending = False
 
     # ------------------------------------------------------------------
     # State machine
@@ -301,19 +315,26 @@ class _TrayApp(QObject):
 
     def _start_recording(self) -> None:
         """Begin a new recording session."""
-        self._apply_state(TrayState.RECORDING)
-        device_id = resolve_device(self._config.audio_device_id, self._config.audio_device_name)
-        self._recorder = AudioRecorder(device_id=device_id)
-        self._recorder.rms_threshold = self._config.rms_threshold
         try:
+            device_id = resolve_device(self._config.audio_device_id, self._config.audio_device_name)
+            self._recorder = AudioRecorder(device_id=device_id)
+            self._recorder.rms_threshold = self._config.rms_threshold
             self._recorder.start()
             self._recording = True
+            self._recording_timer.start()
+            self._apply_state(TrayState.RECORDING)
         except ScreamerError as e:
             self._recording = False
-            self._on_error(e.code)
+            self._apply_state(TrayState.IDLE)
+            self._on_error(e.code, e.detail)
+        except Exception as e:
+            self._recording = False
+            self._apply_state(TrayState.IDLE)
+            self._on_error(AppError.MIC_UNAVAILABLE, str(e))
 
     def _finalize_recording(self) -> None:
         """Stop recording and start the processing worker."""
+        self._recording_timer.stop()
         self._recording = False
         self._apply_state(TrayState.PROCESSING)
 
@@ -323,6 +344,9 @@ class _TrayApp(QObject):
             self._on_error(e.code)
             self._apply_state(TrayState.IDLE)
             return
+        finally:
+            if self._hotkey_restart_pending:
+                self._restart_hotkey()
 
         if not audio_wav:
             self._apply_state(TrayState.IDLE)
@@ -339,11 +363,14 @@ class _TrayApp(QObject):
 
     def _cancel_recording(self) -> None:
         """Stop and discard the in-flight recording without processing it."""
+        self._recording_timer.stop()
         self._recording = False
         try:
             self._recorder.stop()
         except ScreamerError as e:
             self._on_error(e.code, e.detail)
+        if self._hotkey_restart_pending:
+            self._restart_hotkey()
         self._apply_state(TrayState.IDLE)
 
     # ------------------------------------------------------------------
@@ -351,7 +378,7 @@ class _TrayApp(QObject):
     # ------------------------------------------------------------------
 
     def _on_hotkey_pressed(self) -> None:
-        if not self._enabled or self._exiting:
+        if not self._enabled or self._exiting or self._settings_dlg is not None:
             return
 
         if self._is_hotkey_capture_active() and not self._recording:
@@ -386,7 +413,8 @@ class _TrayApp(QObject):
 
         if not self._settings_hotkey_capture_paused:
             return
-        self._make_listener()
+        if not self._exiting:
+            self._make_listener()
         self._settings_hotkey_capture_paused = False
 
     # ------------------------------------------------------------------
@@ -394,7 +422,12 @@ class _TrayApp(QObject):
     # ------------------------------------------------------------------
 
     def _on_worker_succeeded(self, result: PipelineResult) -> None:
-        if not self._cancel_event.is_set() and self._enabled and not self._exiting:
+        if (
+            not self._cancel_event.is_set()
+            and self._enabled
+            and not self._exiting
+            and self._settings_dlg is None
+        ):
             # Disable and injection share the UI thread: once this check passes,
             # no Disable event can interleave with the batched SendInput call.
             try:
@@ -484,6 +517,9 @@ class _TrayApp(QObject):
     def _open_settings(self) -> None:
         if self._settings_dlg is not None or self._exiting:
             return  # Already open.
+        if self._recording or self._worker is not None:
+            self._on_error(AppError.DICTATION_ACTIVE)
+            return
 
         devices = self._get_device_list()
         dlg = SettingsDialog(
@@ -497,16 +533,15 @@ class _TrayApp(QObject):
         result = SettingsDialog.DialogCode.Rejected
         try:
             result = dlg.exec()
-            if result == SettingsDialog.DialogCode.Accepted:
-                save_config(dlg.get_config())
         finally:
             self._settings_dlg = None
 
-            # Always reload from disk — Apply may have written new values,
-            # and the user may have changed fields before Cancel.
-            self._sync_settings_from_disk()
+            # Reload after Apply/Cancel, but do not restart the listener or
+            # reopen storage while an Exit is already finishing.
             if self._exiting:
                 self._finish_exit()
+            else:
+                self._sync_settings_from_disk()
 
         if result == SettingsDialog.DialogCode.Accepted:
             log.info("Settings updated from dialog")
@@ -517,7 +552,9 @@ class _TrayApp(QObject):
         old_hotkey = self._config.hotkey
         old_mode = self._config.recording_mode
         self._config = load_config()
-        if self._config.hotkey != old_hotkey or self._config.recording_mode != old_mode:
+        if not self._exiting and (
+            self._config.hotkey != old_hotkey or self._config.recording_mode != old_mode
+        ):
             self._restart_hotkey()
         self._rebuild_menu()
 
@@ -530,6 +567,8 @@ class _TrayApp(QObject):
             return
         log.info("Exit requested")
         self._exiting = True
+        self._recording_timer.stop()
+        self._recording = False
 
         # 1. Stop hotkey listener (prevents new recordings).
         self._hotkey.stop()
@@ -553,7 +592,10 @@ class _TrayApp(QObject):
         if self._worker is not None or self._settings_dlg is not None:
             return
         # Save settings only after both threads have finished.
-        save_config(self._config)
+        try:
+            save_config(self._config)
+        except Exception:
+            log.exception("Could not save settings during shutdown")
 
         # Quit Qt.
         self._tray.hide()

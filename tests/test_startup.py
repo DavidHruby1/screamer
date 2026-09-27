@@ -1,4 +1,5 @@
 import sys
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,7 +38,33 @@ class StartupTests(unittest.TestCase):
             with patch.object(sys, "executable", str(python)):
                 command = startup.startup_command()
 
-        self.assertEqual(command, f'"{pythonw}" -m src.main --startup')
+        self.assertTrue(command.startswith(f'"{pythonw}" -c '))
+        self.assertIn("runpy.run_module('src.main'", command)
+        self.assertIn("--startup", command)
+
+    def test_source_bootstrap_resolves_package_from_unrelated_working_directory(self) -> None:
+        with patch("src.startup.subprocess.list2cmdline", wraps=subprocess.list2cmdline) as quote:
+            startup.startup_command()
+        argv = quote.call_args.args[0]
+        bootstrap = argv[2]
+        probe = (
+            "import importlib.util, runpy, sys\n"
+            "from unittest.mock import patch\n"
+            "with patch.object(runpy, 'run_module') as launch:\n"
+            f"    exec({bootstrap!r})\n"
+            "    launch.assert_called_once_with('src.main', run_name='__main__', alter_sys=True)\n"
+            "assert sys.argv[1:] == ['--startup']\n"
+            "print(importlib.util.find_spec('src.main').origin)\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="Unrelated directory ") as cwd:
+            result = subprocess.run(
+                [sys.executable, "-c", probe, argv[3]],
+                cwd=cwd,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+        self.assertEqual(Path(result.stdout.strip()), Path(startup.__file__).with_name("main.py"))
 
     def test_sync_enabled_skips_current_enabled_registration(self) -> None:
         with (

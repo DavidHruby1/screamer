@@ -30,7 +30,10 @@ def require(condition, message):
 
 
 def releases(repo):
-    return api(f"repos/{repo}/releases", "--paginate", "--slurp")[0]
+    result = []
+    for page in api(f"repos/{repo}/releases", "--paginate", "--slurp"):
+        result.extend(page)
+    return result
 
 
 def latest(release_list):
@@ -49,7 +52,7 @@ def latest(release_list):
 def version_bump(messages):
     bump = 0
     for message in messages:
-        header = message.split("\n", 1)[0]
+        header = message.lstrip("\n").split("\n", 1)[0]
         match = CONVENTIONAL.match(header)
         if (match and match.group(1)) or re.search(r"(?im)^BREAKING[ -]CHANGE:\s*\S", message):
             return 2
@@ -207,22 +210,21 @@ def publish():
         )
     require(checked_tag(tag, sha), "Tag does not point at tested SHA")
     if not existing:
-        run(
-            "gh",
-            "release",
-            "create",
-            tag,
-            "--repo",
-            repo,
-            "--draft",
-            "--verify-tag",
-            "--generate-notes",
-            "--target",
-            sha,
+        created = api(
+            f"repos/{repo}/releases",
+            "--method",
+            "POST",
+            "-f",
+            f"tag_name={tag}",
+            "-f",
+            f"target_commitish={sha}",
+            "-F",
+            "draft=true",
+            "-F",
+            "generate_release_notes=true",
         )
-        created = next(r for r in releases(repo) if r["tag_name"] == tag)
         require(
-            created["draft"] and created["target_commitish"] == sha,
+            created["tag_name"] == tag and created["draft"] and created["target_commitish"] == sha,
             "New draft target mismatch",
         )
         release_id = created["id"]

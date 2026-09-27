@@ -42,6 +42,23 @@ class ConfigValidationTests(unittest.TestCase):
 
         self.assertEqual(validate_config(cfg), [])
 
+    def test_complete_fallback_does_not_allow_partial_primary(self) -> None:
+        cfg = AppConfig(
+            stt_api_key="unfinished-primary",
+            stt_fallback_enabled=True,
+            stt_fallback_api_key="key",
+            stt_fallback_base_url="https://example.test/v1",
+            stt_fallback_model="stt",
+        )
+        self.assertEqual(
+            [issue.message for issue in validate_config(cfg)],
+            ["Primary STT requires an API key, base URL, and model."],
+        )
+
+    def test_plain_http_remains_supported(self) -> None:
+        cfg = AppConfig(stt_api_key="key", stt_base_url="http://localhost:8080/v1", stt_model="stt")
+        self.assertEqual(validate_config(cfg), [])
+
     def test_enabled_llm_requires_complete_provider(self) -> None:
         cfg = AppConfig(
             stt_api_key="key",
@@ -64,10 +81,26 @@ class ConfigValidationTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             parse_custom_headers(json.dumps(["not", "an", "object"]))
+        self.assertEqual(
+            parse_custom_headers('{"X-Test": "part\\tpart"}'), {"X-Test": "part\tpart"}
+        )
 
     def test_provider_config_detects_groq_by_host(self) -> None:
         self.assertTrue(ProviderConfig(base_url="https://api.groq.com/openai/v1").is_groq)
         self.assertFalse(ProviderConfig(base_url="https://api.openai.com/v1").is_groq)
+
+    def test_invalid_http_headers_and_urls_are_rejected(self) -> None:
+        cfg = AppConfig(
+            stt_api_key="key",
+            stt_base_url="not-a-url",
+            stt_model="stt",
+            stt_custom_headers='{"X-Test\\r\\nBad": "token"}',
+        )
+        messages = [issue.message for issue in validate_config(cfg)]
+        self.assertTrue(any("base URL is invalid" in message for message in messages))
+        self.assertTrue(any("custom headers are invalid" in message for message in messages))
+        with self.assertRaises(ValueError):
+            parse_custom_headers('{"X-Test": "line\\nfeed"}')
 
     def test_import_from_env_backfills_empty_fields_only(self) -> None:
         cwd = os.getcwd()
@@ -144,15 +177,16 @@ class SecretHeaderTests(unittest.TestCase):
             ini = Path(tmp, "settings.ini").read_text(encoding="utf-8")
             self.assertNotIn("X-Old", ini)
 
-    def test_migration_preserves_plaintext_if_encrypted_write_fails(self) -> None:
+    def test_migration_preserves_plaintext_if_encryption_fails(self) -> None:
         from src.config import _get_qsettings, has_plaintext_secrets, save_config
 
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch("src.config.APP_DIR", tmp),
             patch("src.config._dpapi_available", return_value=True),
-            patch("src.config._dpapi_encrypt", return_value="encrypted"),
-            patch("src.config.os.replace", side_effect=OSError("disk full")),
+            patch(
+                "src.config._dpapi_encrypt", side_effect=ScreamerError(AppError.KEY_STORAGE_FAILED)
+            ),
         ):
             settings = _get_qsettings()
             settings.setValue("stt_custom_headers", '{"X-Token": "old"}')
@@ -167,21 +201,126 @@ class SecretHeaderTests(unittest.TestCase):
             self.assertFalse(Path(tmp, "keys.enc").exists())
             self.assertEqual(list(Path(tmp).glob(".keys-*")), [])
 
-    def test_existing_encrypted_store_survives_failed_replacement(self) -> None:
-        from src.config import save_config
+    def test_failed_settings_replacement_keeps_old_url_and_secret(self) -> None:
+        from src.config import load_config, save_config
 
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch("src.config.APP_DIR", tmp),
             patch("src.config._dpapi_available", return_value=True),
-            patch("src.config._dpapi_encrypt", return_value="new-blob"),
+            patch("src.config._dpapi_encrypt", side_effect=lambda val: val.encode().hex()),
+            patch("src.config._dpapi_decrypt", side_effect=lambda val: bytes.fromhex(val).decode()),
         ):
-            path = Path(tmp, "keys.enc")
-            path.write_text('{"stt_api_key":"old-blob"}', encoding="utf-8")
+            save_config(
+                AppConfig(stt_api_key="old", stt_base_url="https://old.test", stt_model="stt")
+            )
+
+            before = Path(tmp, "settings.ini").read_bytes()
             with patch("src.config.os.replace", side_effect=OSError("disk full")):
                 with self.assertRaises(ScreamerError):
-                    save_config(AppConfig(stt_api_key="new"))
-            self.assertEqual(path.read_text(encoding="utf-8"), '{"stt_api_key":"old-blob"}')
+                    save_config(
+                        AppConfig(
+                            stt_api_key="new", stt_base_url="https://new.test", stt_model="stt"
+                        )
+                    )
+            restored = load_config()
+            self.assertEqual(
+                (restored.stt_api_key, restored.stt_base_url), ("old", "https://old.test")
+            )
+            self.assertEqual(Path(tmp, "settings.ini").read_bytes(), before)
+            self.assertEqual(list(Path(tmp).glob(".settings-*")), [])
+
+    def test_successful_replacement_reloads_new_url_and_secret(self) -> None:
+        from src.config import load_config, save_config
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("src.config.APP_DIR", tmp),
+            patch("src.config._dpapi_available", return_value=True),
+            patch("src.config._dpapi_encrypt", side_effect=lambda val: val.encode().hex()),
+            patch("src.config._dpapi_decrypt", side_effect=lambda val: bytes.fromhex(val).decode()),
+        ):
+            save_config(AppConfig(stt_api_key="old", stt_base_url="https://old.test"))
+            self.assertEqual(load_config().stt_api_key, "old")
+            save_config(AppConfig(stt_api_key="new", stt_base_url="https://new.test"))
+            actual = load_config()
+            self.assertEqual((actual.stt_api_key, actual.stt_base_url), ("new", "https://new.test"))
+
+    def test_encrypted_legacy_secret_takes_precedence_over_stale_plaintext(self) -> None:
+        from src.config import _get_qsettings, load_config, save_config
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("src.config.APP_DIR", tmp),
+            patch("src.config._dpapi_available", return_value=True),
+            patch("src.config._dpapi_encrypt", side_effect=lambda val: val.encode().hex()),
+            patch("src.config._dpapi_decrypt", side_effect=lambda val: bytes.fromhex(val).decode()),
+        ):
+            Path(tmp, "keys.enc").write_text('{"stt_api_key":"6e6577"}', encoding="utf-8")
+            settings = _get_qsettings()
+            settings.setValue("stt_api_key", "old")
+            settings.setValue("stt_base_url", "https://new.test")
+            settings.sync()
+            restored = load_config()
+            self.assertEqual(restored.stt_api_key, "new")
+            save_config(restored)
+            self.assertEqual(load_config().stt_api_key, "new")
+            self.assertNotIn(
+                "stt_api_key=old", Path(tmp, "settings.ini").read_text(encoding="utf-8")
+            )
+
+    def test_legacy_plaintext_is_not_misidentified_as_ciphertext_by_prefix(self) -> None:
+        from src.config import _get_qsettings, load_config
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("src.config.APP_DIR", tmp),
+            patch("src.config._dpapi_available", return_value=True),
+        ):
+            settings = _get_qsettings()
+            settings.setValue("stt_api_key", "dpapi:literal-provider-token")
+            settings.sync()
+            self.assertEqual(load_config().stt_api_key, "dpapi:literal-provider-token")
+
+    def test_incomplete_encrypted_ini_fails_closed(self) -> None:
+        from src.config import _get_qsettings, load_config
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("src.config.APP_DIR", tmp),
+            patch("src.config._dpapi_available", return_value=True),
+        ):
+            settings = _get_qsettings()
+            settings.setValue("secret_storage", "dpapi-v1")
+            settings.setValue("stt_base_url", "https://example.test")
+            settings.sync()
+            with self.assertRaises(ScreamerError) as error:
+                load_config()
+            self.assertEqual(error.exception.code, AppError.KEY_STORAGE_FAILED)
+
+    def test_clearing_secret_does_not_resurrect_legacy_key_if_cleanup_fails(self) -> None:
+        from src.config import load_config, save_config
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("src.config.APP_DIR", tmp),
+            patch("src.config._dpapi_available", return_value=True),
+            patch("src.config._dpapi_encrypt", side_effect=lambda val: val.encode().hex()),
+            patch("src.config._dpapi_decrypt", side_effect=lambda val: bytes.fromhex(val).decode()),
+        ):
+            Path(tmp, "keys.enc").write_text('{"stt_api_key":"6f6c64"}', encoding="utf-8")
+            real_unlink = os.unlink
+
+            def unlink(path):
+                if str(path).endswith("keys.enc"):
+                    raise OSError("locked")
+                real_unlink(path)
+
+            with patch("src.config.os.unlink", side_effect=unlink):
+                save_config(AppConfig(stt_base_url="https://example.test"))
+            self.assertEqual(load_config().stt_api_key, "")
+            Path(tmp, "keys.enc").write_text("damaged", encoding="utf-8")
+            self.assertEqual(load_config().stt_api_key, "")
 
     def test_encryption_failure_leaves_plaintext_untouched(self) -> None:
         from src.config import _get_qsettings, save_config
@@ -228,6 +367,20 @@ class SecretHeaderTests(unittest.TestCase):
             save_config(AppConfig(stt_custom_headers="legacy"))
             self.assertEqual(_get_qsettings().value("stt_custom_headers"), "legacy")
 
+    def test_non_windows_save_does_not_purge_windows_ciphertext(self) -> None:
+        from src.config import _get_qsettings, save_config
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("src.config.APP_DIR", tmp),
+            patch("src.config._dpapi_available", return_value=False),
+        ):
+            settings = _get_qsettings()
+            settings.setValue("stt_api_key", "dpapi:stored-on-windows")
+            settings.sync()
+            save_config(AppConfig())
+            self.assertEqual(_get_qsettings().value("stt_api_key"), "dpapi:stored-on-windows")
+
     def test_migration_roundtrips_headers_after_successful_encrypted_save(self) -> None:
         from src.config import _get_qsettings, has_plaintext_secrets, load_config, save_config
 
@@ -250,7 +403,7 @@ class SecretHeaderTests(unittest.TestCase):
 
             self.assertFalse(has_plaintext_secrets())
             self.assertEqual(load_config().stt_custom_headers, '{"X-Token": "legacy"}')
-            self.assertNotIn("legacy", Path(tmp, "keys.enc").read_text(encoding="utf-8"))
+            self.assertNotIn("legacy", Path(tmp, "settings.ini").read_text(encoding="utf-8"))
 
 
 class EnvPathTests(unittest.TestCase):

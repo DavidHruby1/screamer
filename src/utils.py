@@ -24,6 +24,7 @@ class AppError(Enum):
     LLM_FAILED = "AI rewrite failed. Using raw transcription."
     NETWORK_ERROR = "Network error. Please check your connection."
     NO_SPEECH = "No speech detected. Try speaking louder or closer."
+    DICTATION_ACTIVE = "Finish the current dictation before opening Settings."
     INJECTION_FAILED = "Could not type text. Focus may have changed."
     HOTKEY_CONFLICT = "Hotkey conflict. Choose a different hotkey."
     HOTKEY_INVALID = "That key combination can't be used. Add a modifier or pick another key."

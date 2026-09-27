@@ -1,4 +1,6 @@
 import unittest
+import logging
+from io import StringIO
 from unittest.mock import patch
 
 import httpx
@@ -26,6 +28,116 @@ class FakeResponse:
 
 
 class SttRewriteFallbackTests(unittest.TestCase):
+    def test_real_http_client_keeps_url_secrets_out_of_logs_and_merges_authorization(self):
+        secret = "never-log-url-secret"
+        url = f"https://example.test/{secret}?token={secret}"
+        cfg = AppConfig(
+            stt_api_key="stt-key",
+            stt_base_url=url,
+            stt_model="stt",
+            stt_custom_headers='{"authorization": "Custom stt-token"}',
+            llm_enabled=True,
+            llm_api_key="llm-key",
+            llm_base_url=url,
+            llm_model="llm",
+            llm_custom_headers='{"aUtHoRiZaTiOn": "Custom llm-token"}',
+        )
+        requests = []
+        outcomes = ["stt", "llm", "status", "network"]
+
+        def handle(request):
+            requests.append(request)
+            outcome = outcomes.pop(0)
+            if outcome == "stt":
+                return httpx.Response(200, json={"text": "recognized"})
+            if outcome == "llm":
+                return httpx.Response(
+                    200, json={"choices": [{"message": {"content": "rewritten"}}]}
+                )
+            if outcome == "status":
+                return httpx.Response(401)
+            raise httpx.ConnectError(f"Cannot connect to {request.url}", request=request)
+
+        with (
+            httpx.Client(transport=httpx.MockTransport(handle)) as client,
+            patch.object(http_client, "_client", client),
+            self.assertLogs(level=logging.DEBUG) as captured,
+        ):
+            self.assertEqual(transcribe(b"wav", cfg).text, "recognized")
+            self.assertEqual(rewrite("raw", cfg).text, "rewritten")
+            cfg.stt_base_url = f"https://user:{secret}@example.test/v1"
+            cfg.llm_base_url = cfg.stt_base_url
+            with self.assertRaises(ScreamerError):
+                transcribe(b"wav", cfg)
+            self.assertEqual(rewrite("raw", cfg).warnings, [AppError.LLM_FAILED])
+        self.assertEqual(requests[0].headers.get_list("authorization"), ["Custom stt-token"])
+        self.assertEqual(requests[1].headers.get_list("authorization"), ["Custom llm-token"])
+        self.assertNotIn(secret, "\n".join(captured.output))
+
+    def test_mixed_case_authorization_replaces_default_without_duplicate(self):
+        cfg = AppConfig(
+            stt_api_key="key",
+            stt_base_url="https://example.test",
+            stt_model="stt",
+            stt_custom_headers='{"authorization": "Custom token"}',
+        )
+        seen = []
+
+        def fake_post(_url, **kwargs):
+            seen.extend(kwargs["headers"].multi_items())
+            return FakeResponse({"text": "hello"})
+
+        with patch("src.http_client.post", side_effect=fake_post):
+            transcribe(b"wav", cfg)
+        self.assertEqual(
+            [(name, value) for name, value in seen if name.lower() == "authorization"],
+            [("authorization", "Custom token")],
+        )
+
+    def test_secret_in_url_is_not_logged_on_success_or_http_failure(self):
+        secret = "urlpassword123"
+        cfg = AppConfig(
+            stt_api_key="key",
+            stt_base_url=f"https://user:{secret}@example.test/path/{secret}?token={secret}",
+            stt_model="stt",
+        )
+        stream = StringIO()
+        handler = logging.StreamHandler(stream)
+        logger = logging.getLogger("src.stt")
+        previous = logger.level
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(handler)
+        try:
+            with patch("src.http_client.post", return_value=FakeResponse({"text": "ok"})):
+                transcribe(b"wav", cfg)
+            with patch("src.http_client.post", return_value=FakeResponse({}, status_code=401)):
+                with self.assertRaises(ScreamerError):
+                    transcribe(b"wav", cfg)
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous)
+        self.assertNotIn(secret, stream.getvalue())
+
+    def test_transport_network_error_does_not_expose_url(self):
+        secret = "dont-log-this"
+
+        class FailedClient:
+            def post(self, url, **kwargs):
+                raise httpx.ConnectError(f"Failed to connect: {url}")
+
+        with patch("src.http_client._get_client", return_value=FailedClient()):
+            with self.assertRaisesRegex(RuntimeError, "ConnectError") as failure:
+                http_client.post(
+                    f"https://user:{secret}@example.test/{secret}", headers=httpx.Headers()
+                )
+        self.assertNotIn(secret, str(failure.exception))
+
+    def test_transport_rejects_redirect_without_logging_location(self):
+        response = FakeResponse({}, status_code=302, headers={"Location": "https://secret.test"})
+        with self.assertRaisesRegex(RuntimeError, "status 302") as failure:
+            http_client.raise_for_status(response)
+        self.assertNotIn("secret.test", str(failure.exception))
+
     def test_stt_uses_fallback_after_primary_http_failure(self) -> None:
         cfg = AppConfig(
             stt_api_key="primary",
@@ -74,8 +186,8 @@ class SttRewriteFallbackTests(unittest.TestCase):
         with patch("src.http_client.post", side_effect=fake_post):
             transcribe(b"wav", cfg)
 
-        self.assertEqual(captured_headers["Authorization"], "Bearer primary")
-        self.assertEqual(captured_headers["X-Test"], "yes")
+        self.assertEqual(captured_headers["authorization"], "Bearer primary")
+        self.assertEqual(captured_headers["x-test"], "yes")
 
     def test_rewrite_uses_fallback_after_primary_http_failure(self) -> None:
         cfg = AppConfig(

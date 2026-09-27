@@ -1,6 +1,6 @@
 """4-tab settings dialog: General, STT, LLM, Audio.
 
-Edits a copy of AppConfig; original untouched until accept().
+Edits a copy of AppConfig; Apply and OK persist validated settings.
 Standalone mode: ``python -m src.settings_dialog`` launches the dialog for testing.
 """
 
@@ -500,6 +500,10 @@ class SettingsDialog(QDialog):
         # Audio
         cfg.audio_device_id = self._device_combo.currentData()
         cfg.rms_threshold = self._rms_spin.value()
+        unavailable_name = self._device_combo.currentData(Qt.ItemDataRole.UserRole + 1)
+        if unavailable_name is not None:
+            cfg.audio_device_name = unavailable_name
+            return
         cfg.audio_device_name = ""
         if cfg.audio_device_id is not None:
             text = self._device_combo.currentText()
@@ -529,6 +533,9 @@ class SettingsDialog(QDialog):
 
     def _select_device(self, cfg: AppConfig) -> None:
         """Select saved device by current ID, then by stable device name."""
+        for i in range(self._device_combo.count() - 1, -1, -1):
+            if self._device_combo.itemData(i, Qt.ItemDataRole.UserRole + 1) is not None:
+                self._device_combo.removeItem(i)
         self._device_combo.setCurrentIndex(0)
         saved_name = _clean_device_name(cfg.audio_device_name).lower()
 
@@ -538,17 +545,33 @@ class SettingsDialog(QDialog):
                     item_name = _clean_device_name(
                         self._device_combo.itemText(i).split("] ", 1)[-1]
                     )
-                    if not saved_name or saved_name in item_name.lower():
+                    if not saved_name or saved_name == item_name.lower():
                         self._device_combo.setCurrentIndex(i)
                         return
 
         if saved_name:
-            for i in range(self._device_combo.count()):
-                item_data = self._device_combo.itemData(i)
-                item_name = _clean_device_name(self._device_combo.itemText(i).split("] ", 1)[-1])
-                if item_data is not None and saved_name in item_name.lower():
+            for exact in (True, False):
+                for i in range(1, self._device_combo.count()):
+                    item_name = _clean_device_name(
+                        self._device_combo.itemText(i).split("] ", 1)[-1]
+                    ).lower()
+                    if (exact and saved_name != item_name) or (
+                        not exact and saved_name not in item_name
+                    ):
+                        continue
                     self._device_combo.setCurrentIndex(i)
                     return
+
+        if cfg.audio_device_id is not None or cfg.audio_device_name:
+            self._device_combo.addItem(
+                f"[{cfg.audio_device_id}] {cfg.audio_device_name} (Unavailable)",
+                cfg.audio_device_id,
+            )
+            index = self._device_combo.count() - 1
+            self._device_combo.setItemData(
+                index, cfg.audio_device_name, Qt.ItemDataRole.UserRole + 1
+            )
+            self._device_combo.setCurrentIndex(index)
 
     def _on_calibrate(self) -> None:
         """Run RMS auto-calibration in a worker thread; keep the dialog responsive."""
@@ -626,10 +649,8 @@ class SettingsDialog(QDialog):
             self._collect()
             if not self._show_validation_issue():
                 return
-            if not self._sync_startup_or_warn():
+            if not self._save_or_warn():
                 return
-            save_config(self._working)
-            self.applied.emit()
             log.info("Settings applied")
 
     # ------------------------------------------------------------------
@@ -644,7 +665,7 @@ class SettingsDialog(QDialog):
         self._collect()
         if not self._show_validation_issue():
             return
-        if not self._sync_startup_or_warn():
+        if not self._save_or_warn():
             return
         super().accept()
 
@@ -679,6 +700,17 @@ class SettingsDialog(QDialog):
         self._tabs.setCurrentIndex(issue.tab_index)
         return False
 
+    def _save_or_warn(self) -> bool:
+        from src.utils import ScreamerError
+
+        try:
+            save_config(self._working)
+        except ScreamerError as e:
+            QMessageBox.warning(self, "Settings Save Failed", e.code.value)
+            return False
+        self.applied.emit()
+        return self._sync_startup_or_warn()
+
     def _sync_startup_or_warn(self) -> bool:
         from src.startup import sync_enabled
         from src.utils import ScreamerError
@@ -690,7 +722,11 @@ class SettingsDialog(QDialog):
             sync_enabled(self._working.start_with_windows)
             return True
         except ScreamerError as e:
-            QMessageBox.warning(self, "Startup Setting Failed", str(e))
+            QMessageBox.warning(
+                self,
+                "Startup Setting Failed",
+                f"Settings were saved, but Windows startup could not be updated.\n{e}",
+            )
             return False
 
 
@@ -848,6 +884,7 @@ def _clean_device_name(name: str) -> str:
 # ------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import platform
     import sys
 
     from PySide6.QtWidgets import QApplication
@@ -875,14 +912,8 @@ if __name__ == "__main__":
 
     dlg = SettingsDialog(cfg, devices=devices, calibrate_fn=calibrate_fn)
     if dlg.exec() == QDialog.DialogCode.Accepted:
-        new_cfg = dlg.get_config()
-        save_config(new_cfg)
         print("Settings saved.")
-        for fld in new_cfg.__dataclass_fields__:
-            val = getattr(new_cfg, fld)
-            if "key" in fld and val:
-                print(f"  {fld} = ***")
-            else:
-                print(f"  {fld} = {val}")
+        if platform.system() != "Windows":
+            print("Secret values are not persisted outside Windows (DPAPI unavailable).")
     else:
         print("Cancelled.")

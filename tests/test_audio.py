@@ -3,8 +3,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-from src.audio import AudioRecorder, default_input_device_id
+from src.audio import AudioRecorder, default_input_device_id, resolve_device
 from src.config import DEFAULT_RMS_THRESHOLD
+from src.utils import AppError, ScreamerError
 
 
 class FakeSoundDevice:
@@ -76,6 +77,17 @@ class AudioCalibrationTests(unittest.TestCase):
 
 
 class AudioDeviceDefaultTests(unittest.TestCase):
+    def test_name_resolution_prefers_exact_match_over_earlier_substring(self) -> None:
+        fake_sd = FakeSoundDeviceDefaults(
+            (0, -1),
+            {
+                0: {"name": "Microphone Pro", "max_input_channels": 1},
+                1: {"name": "Microphone", "max_input_channels": 1},
+            },
+        )
+        with patch("src.audio.sd", fake_sd):
+            self.assertEqual(resolve_device(None, "Microphone"), 1)
+
     def test_default_input_device_accepts_sounddevice_pair(self) -> None:
         fake_sd = FakeSoundDeviceDefaults(FakeInputOutputPair(3, 9))
 
@@ -111,6 +123,47 @@ class AudioDeviceDefaultTests(unittest.TestCase):
 
         with patch("src.audio.sd", fake_sd):
             self.assertIsNone(default_input_device_id())
+
+
+class AudioStreamTests(unittest.TestCase):
+    def test_failed_start_closes_partially_opened_stream(self) -> None:
+        class Stream:
+            closed = False
+
+            def start(self):
+                raise OSError("device busy")
+
+            def close(self):
+                self.closed = True
+
+        stream = Stream()
+        with patch("src.audio.sd") as sd:
+            sd.InputStream.return_value = stream
+            recorder = AudioRecorder()
+            with self.assertRaises(ScreamerError) as error:
+                recorder.start()
+        self.assertEqual(error.exception.code, AppError.MIC_UNAVAILABLE)
+        self.assertTrue(stream.closed)
+        self.assertFalse(recorder.is_recording)
+
+    def test_stop_closes_even_when_stream_stop_fails(self) -> None:
+        class Stream:
+            closed = False
+
+            def stop(self):
+                raise OSError("disconnected")
+
+            def close(self):
+                self.closed = True
+
+        stream = Stream()
+        recorder = AudioRecorder()
+        recorder._stream = stream
+        with self.assertRaises(ScreamerError) as error:
+            recorder.stop()
+        self.assertEqual(error.exception.code, AppError.MIC_DISCONNECTED)
+        self.assertTrue(stream.closed)
+        self.assertFalse(recorder.is_recording)
 
 
 if __name__ == "__main__":

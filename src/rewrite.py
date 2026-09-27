@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from time import perf_counter
 
+import httpx
+
 from src import http_client
 from src.config import AppConfig, ProviderConfig, parse_custom_headers
 from src.utils import AppError, PipelineResult, ScreamerError, log_duration
@@ -47,7 +49,9 @@ def rewrite(text: str, config: AppConfig) -> PipelineResult:
                     )
                     return PipelineResult(text=result)
             except Exception as e:
-                log.warning("%s LLM failed: %s", "Fallback" if is_fallback else "Primary", e)
+                log.warning(
+                    "%s LLM failed: %s", "Fallback" if is_fallback else "Primary", type(e).__name__
+                )
                 if not fallback.enabled:
                     return PipelineResult(text=text, warnings=[AppError.LLM_FAILED])
 
@@ -66,10 +70,12 @@ def _call_llm(
 
     url = provider.base_url.rstrip("/") + "/chat/completions"
 
-    headers: dict[str, str] = {
-        "Authorization": f"Bearer {provider.api_key}",
-        "Content-Type": "application/json",
-    }
+    headers = httpx.Headers(
+        {
+            "Authorization": f"Bearer {provider.api_key}",
+            "Content-Type": "application/json",
+        }
+    )
     try:
         headers.update(parse_custom_headers(provider.custom_headers))
     except ValueError as e:
@@ -88,8 +94,7 @@ def _call_llm(
         body["max_completion_tokens"] = output_cap
 
     log.info(
-        "LLM request: url=%s model=%s input_chars=%d output_cap=%s",
-        url,
+        "LLM request: model=%s input_chars=%d output_cap=%s",
         provider.model,
         len(user_text),
         output_cap if output_cap is not None else "none",
@@ -109,7 +114,7 @@ def _call_llm(
         resp.headers.get("cf-ray") or "-",
     )
 
-    resp.raise_for_status()
+    http_client.raise_for_status(resp)
 
     data = resp.json()
     choices = data.get("choices") or [{}]

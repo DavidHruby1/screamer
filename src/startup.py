@@ -28,7 +28,15 @@ def startup_command() -> str:
     if getattr(sys, "frozen", False):
         argv = [sys.executable, STARTUP_ARG]
     else:
-        argv = [_pythonw_or_python(), "-m", "src.main", STARTUP_ARG]
+        root = Path(__file__).resolve().parent.parent
+        # Run the module with its package root on sys.path regardless of the
+        # working directory chosen by Windows for the Run-key process.
+        bootstrap = (
+            "import runpy, sys; "
+            f"sys.path.insert(0, {str(root)!r}); "
+            "runpy.run_module('src.main', run_name='__main__', alter_sys=True)"
+        )
+        argv = [_pythonw_or_python(), "-c", bootstrap, STARTUP_ARG]
 
     return subprocess.list2cmdline(argv)
 

@@ -1,10 +1,12 @@
 import os
 import unittest
+from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QObject
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMenu
 
 from src.main import _TrayApp
@@ -15,10 +17,201 @@ def make_tray_app():
     tray_app = _TrayApp.__new__(_TrayApp)
     QObject.__init__(tray_app)
     tray_app._menu = QMenu()
+    tray_app._settings_dlg = None
+    tray_app._hotkey_restart_pending = False
+    tray_app._exiting = False
+    tray_app._recording_timer = QTimer(tray_app)
     return tray_app
 
 
 class TrayMenuTests(unittest.TestCase):
+    def test_five_minute_limit_processes_recorded_audio_once(self):
+        with ExitStack() as stack:
+            for patcher in self._startup_patches(lambda cfg: cfg):
+                stack.enter_context(patcher)
+            stack.enter_context(patch("src.main.resolve_device", return_value=None))
+            worker = stack.enter_context(patch("src.main._WorkerThread"))
+            tray = _TrayApp(startup_mode=True)
+            tray._on_hotkey_pressed()
+            tray._recorder.stop.return_value = b"recorded audio"
+
+            self.assertTrue(tray._recording_timer.isActive())
+            self.assertEqual(tray._recording_timer.interval(), 300_000)
+            self.assertTrue(tray._recording_timer.isSingleShot())
+            tray._recording_timer.start(0)
+            QApplication.processEvents()
+
+            self.assertFalse(tray._recording)
+            self.assertFalse(tray._recording_timer.isActive())
+            tray._recorder.stop.assert_called_once()
+            worker.assert_called_once_with(
+                b"recorded audio", tray._config, tray._cancel_event, tray
+            )
+            worker.return_value.start.assert_called_once()
+            tray._on_hotkey_released()
+            tray._recorder.stop.assert_called_once()
+
+    def test_recording_limit_is_cancelled_on_manual_stop_disable_and_exit(self):
+        for action in ("release", "disable", "exit"):
+            with self.subTest(action=action), ExitStack() as stack:
+                for patcher in self._startup_patches(lambda cfg: cfg):
+                    stack.enter_context(patcher)
+                stack.enter_context(patch("src.main.resolve_device", return_value=None))
+                worker = stack.enter_context(patch("src.main._WorkerThread"))
+                tray = _TrayApp(startup_mode=True)
+                tray._hotkey = Mock()
+                tray._finish_exit = Mock()
+                tray._on_hotkey_pressed()
+                tray._recorder.stop.return_value = b""
+                tray._recording_timer.start(0)
+
+                if action == "release":
+                    tray._on_hotkey_released()
+                elif action == "disable":
+                    tray._toggle_enabled(False)
+                else:
+                    tray._exit()
+                QApplication.processEvents()
+
+                self.assertFalse(tray._recording_timer.isActive())
+                tray._recorder.stop.assert_called_once()
+                worker.assert_not_called()
+
+    def test_capture_finishing_during_exit_does_not_restart_listener(self):
+        tray = make_tray_app()
+        tray._exiting = True
+        tray._settings_hotkey_capture_paused = True
+        tray._make_listener = Mock()
+        tray._on_settings_hotkey_capture_active_changed(False)
+        tray._make_listener.assert_not_called()
+        self.assertFalse(tray._settings_hotkey_capture_paused)
+
+    def test_opening_settings_does_not_interrupt_dictation(self):
+        from src.utils import AppError
+
+        tray = make_tray_app()
+        tray._recording = True
+        tray._on_error = Mock()
+        with patch("src.main.SettingsDialog") as dialog:
+            tray._open_settings()
+        dialog.assert_not_called()
+        self.assertTrue(tray._recording)
+        tray._on_error.assert_called_once_with(AppError.DICTATION_ACTIVE)
+
+    def test_exit_during_initial_settings_stops_outer_event_loop(self):
+        from src.config import AppConfig
+
+        app = QApplication.instance() or QApplication([])
+        previous_quit_policy = app.quitOnLastWindowClosed()
+        app.setQuitOnLastWindowClosed(False)
+        self.addCleanup(app.setQuitOnLastWindowClosed, previous_quit_policy)
+        with (
+            patch("src.main.load_config", return_value=AppConfig()),
+            patch("src.main.import_from_env", side_effect=lambda cfg: cfg),
+            patch("src.main.has_plaintext_secrets", return_value=False),
+            patch("src.main.save_config"),
+            patch.object(
+                _TrayApp,
+                "_make_listener",
+                autospec=True,
+                side_effect=lambda self: setattr(self, "_hotkey", Mock()),
+            ),
+            patch.object(_TrayApp, "_get_device_list", return_value=[]),
+        ):
+            tray = _TrayApp.__new__(_TrayApp)
+            timed_out = []
+            dialog_was_open = []
+
+            def request_exit():
+                dialog_was_open.append(tray._settings_dlg is not None)
+                exit_action = next(
+                    action for action in tray._menu.actions() if action.text() == "Exit"
+                )
+                exit_action.trigger()
+
+            # Also fires when the old constructor wrongly enters dlg.exec().
+            QTimer.singleShot(0, lambda: QTimer.singleShot(0, request_exit))
+
+            def timeout():
+                timed_out.append(True)
+                app.quit()
+
+            safety_timer = QTimer()
+            safety_timer.setSingleShot(True)
+            safety_timer.timeout.connect(timeout)
+            safety_timer.start(1000)
+            _TrayApp.__init__(tray)
+            app.exec()
+            safety_timer.stop()
+            self.assertEqual(dialog_was_open, [True])
+            self.assertFalse(timed_out)
+            self.assertTrue(tray._exiting)
+            self.assertFalse(tray._tray.isVisible())
+
+    def test_recording_start_failure_returns_to_idle(self):
+        from src.config import AppConfig
+        from src.icons import TrayState
+
+        tray = make_tray_app()
+        tray._config = AppConfig()
+        tray._recording = False
+        tray._apply_state = Mock()
+        tray._on_error = Mock()
+        with patch("src.main.resolve_device", side_effect=OSError("busy")):
+            tray._start_recording()
+        self.assertFalse(tray._recording)
+        tray._apply_state.assert_called_once_with(TrayState.IDLE)
+
+    def test_exit_still_quits_when_settings_save_fails(self):
+        tray = make_tray_app()
+        tray._worker = None
+        tray._tray = Mock()
+        tray._snackbar = Mock()
+        tray._config = object()
+        app = QApplication.instance()
+        with (
+            patch("src.main.save_config", side_effect=OSError("read-only disk")),
+            patch.object(app, "quit") as quit_app,
+        ):
+            tray._finish_exit()
+        tray._tray.hide.assert_called_once()
+        quit_app.assert_called_once()
+
+    def test_result_does_not_type_into_own_settings_dialog(self):
+        import threading
+        from src.config import AppConfig
+        from src.utils import PipelineResult
+
+        tray = make_tray_app()
+        tray._settings_dlg = Mock()
+        tray._cancel_event = threading.Event()
+        tray._config = AppConfig()
+        tray._enabled = True
+        tray._exiting = False
+        tray._apply_state = Mock()
+        with patch("src.main.type_text") as type_text:
+            tray._on_worker_succeeded(PipelineResult(text="secret"))
+        type_text.assert_not_called()
+
+    def test_hotkey_restart_waits_for_active_hold_recording_release(self):
+        tray = make_tray_app()
+        tray._recording = True
+        tray._recorder = Mock()
+        tray._apply_state = Mock()
+        tray._hotkey = Mock()
+        tray._make_listener = Mock()
+        tray._restart_hotkey()
+        tray._recorder.stop.assert_not_called()
+        tray._hotkey.stop.assert_not_called()
+        self.assertTrue(tray._recording)
+        tray._recorder.stop.return_value = b""
+        tray._on_hotkey_released()
+        tray._recorder.stop.assert_called_once()
+        tray._hotkey.stop.assert_called_once()
+        tray._make_listener.assert_called_once()
+        self.assertFalse(tray._recording)
+        self.assertFalse(tray._hotkey_restart_pending)
+
     def test_startup_mode_suppresses_incomplete_config_settings_dialog(self):
         from src.config import AppConfig
 
@@ -44,6 +237,7 @@ class TrayMenuTests(unittest.TestCase):
             started[-1].assert_not_called()
 
             _TrayApp(startup_mode=False)
+            QApplication.processEvents()
             started[-1].assert_called_once_with()
         finally:
             for p in reversed(patches):

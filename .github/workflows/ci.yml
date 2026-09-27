@@ -13,8 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  # Cross-platform import safety: every module must byte-compile and the
-  # package must import on a non-Windows host (no GUI / Win32 deps needed).
+  # Every application module must byte-compile and import on a non-Windows host.
   compile:
     name: compile (ubuntu / py3.12)
     runs-on: ubuntu-latest
@@ -25,6 +24,19 @@ jobs:
           python-version: "3.12"
       - run: python -m compileall src/ tests/ .github/scripts/
       - run: python -c "import src; print('OK')"
+      - name: Install import dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Import application modules
+        run: |
+          python - <<'PY'
+          import importlib
+          import pkgutil
+          import src
+
+          for module in pkgutil.iter_modules(src.__path__, prefix="src."):
+              importlib.import_module(module.name)
+          print("All application modules imported")
+          PY
 
   # Full test suite on the target platform.
   test:

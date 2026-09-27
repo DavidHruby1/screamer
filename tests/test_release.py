@@ -20,6 +20,14 @@ REPO = "owner/repo"
 
 
 class VersionTests(unittest.TestCase):
+    def test_releases_includes_all_paginated_pages(self):
+        pages = [
+            [{"tag_name": f"v2.0.{n}", "draft": True, "prerelease": False} for n in range(30)],
+            [{"tag_name": "v1.0.4", "draft": False, "prerelease": False}],
+        ]
+        with patch.object(release, "api", return_value=pages):
+            self.assertEqual(release.latest(release.releases(REPO))["tag_name"], "v1.0.4")
+
     def test_versions_start_at_highest_published_stable_release(self):
         items = [
             {"tag_name": "v1.0.4", "draft": False, "prerelease": False},
@@ -34,6 +42,8 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(release.version_bump(["feat(ui): add recording pill"]), 1)
         self.assertEqual(release.version_bump(["feat!: change contract"]), 2)
         self.assertEqual(release.version_bump(["fix: repair\n\nBREAKING CHANGE: new format"]), 2)
+        self.assertEqual(release.version_bump(["fix: repair", "\nfeat: later feature"]), 1)
+        self.assertEqual(release.version_bump(["fix: repair", "\nfeat!: later break"]), 2)
 
 
 class PlanTests(unittest.TestCase):
@@ -185,29 +195,19 @@ class PublishTests(unittest.TestCase):
         with (
             patch.object(release, "run", return_value=SHA) as command,
             patch.object(release, "same_main", return_value=True),
-            patch.object(release, "releases", side_effect=[[base], [draft, base]]),
+            patch.object(release, "releases", return_value=[base]) as listing,
             patch.object(release, "checked_tag", return_value=True),
-            patch.object(release, "api", side_effect=[draft, uploaded]),
+            patch.object(release, "api", side_effect=[draft, draft, uploaded]) as api,
         ):
             release.publish()
 
         calls = [call.args for call in command.call_args_list]
-        self.assertIn(
-            (
-                "gh",
-                "release",
-                "create",
-                "v1.0.5",
-                "--repo",
-                REPO,
-                "--draft",
-                "--verify-tag",
-                "--generate-notes",
-                "--target",
-                SHA,
-            ),
-            calls,
+        listing.assert_called_once_with(REPO)
+        self.assertEqual(
+            api.call_args_list[0].args[:3], (f"repos/{REPO}/releases", "--method", "POST")
         )
+        self.assertEqual(api.call_args_list[1].args, (f"repos/{REPO}/releases/42",))
+        self.assertFalse(any(args[:3] == ("gh", "release", "create") for args in calls))
         self.assertFalse(
             any(args[:4] == ("gh", "api", f"repos/{REPO}/git/refs", "--method") for args in calls)
         )

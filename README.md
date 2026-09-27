@@ -130,6 +130,9 @@ so it won't reach the app underneath.
 
 ## For developers
 
+See [implementation and API contracts](docs/IMPLEMENTATION.md) and
+[release operations](docs/RELEASES.md) for maintained technical documentation.
+
 Run from source:
 
 ```bash

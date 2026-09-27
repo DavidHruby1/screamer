@@ -9,12 +9,16 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
         throw "python was not found on PATH. Install Python 3 and rerun this script."
     }
     & $Python.Source -m venv .venv
+    if ($LASTEXITCODE -ne 0) { throw "Creating virtual environment failed (exit code $LASTEXITCODE)." }
 }
 
 & ".venv\Scripts\python.exe" -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) { throw "Upgrading pip failed (exit code $LASTEXITCODE)." }
 & ".venv\Scripts\python.exe" -m pip install -r requirements.txt -r requirements-build.txt
+if ($LASTEXITCODE -ne 0) { throw "Installing requirements failed (exit code $LASTEXITCODE)." }
 
 & ".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean screamer.spec
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed (exit code $LASTEXITCODE)." }
 
 $ExePath = Join-Path $ProjectRoot "dist\Screamer\Screamer.exe"
 Write-Host ""

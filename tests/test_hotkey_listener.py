@@ -30,6 +30,7 @@ def _listener(hotkey, mode):
 
 
 VK_LCTRL = 0xA2
+VK_RCTRL = 0xA3
 VK_LALT = 0xA4
 
 
@@ -71,6 +72,26 @@ class HoldKeyTests(unittest.TestCase):
         listener._on_kb_event(WM_KEYDOWN, VK_LALT)  # extra alt held
         self.assertFalse(listener._on_kb_event(WM_KEYDOWN, 0x20))
         self.assertEqual(pressed, [])
+
+    def test_releasing_left_ctrl_keeps_right_ctrl_held(self):
+        hk = Hotkey(frozenset({"ctrl", "alt"}), "key", 0x20)
+        listener, pressed, _ = _listener(hk, HotkeyMode.HOLD)
+        for vk in (VK_LCTRL, VK_RCTRL, VK_LALT):
+            listener._on_kb_event(WM_KEYDOWN, vk)
+        listener._on_kb_event(WM_KEYUP, VK_LCTRL)
+        self.assertTrue(listener._on_kb_event(WM_KEYDOWN, 0x20))
+        self.assertEqual(pressed, [1])
+
+    def test_repeat_after_late_modifiers_does_not_arm_trigger(self):
+        hk = Hotkey(frozenset({"ctrl", "alt"}), "key", 0x20)
+        listener, pressed, released = _listener(hk, HotkeyMode.HOLD)
+        self.assertFalse(listener._on_kb_event(WM_KEYDOWN, 0x20))
+        listener._on_kb_event(WM_KEYDOWN, VK_LCTRL)
+        listener._on_kb_event(WM_KEYDOWN, VK_LALT)
+        self.assertFalse(listener._on_kb_event(WM_KEYDOWN, 0x20))
+        self.assertFalse(listener._on_kb_event(WM_KEYUP, 0x20))
+        self.assertTrue(listener._on_kb_event(WM_KEYDOWN, 0x20))
+        self.assertEqual((pressed, released), ([1], []))
 
 
 class ToggleKeyTests(unittest.TestCase):
