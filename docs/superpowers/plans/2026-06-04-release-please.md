@@ -1,6 +1,9 @@
 # Release Please Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Superseded historical proposal:** Do not implement this plan. It assumes Actions
+> can create PRs, uses an obsolete `1.0.1` version manifest, and creates the public
+> release before verifying its Windows assets. See `docs/RELEASES.md` for the
+> current release process.
 
 **Goal:** Adopt [Release Please](https://github.com/googleapis/release-please) so version bumps, `CHANGELOG.md`, git tags, and GitHub releases are automated from Conventional Commits — and the existing PyInstaller Windows build attaches its zip to each automated release.
 

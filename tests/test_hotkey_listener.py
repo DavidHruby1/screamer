@@ -40,11 +40,11 @@ class HoldKeyTests(unittest.TestCase):
 
         self.assertFalse(listener._on_kb_event(WM_KEYDOWN, VK_LCTRL))  # modifier passes
         self.assertFalse(listener._on_kb_event(WM_KEYDOWN, VK_LALT))
-        self.assertTrue(listener._on_kb_event(WM_KEYDOWN, 0x20))       # trigger suppressed
+        self.assertTrue(listener._on_kb_event(WM_KEYDOWN, 0x20))  # trigger suppressed
         self.assertEqual(pressed, [1])
         self.assertEqual(released, [])
 
-        self.assertTrue(listener._on_kb_event(WM_KEYUP, 0x20))         # release suppressed
+        self.assertTrue(listener._on_kb_event(WM_KEYUP, 0x20))  # release suppressed
         self.assertEqual(released, [1])
 
     def test_autorepeat_does_not_re_emit(self):
@@ -68,7 +68,7 @@ class HoldKeyTests(unittest.TestCase):
         hk = Hotkey(frozenset({"ctrl"}), "key", 0x20)
         listener, pressed, _ = _listener(hk, HotkeyMode.HOLD)
         listener._on_kb_event(WM_KEYDOWN, VK_LCTRL)
-        listener._on_kb_event(WM_KEYDOWN, VK_LALT)   # extra alt held
+        listener._on_kb_event(WM_KEYDOWN, VK_LALT)  # extra alt held
         self.assertFalse(listener._on_kb_event(WM_KEYDOWN, 0x20))
         self.assertEqual(pressed, [])
 

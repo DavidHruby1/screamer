@@ -155,20 +155,23 @@ Build the Windows executable:
 python -m PyInstaller --noconfirm --clean screamer.spec
 ```
 
+CI also builds the Windows executable on pull requests to catch packaging failures before merge.
+
 ## Releases
 
-Releases are automated with [Release Please](https://github.com/googleapis/release-please) from [Conventional Commits](https://www.conventionalcommits.org/).
-
-1. Merging commits to `main` keeps a **Release PR** up to date — it bumps the version and updates `CHANGELOG.md`.
-2. Merging that Release PR tags the version (`vX.Y.Z`) and publishes a GitHub Release with generated notes.
-3. A Windows build job then runs the test suite, builds with PyInstaller, and attaches the packaged app:
+After a reviewed merge to `main`, successful CI and CodeQL, the release workflow
+chooses a version relative to the latest published stable release. It builds and tests
+on Windows, then publishes a GitHub Release only once both assets are attached:
 
 ```text
 Screamer-vX.Y.Z-windows-x64.zip
 Screamer-vX.Y.Z-windows-x64.zip.sha256
 ```
 
-Version bumps follow the commit types: `fix:` → patch, `feat:` → minor, and `feat!:` / `BREAKING CHANGE:` → major.
+Version bumps follow the commits since that release: breaking changes cause a major
+bump, `feat:` a minor bump, and other changes a patch bump. No second release PR,
+personal token or manual tag is needed. For permissions, recovery and limitations,
+see [release operations](docs/RELEASES.md).
 
 ## Platform
 

@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QWidget
 # Keyed by ``TrayState.value`` so this stays decoupled from icons.py.
 # Value = (label, dot RGB). Absent key (e.g. "idle") -> hidden.
 _CONTENT: dict[str, tuple[str, tuple[int, int, int]]] = {
-    "recording": ("Recording", (229, 57, 53)),   # red
+    "recording": ("Recording", (229, 57, 53)),  # red
     "processing": ("Processing", (255, 179, 0)),  # amber
 }
 
@@ -40,12 +40,12 @@ class RecordingSnackbar(QWidget):
     dot plus a label. Never takes focus and never appears in the taskbar.
     """
 
-    _MARGIN = 48      # px above the screen's available bottom edge
-    _PAD_X = 18       # horizontal inner padding
-    _PAD_Y = 11       # vertical inner padding
-    _DOT_R = 6        # dot radius
-    _GAP = 11         # gap between dot and text
-    _RADIUS = 15      # pill corner radius
+    _MARGIN = 48  # px above the screen's available bottom edge
+    _PAD_X = 18  # horizontal inner padding
+    _PAD_Y = 11  # vertical inner padding
+    _DOT_R = 6  # dot radius
+    _GAP = 11  # gap between dot and text
+    _RADIUS = 15  # pill corner radius
 
     def __init__(self) -> None:
         super().__init__(None)
@@ -156,9 +156,12 @@ class RecordingSnackbar(QWidget):
         rect = self.rect()
         path = QPainterPath()
         path.addRoundedRect(
-            float(rect.x()), float(rect.y()),
-            float(rect.width()), float(rect.height()),
-            float(self._RADIUS), float(self._RADIUS),
+            float(rect.x()),
+            float(rect.y()),
+            float(rect.width()),
+            float(rect.height()),
+            float(self._RADIUS),
+            float(self._RADIUS),
         )
         painter.fillPath(path, QColor(28, 28, 30, 220))  # dark translucent pill
 

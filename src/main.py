@@ -237,7 +237,9 @@ class _TrayApp(QObject):
             self._set_recording_mode,
         )
         self._add_choice_submenu("Hotkey", HOTKEY_OPTIONS, c.hotkey, self._set_hotkey)
-        self._add_choice_submenu("Post-type Key", POST_KEY_OPTIONS, c.post_type_key, self._set_post_key)
+        self._add_choice_submenu(
+            "Post-type Key", POST_KEY_OPTIONS, c.post_type_key, self._set_post_key
+        )
 
         self._menu.addSeparator()
         self._add_persistent_checkbox("AI Rewrite", c.llm_enabled, self._toggle_rewrite)
@@ -254,7 +256,9 @@ class _TrayApp(QObject):
     def _make_listener(self) -> None:
         """Create and start a HotkeyListener from current config, storing it on self."""
         mode = HotkeyMode.TOGGLE if self._config.recording_mode == "toggle" else HotkeyMode.HOLD
-        hotkey = Hotkey.parse(self._config.hotkey) or Hotkey(frozenset({"ctrl", "alt"}), "key", 0x20)
+        hotkey = Hotkey.parse(self._config.hotkey) or Hotkey(
+            frozenset({"ctrl", "alt"}), "key", 0x20
+        )
         self._hotkey = HotkeyListener(hotkey, mode, self._bridge)
         self._hotkey.start()
 
@@ -538,7 +542,7 @@ def main(argv: list[str] | None = None) -> None:
     app = QApplication([])
     app.setQuitOnLastWindowClosed(False)
 
-    tray_app = _TrayApp(startup_mode=args.startup)
+    tray_app = _TrayApp(startup_mode=args.startup)  # noqa: F841 — keep ref alive for app lifetime
     log.info("Screamer started")
 
     try:
