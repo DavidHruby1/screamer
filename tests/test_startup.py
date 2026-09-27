@@ -19,7 +19,10 @@ class StartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="Screamer Test ") as tmp:
             exe = str(Path(tmp) / "Screamer.exe")
 
-            with patch.object(sys, "executable", exe), patch.object(sys, "frozen", True, create=True):
+            with (
+                patch.object(sys, "executable", exe),
+                patch.object(sys, "frozen", True, create=True),
+            ):
                 command = startup.startup_command()
 
         self.assertEqual(command, f'"{exe}" --startup')

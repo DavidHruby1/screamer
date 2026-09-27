@@ -8,7 +8,7 @@ class Utf16UnitsTests(unittest.TestCase):
         self.assertEqual([ord(u) for u in _utf16_units("hi")], [0x68, 0x69])
 
     def test_emoji_splits_into_surrogate_pair(self) -> None:
-        units = _utf16_units("\U0001F600")
+        units = _utf16_units("\U0001f600")
         self.assertEqual([ord(u) for u in units], [0xD83D, 0xDE00])
 
     def test_empty_text_yields_no_units(self) -> None:

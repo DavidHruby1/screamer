@@ -19,8 +19,9 @@ class AcceptValidationTests(unittest.TestCase):
     def test_accept_blocks_on_invalid_config(self) -> None:
         dlg = SettingsDialog(AppConfig(), devices=[], calibrate_fn=None)
         try:
-            with patch("src.settings_dialog.QMessageBox"), patch(
-                "src.settings_dialog.is_supported", return_value=False
+            with (
+                patch("src.settings_dialog.QMessageBox"),
+                patch("src.settings_dialog.is_supported", return_value=False),
             ):
                 dlg.accept()
             self.assertEqual(dlg.result(), 0)
@@ -31,8 +32,9 @@ class AcceptValidationTests(unittest.TestCase):
         cfg = AppConfig(stt_api_key="k", stt_base_url="https://example.test/v1", stt_model="m")
         dlg = SettingsDialog(cfg, devices=[], calibrate_fn=None)
         try:
-            with patch("src.settings_dialog.QMessageBox"), patch(
-                "src.settings_dialog.is_supported", return_value=False
+            with (
+                patch("src.settings_dialog.QMessageBox"),
+                patch("src.settings_dialog.is_supported", return_value=False),
             ):
                 dlg.accept()
             self.assertEqual(dlg.result(), 1)
@@ -69,7 +71,6 @@ class CalibrateThreadTests(unittest.TestCase):
             release.set()
             dlg.deleteLater()
 
-
     def test_close_during_calibration_drops_late_result(self) -> None:
         import threading
 
@@ -88,6 +89,37 @@ class CalibrateThreadTests(unittest.TestCase):
                 threading.Timer(0.05, release.set).start()
                 dlg.reject()
             QApplication.processEvents()
+            self.assertEqual(dlg._rms_spin.value(), before)
+        finally:
+            release.set()
+            dlg.deleteLater()
+
+    def test_close_during_stalled_calibration_waits_without_blocking_ui(self) -> None:
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def calibrate(device_id):
+            started.set()
+            release.wait(10)
+            return 9.9
+
+        dlg = SettingsDialog(AppConfig(), devices=[], calibrate_fn=calibrate)
+        try:
+            with patch("src.settings_dialog.QMessageBox"):
+                dlg._on_calibrate()
+                self.assertTrue(started.wait(5))
+                thread = dlg._calib_thread
+                spy = QSignalSpy(thread.finished)
+                before = dlg._rms_spin.value()
+                dlg.reject()
+                self.assertIsNotNone(dlg._calib_thread)
+                self.assertEqual(dlg.result(), 0)
+                self.assertFalse(dlg._button_box.isEnabled())
+                release.set()
+                self.assertTrue(spy.wait(5000))
+            self.assertIsNone(dlg._calib_thread)
             self.assertEqual(dlg._rms_spin.value(), before)
         finally:
             release.set()

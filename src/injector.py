@@ -155,7 +155,9 @@ if __name__ == "__main__":
 
     if platform.system() != "Windows":
         print("injector.py requires Windows for SendInput.")
-        print("On non-Windows: import succeeds, runtime raises ScreamerError(UNSUPPORTED_PLATFORM).")
+        print(
+            "On non-Windows: import succeeds, runtime raises ScreamerError(UNSUPPORTED_PLATFORM)."
+        )
         print("Import test passed — no crash at import time.")
         raise SystemExit(0)
 

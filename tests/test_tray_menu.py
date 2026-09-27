@@ -11,7 +11,7 @@ from src.main import _TrayApp
 
 
 def make_tray_app():
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     tray_app = _TrayApp.__new__(_TrayApp)
     QObject.__init__(tray_app)
     tray_app._menu = QMenu()
@@ -132,6 +132,57 @@ class TrayMenuTests(unittest.TestCase):
         tray_app._toggle_enabled(False)
 
         self.assertTrue(tray_app._cancel_event.is_set())
+
+    def test_result_queued_before_disable_does_not_type(self):
+        import threading
+
+        from src.config import AppConfig
+        from src.utils import PipelineResult
+
+        tray_app = make_tray_app()
+        tray_app._recording = False
+        tray_app._worker = Mock()
+        tray_app._cancel_event = threading.Event()
+        tray_app._config = AppConfig()
+        tray_app._exiting = False
+        tray_app._apply_state = Mock()
+
+        tray_app._toggle_enabled(False)
+        with patch("src.main.type_text") as type_text:
+            tray_app._on_worker_succeeded(PipelineResult(text="must not type"))
+        type_text.assert_not_called()
+
+    def test_successful_result_types_on_main_thread(self):
+        import threading
+
+        from src.config import AppConfig
+        from src.utils import PipelineResult
+
+        tray_app = make_tray_app()
+        tray_app._cancel_event = threading.Event()
+        tray_app._config = AppConfig(post_type_key="enter")
+        tray_app._enabled = True
+        tray_app._exiting = False
+        tray_app._apply_state = Mock()
+
+        with patch("src.main.type_text") as type_text:
+            tray_app._on_worker_succeeded(PipelineResult(text="typed"))
+        type_text.assert_called_once_with("typed", "enter")
+
+    def test_discard_reports_microphone_stop_error(self):
+        from src.utils import AppError, ScreamerError
+
+        tray_app = make_tray_app()
+        tray_app._recording = True
+        tray_app._recorder = Mock()
+        tray_app._recorder.stop.side_effect = ScreamerError(AppError.MIC_DISCONNECTED)
+        tray_app._on_error = Mock()
+        tray_app._apply_state = Mock()
+
+        tray_app._cancel_recording()
+
+        tray_app._on_error.assert_called_once_with(AppError.MIC_DISCONNECTED, None)
+        self.assertFalse(tray_app._recording)
 
     def test_choice_submenu_uses_widget_actions(self):
         from PySide6.QtWidgets import QWidgetAction

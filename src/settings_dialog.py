@@ -66,7 +66,9 @@ class _CalibrateThread(QThread):
     succeeded = Signal(float)
     failed = Signal(str)
 
-    def __init__(self, fn: Callable[[int | None], float], device_id: int | None, parent=None) -> None:
+    def __init__(
+        self, fn: Callable[[int | None], float], device_id: int | None, parent=None
+    ) -> None:
         super().__init__(parent)
         self._fn = fn
         self._device_id = device_id
@@ -135,6 +137,7 @@ class SettingsDialog(QDialog):
         self._devices = devices if devices is not None else []
         self._calibrate_fn = calibrate_fn
         self._calib_thread: _CalibrateThread | None = None
+        self._pending_result: int | None = None
 
         # Edit a deep copy so the original is untouched until accept.
         self._working = copy.deepcopy(config)
@@ -532,7 +535,9 @@ class SettingsDialog(QDialog):
         if cfg.audio_device_id is not None:
             for i in range(self._device_combo.count()):
                 if self._device_combo.itemData(i) == cfg.audio_device_id:
-                    item_name = _clean_device_name(self._device_combo.itemText(i).split("] ", 1)[-1])
+                    item_name = _clean_device_name(
+                        self._device_combo.itemText(i).split("] ", 1)[-1]
+                    )
                     if not saved_name or saved_name in item_name.lower():
                         self._device_combo.setCurrentIndex(i)
                         return
@@ -547,7 +552,11 @@ class SettingsDialog(QDialog):
 
     def _on_calibrate(self) -> None:
         """Run RMS auto-calibration in a worker thread; keep the dialog responsive."""
-        if self._calibrate_fn is None or self._calib_thread is not None:
+        if (
+            self._calibrate_fn is None
+            or self._calib_thread is not None
+            or self._pending_result is not None
+        ):
             return
 
         QMessageBox.information(
@@ -566,11 +575,15 @@ class SettingsDialog(QDialog):
         thread.start()
 
     def _on_calibrate_succeeded(self, threshold: float) -> None:
+        if self._pending_result is not None:
+            return
         self._working.rms_threshold = threshold
         self._rms_spin.setValue(threshold)
         self._rms_label.setText(f"Threshold: {threshold:.1f}")
 
     def _on_calibrate_failed(self, message: str) -> None:
+        if self._pending_result is not None:
+            return
         QMessageBox.warning(self, "Calibration Failed", message)
 
     def _on_calibrate_finished(self) -> None:
@@ -580,6 +593,10 @@ class SettingsDialog(QDialog):
         self._calibrate_btn.setText(_CALIBRATE_LABEL)
         if thread is not None:
             thread.deleteLater()
+        if self._pending_result is not None:
+            result = self._pending_result
+            self._pending_result = None
+            super().done(result)
 
     # ------------------------------------------------------------------
     # Bottom bar actions
@@ -602,6 +619,8 @@ class SettingsDialog(QDialog):
 
     def _on_apply(self) -> None:
         """Apply: collect and persist without closing."""
+        if self._pending_result is not None:
+            return
         with log_duration(log, "Settings apply"):
             self._stop_hotkey_recording()
             self._collect()
@@ -619,6 +638,8 @@ class SettingsDialog(QDialog):
 
     def accept(self) -> None:
         """Validate on every accept path (OK button, direct accept() calls)."""
+        if self._pending_result is not None:
+            return
         self._stop_hotkey_recording()
         self._collect()
         if not self._show_validation_issue():
@@ -628,17 +649,22 @@ class SettingsDialog(QDialog):
         super().accept()
 
     def reject(self) -> None:
+        if self._pending_result is not None:
+            return
         self._stop_hotkey_recording()
         super().reject()
 
     def done(self, result: int) -> None:
+        if self._pending_result is not None:
+            return
         self._stop_hotkey_recording()
-        if self._calib_thread is not None and self._calib_thread.isRunning():
-            # Don't let a running calibration outlive its parent dialog, and
-            # don't let late results land in slots of a closing dialog.
-            self._calib_thread.succeeded.disconnect(self._on_calibrate_succeeded)
-            self._calib_thread.failed.disconnect(self._on_calibrate_failed)
-            self._calib_thread.wait(5000)
+        if self._calib_thread is not None:
+            # A result may be queued before finished; keep the dialog alive until
+            # the thread ends and ignore results after closing was requested.
+            self._pending_result = result
+            self._button_box.setEnabled(False)
+            self._calibrate_btn.setEnabled(False)
+            return
         super().done(result)
 
     def is_hotkey_capture_active(self) -> bool:
@@ -736,7 +762,7 @@ class HotkeyCaptureEdit(QLineEdit):
     """
 
     captured = Signal(object)  # Hotkey
-    cancelled = Signal()       # Esc pressed during recording
+    cancelled = Signal()  # Esc pressed during recording
 
     def __init__(self) -> None:
         super().__init__()

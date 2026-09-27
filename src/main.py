@@ -50,12 +50,12 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Worker thread — runs the full pipeline off the Qt main thread.
+# Worker thread — computes pipeline output off the Qt main thread.
 # ---------------------------------------------------------------------------
 
 
 class _WorkerThread(QThread):
-    """Daemon thread: transcribe → rewrite → type.
+    """Thread: transcribe → rewrite; main thread owns final injection.
 
     Communicates results back to the Qt main thread via explicit signals.
     Checks cancel_event before each blocking step.
@@ -98,9 +98,6 @@ class _WorkerThread(QThread):
                 self.cancelled.emit()
                 return
 
-            post_key = self._config.post_type_key
-            type_text(result.text, post_key if post_key != "none" else None)
-
             self.succeeded.emit(PipelineResult(text=result.text, warnings=all_warnings))
         except Exception as e:
             self.failed.emit(e)
@@ -133,6 +130,7 @@ class _TrayApp(QObject):
         self._settings_hotkey_capture_paused = False
         self._recording = False
         self._enabled = True
+        self._exiting = False
 
         self._snackbar = RecordingSnackbar()
 
@@ -243,7 +241,9 @@ class _TrayApp(QObject):
             self._set_recording_mode,
         )
         self._add_choice_submenu("Hotkey", HOTKEY_OPTIONS, c.hotkey, self._set_hotkey)
-        self._add_choice_submenu("Post-type Key", POST_KEY_OPTIONS, c.post_type_key, self._set_post_key)
+        self._add_choice_submenu(
+            "Post-type Key", POST_KEY_OPTIONS, c.post_type_key, self._set_post_key
+        )
 
         self._menu.addSeparator()
         self._add_persistent_checkbox("AI Rewrite", c.llm_enabled, self._toggle_rewrite)
@@ -260,7 +260,9 @@ class _TrayApp(QObject):
     def _make_listener(self) -> None:
         """Create and start a HotkeyListener from current config, storing it on self."""
         mode = HotkeyMode.TOGGLE if self._config.recording_mode == "toggle" else HotkeyMode.HOLD
-        hotkey = Hotkey.parse(self._config.hotkey) or Hotkey(frozenset({"ctrl", "alt"}), "key", 0x20)
+        hotkey = Hotkey.parse(self._config.hotkey) or Hotkey(
+            frozenset({"ctrl", "alt"}), "key", 0x20
+        )
         self._hotkey = HotkeyListener(hotkey, mode, self._bridge)
         self._hotkey.start()
 
@@ -331,8 +333,7 @@ class _TrayApp(QObject):
         self._worker.succeeded.connect(self._on_worker_succeeded)
         self._worker.failed.connect(self._on_worker_failed)
         self._worker.cancelled.connect(self._on_worker_cancelled)
-        # Result slots run first (queued in emission order), then the QThread
-        # object frees itself — otherwise one worker leaks per dictation.
+        self._worker.finished.connect(self._on_worker_finished)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
@@ -341,8 +342,8 @@ class _TrayApp(QObject):
         self._recording = False
         try:
             self._recorder.stop()
-        except ScreamerError:
-            pass
+        except ScreamerError as e:
+            self._on_error(e.code, e.detail)
         self._apply_state(TrayState.IDLE)
 
     # ------------------------------------------------------------------
@@ -350,7 +351,7 @@ class _TrayApp(QObject):
     # ------------------------------------------------------------------
 
     def _on_hotkey_pressed(self) -> None:
-        if not self._enabled:
+        if not self._enabled or self._exiting:
             return
 
         if self._is_hotkey_capture_active() and not self._recording:
@@ -393,13 +394,20 @@ class _TrayApp(QObject):
     # ------------------------------------------------------------------
 
     def _on_worker_succeeded(self, result: PipelineResult) -> None:
-        self._worker = None
+        if not self._cancel_event.is_set() and self._enabled and not self._exiting:
+            # Disable and injection share the UI thread: once this check passes,
+            # no Disable event can interleave with the batched SendInput call.
+            try:
+                post_key = self._config.post_type_key
+                type_text(result.text, post_key if post_key != "none" else None)
+            except Exception as e:
+                self._on_worker_failed(e)
+                return
         for warning in result.warnings:
             self._on_error(warning)
         self._apply_state(TrayState.IDLE)
 
     def _on_worker_failed(self, error: Exception) -> None:
-        self._worker = None
         if isinstance(error, ScreamerError):
             self._on_error(error.code, error.detail)
         else:
@@ -407,8 +415,12 @@ class _TrayApp(QObject):
         self._apply_state(TrayState.IDLE)
 
     def _on_worker_cancelled(self) -> None:
-        self._worker = None
         self._apply_state(TrayState.IDLE)
+
+    def _on_worker_finished(self) -> None:
+        self._worker = None
+        if self._exiting:
+            self._finish_exit()
 
     # ------------------------------------------------------------------
     # Error → balloon
@@ -433,7 +445,7 @@ class _TrayApp(QObject):
                 self._cancel_recording()
             elif self._worker is not None:
                 # Mid-processing: don't type into the focused window after the
-                # user disabled us. The worker checks this before each step.
+                # user disabled us. The main-thread success slot checks again.
                 self._cancel_event.set()
         log.info("Screamer %s", "enabled" if checked else "disabled")
 
@@ -470,7 +482,7 @@ class _TrayApp(QObject):
             self._open_settings()
 
     def _open_settings(self) -> None:
-        if self._settings_dlg is not None:
+        if self._settings_dlg is not None or self._exiting:
             return  # Already open.
 
         devices = self._get_device_list()
@@ -493,6 +505,8 @@ class _TrayApp(QObject):
             # Always reload from disk — Apply may have written new values,
             # and the user may have changed fields before Cancel.
             self._sync_settings_from_disk()
+            if self._exiting:
+                self._finish_exit()
 
         if result == SettingsDialog.DialogCode.Accepted:
             log.info("Settings updated from dialog")
@@ -512,19 +526,17 @@ class _TrayApp(QObject):
     # ------------------------------------------------------------------
 
     def _exit(self) -> None:
+        if self._exiting:
+            return
         log.info("Exit requested")
+        self._exiting = True
 
         # 1. Stop hotkey listener (prevents new recordings).
         self._hotkey.stop()
 
-        # 2. Cancel worker if running.
+        # 2. Cancel worker; finished will complete shutdown without blocking UI.
         if self._worker is not None:
             self._cancel_event.set()
-            self._worker.wait(5000)
-            if self._worker.isRunning():
-                log.warning("Worker did not stop within 5s; terminating")
-                self._worker.terminate()
-            self._worker = None
 
         # 3. Stop audio if recording.
         try:
@@ -533,10 +545,17 @@ class _TrayApp(QObject):
         except Exception:
             pass
 
-        # 4. Save settings.
+        if self._settings_dlg is not None:
+            self._settings_dlg.done(SettingsDialog.DialogCode.Rejected)
+        self._finish_exit()
+
+    def _finish_exit(self) -> None:
+        if self._worker is not None or self._settings_dlg is not None:
+            return
+        # Save settings only after both threads have finished.
         save_config(self._config)
 
-        # 5. Quit Qt.
+        # Quit Qt.
         self._tray.hide()
         self._snackbar.hide_state()
         QApplication.instance().quit()
@@ -562,7 +581,7 @@ def main(argv: list[str] | None = None) -> None:
     app = QApplication([])
     app.setQuitOnLastWindowClosed(False)
 
-    tray_app = _TrayApp(startup_mode=args.startup)
+    tray_app = _TrayApp(startup_mode=args.startup)  # noqa: F841 — keep ref alive for app lifetime
     log.info("Screamer started")
 
     try:

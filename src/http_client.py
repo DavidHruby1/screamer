@@ -34,7 +34,9 @@ def post(
     json: dict[str, object] | None = None,
     timeout: float | httpx.Timeout | None = None,
 ) -> httpx.Response:
-    return _get_client().post(url, headers=headers, data=data, files=files, json=json, timeout=timeout)
+    return _get_client().post(
+        url, headers=headers, data=data, files=files, json=json, timeout=timeout
+    )
 
 
 def close() -> None:

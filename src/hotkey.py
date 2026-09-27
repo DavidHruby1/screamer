@@ -91,7 +91,9 @@ class HotkeyListener:
         # subsequent stop() can reliably post WM_QUIT.
         if not self._ready.wait(timeout=5.0):
             log.warning("Hotkey listener did not signal readiness within 5s")
-        log.info("HotkeyListener started: %s mode=%s", self._hotkey.to_canonical(), self._mode.value)
+        log.info(
+            "HotkeyListener started: %s mode=%s", self._hotkey.to_canonical(), self._mode.value
+        )
 
     def stop(self) -> None:
         if platform.system() != "Windows":
@@ -303,9 +305,19 @@ def _declare_win32_functions(ctypes, user32, kernel32, hookproc, lresult) -> Non
     user32.UnhookWindowsHookEx.restype = wintypes.BOOL
     user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
     user32.CallNextHookEx.restype = lresult
-    user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+    user32.CallNextHookEx.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    ]
     user32.GetMessageW.restype = wintypes.BOOL
-    user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+    user32.GetMessageW.argtypes = [
+        ctypes.POINTER(wintypes.MSG),
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.UINT,
+    ]
     user32.PeekMessageW.restype = wintypes.BOOL
     user32.PeekMessageW.argtypes = [
         ctypes.POINTER(wintypes.MSG),
@@ -319,7 +331,12 @@ def _declare_win32_functions(ctypes, user32, kernel32, hookproc, lresult) -> Non
     user32.DispatchMessageW.restype = lresult
     user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
     user32.PostThreadMessageW.restype = wintypes.BOOL
-    user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.PostThreadMessageW.argtypes = [
+        wintypes.DWORD,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    ]
 
 
 # ---------------------------------------------------------------------------
