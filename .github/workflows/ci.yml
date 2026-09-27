@@ -47,3 +47,25 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
+
+  build:
+    name: build (windows / py3.12)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+      - name: Build executable
+        run: python -m PyInstaller --noconfirm --clean screamer.spec
+      - name: Verify executable exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist\Screamer\Screamer.exe)) {
+            throw "PyInstaller did not produce dist\Screamer\Screamer.exe"
+          }
