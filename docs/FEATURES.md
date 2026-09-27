@@ -2,8 +2,6 @@
 
 ## PRIORITY FEATURE**
 
-Optimization of the STT transcription pipeline speed.
-
 Fix this issue:
 When dictating with Screamer, injected text appears correctly in web browsers but NOT in Windows Notepad. The app reports success - no error is shown.
 Root Cause: Modifier Key Interference
@@ -105,9 +103,3 @@ Show simple usage stats such as words dictated, estimated time saved, and top ta
 Add a possibility to create list of languages the user wants to use frequently.
 
 Then add the option to quickly switch between them in the Tray.
-
-## 10. Recording Snackbar
-
-Add live recording indicator in the middle of the bottom of the screen.
-
-It's gonna be small animated snackbar showing that the audio is being recorded.
