@@ -124,6 +124,7 @@ class _TrayApp(QObject):
         self._cancel_event = threading.Event()
         self._worker: _WorkerThread | None = None
         self._settings_dlg: SettingsDialog | None = None
+        self._settings_hotkey_capture_paused = False
         self._recording = False
         self._enabled = True
 
@@ -334,6 +335,9 @@ class _TrayApp(QObject):
         if not self._enabled:
             return
 
+        if self._is_hotkey_capture_active() and not self._recording:
+            return
+
         if self._worker is not None:
             return  # Already processing; ignore.
 
@@ -345,8 +349,26 @@ class _TrayApp(QObject):
 
     def _on_hotkey_released(self) -> None:
         # Hold mode: release during recording → finalize and process.
+        if self._is_hotkey_capture_active() and not self._recording:
+            return
         if self._recording:
             self._finalize_recording()
+
+    def _is_hotkey_capture_active(self) -> bool:
+        return self._settings_dlg is not None and self._settings_dlg.is_hotkey_capture_active()
+
+    def _on_settings_hotkey_capture_active_changed(self, active: bool) -> None:
+        if active:
+            if self._settings_hotkey_capture_paused or self._recording:
+                return
+            self._hotkey.stop()
+            self._settings_hotkey_capture_paused = True
+            return
+
+        if not self._settings_hotkey_capture_paused:
+            return
+        self._make_listener()
+        self._settings_hotkey_capture_paused = False
 
     # ------------------------------------------------------------------
     # Worker result
@@ -434,21 +456,32 @@ class _TrayApp(QObject):
             calibrate_fn=self._calibrate,
         )
         self._settings_dlg = dlg
-        result = dlg.exec()
-        if result == SettingsDialog.DialogCode.Accepted:
-            save_config(dlg.get_config())
-        self._settings_dlg = None
+        dlg.hotkey_capture_active_changed.connect(self._on_settings_hotkey_capture_active_changed)
+        dlg.applied.connect(self._sync_settings_from_disk)
+        result = SettingsDialog.DialogCode.Rejected
+        try:
+            result = dlg.exec()
+            if result == SettingsDialog.DialogCode.Accepted:
+                save_config(dlg.get_config())
+        finally:
+            self._settings_dlg = None
 
-        # Always reload from disk — Apply may have written new values,
-        # and the user may have changed fields before Cancel.
-        self._config = load_config()
-        self._restart_hotkey()
-        self._rebuild_menu()
+            # Always reload from disk — Apply may have written new values,
+            # and the user may have changed fields before Cancel.
+            self._sync_settings_from_disk()
 
         if result == SettingsDialog.DialogCode.Accepted:
             log.info("Settings updated from dialog")
         else:
             log.info("Settings dialog closed (cancelled); reloaded from disk")
+
+    def _sync_settings_from_disk(self) -> None:
+        old_hotkey = self._config.hotkey
+        old_mode = self._config.recording_mode
+        self._config = load_config()
+        if self._config.hotkey != old_hotkey or self._config.recording_mode != old_mode:
+            self._restart_hotkey()
+        self._rebuild_menu()
 
     # ------------------------------------------------------------------
     # Shutdown
