@@ -130,8 +130,9 @@ so it won't reach the app underneath.
 
 ## For developers
 
-See [implementation and API contracts](docs/IMPLEMENTATION.md) and
-[release operations](docs/RELEASES.md) for maintained technical documentation.
+See [implementation and API contracts](docs/IMPLEMENTATION.md),
+[planned features](docs/FEATURES.md), [their implementation plan](docs/IMPLEMENTATION-PLAN.md),
+and [release operations](docs/RELEASES.md) for maintained technical documentation.
 
 Run from source:
 
