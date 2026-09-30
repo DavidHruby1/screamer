@@ -2,12 +2,13 @@ import os
 import contextlib
 import io
 import runpy
+import tempfile
 import unittest
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QApplication, QLineEdit, QDialog
 
@@ -142,6 +143,115 @@ class AcceptValidationTests(unittest.TestCase):
             ):
                 dlg.accept()
             self.assertEqual(dlg.result(), 1)
+        finally:
+            dlg.deleteLater()
+
+
+class LanguageSettingsTests(unittest.TestCase):
+    def test_apply_saves_active_and_favorites_and_cancel_discards_later_edits(self) -> None:
+        from src.config import load_config
+
+        cfg = AppConfig(stt_api_key="key", stt_base_url="https://example.test/v1", stt_model="m")
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("src.config.APP_DIR", tmp),
+            patch("src.config._dpapi_available", return_value=False),
+            patch("src.settings_dialog.is_supported", return_value=False),
+        ):
+            dlg = SettingsDialog(cfg, devices=[], calibrate_fn=None)
+            try:
+                self.assertEqual(dlg._stt_lang.currentData(), "")
+                self.assertEqual([dlg._stt_lang.itemData(i) for i in range(3)], ["", "cs", "en"])
+                dlg._stt_favorite_input.setText(" DE ")
+                dlg._on_favorite_add()
+                dlg._stt_lang.setCurrentIndex(dlg._stt_lang.findData("de"))
+                dlg._on_apply()
+                self.assertEqual(load_config().stt_language, "de")
+                self.assertEqual(load_config().stt_language_favorites, ["de"])
+
+                dlg._stt_favorite_input.setText("fr")
+                dlg._on_favorite_add()
+                dlg._stt_lang.setCurrentIndex(dlg._stt_lang.findData("fr"))
+                dlg.reject()
+                self.assertEqual(load_config().stt_language, "de")
+                self.assertEqual(load_config().stt_language_favorites, ["de"])
+                self.assertEqual(cfg.stt_language_favorites, [])
+            finally:
+                dlg.deleteLater()
+
+    def test_ok_saves_active_language_and_favorites(self) -> None:
+        from src.config import load_config
+
+        cfg = AppConfig(stt_api_key="key", stt_base_url="https://example.test/v1", stt_model="m")
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("src.config.APP_DIR", tmp),
+            patch("src.config._dpapi_available", return_value=False),
+            patch("src.settings_dialog.is_supported", return_value=False),
+        ):
+            dlg = SettingsDialog(cfg, devices=[], calibrate_fn=None)
+            try:
+                dlg._stt_favorite_input.setText("pt-BR")
+                dlg._on_favorite_add()
+                dlg._stt_lang.setCurrentIndex(dlg._stt_lang.findData("pt-br"))
+                dlg.accept()
+                self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted)
+                self.assertEqual(load_config().stt_language, "pt-br")
+                self.assertEqual(load_config().stt_language_favorites, ["pt-br"])
+            finally:
+                dlg.deleteLater()
+
+    def test_remove_active_additional_favorite_selects_auto_but_builtin_stays(self) -> None:
+        cfg = AppConfig(stt_language="de", stt_language_favorites=["cs", "de"])
+        dlg = SettingsDialog(cfg, devices=[], calibrate_fn=None)
+        try:
+            dlg._stt_favorites.setCurrentRow(1)
+            dlg._on_favorite_remove()
+            self.assertEqual(dlg._stt_lang.currentData(), "")
+            self.assertEqual(dlg._stt_lang.findData("de"), -1)
+            dlg._stt_lang.setCurrentIndex(dlg._stt_lang.findData("cs"))
+            dlg._stt_favorites.setCurrentRow(0)
+            dlg._on_favorite_remove()
+            self.assertEqual(dlg._stt_lang.currentData(), "cs")
+            self.assertEqual(dlg._stt_favorites.count(), 0)
+            dlg._collect()
+            self.assertEqual(dlg.get_config().stt_language_favorites, [])
+        finally:
+            dlg.deleteLater()
+
+    def test_edit_preserves_selection_and_invalid_or_duplicate_input_is_rejected(self) -> None:
+        cfg = AppConfig(stt_language="de", stt_language_favorites=["de", "fr"])
+        dlg = SettingsDialog(cfg, devices=[], calibrate_fn=None)
+        try:
+            dlg._stt_favorites.setCurrentRow(0)
+            dlg._stt_favorite_input.setText("pt-BR")
+            dlg._on_favorite_edit()
+            self.assertEqual(dlg._stt_lang.currentData(), "pt-br")
+            self.assertEqual(dlg._stt_favorites.item(0).data(Qt.ItemDataRole.UserRole), "pt-br")
+
+            with patch("src.settings_dialog.QMessageBox.warning") as warning:
+                dlg._stt_favorite_input.setText("en!")
+                dlg._on_favorite_edit()
+                dlg._stt_favorite_input.setText("fr")
+                dlg._on_favorite_edit()
+                warning.assert_called()
+            self.assertEqual(dlg._stt_favorites.item(0).data(Qt.ItemDataRole.UserRole), "pt-br")
+            self.assertEqual(dlg._stt_lang.currentData(), "pt-br")
+        finally:
+            dlg.deleteLater()
+
+    def test_unknown_saved_active_code_is_visible_without_becoming_a_favorite(self) -> None:
+        dlg = SettingsDialog(
+            AppConfig(stt_language="zh_CN", stt_language_favorites=["de"]),
+            devices=[],
+            calibrate_fn=None,
+        )
+        try:
+            self.assertEqual(dlg._stt_lang.currentText(), "zh_CN")
+            self.assertEqual(dlg._stt_favorites.count(), 1)
+            dlg._collect()
+            self.assertEqual(dlg.get_config().stt_language, "zh_CN")
+            self.assertEqual(dlg.get_config().stt_language_favorites, ["de"])
         finally:
             dlg.deleteLater()
 

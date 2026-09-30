@@ -84,6 +84,7 @@ DEFAULT_RMS_THRESHOLD: float = 5.0
 MOUSE_X1 = 1; MOUSE_X2 = 2; MOUSE_MIDDLE = 3   # mouse trigger ids
 
 HOTKEY_OPTIONS: list[tuple[str, str]]  # (canonical_string, display_label) preset pairs
+LANGUAGE_OPTIONS: list[tuple[str, str]]  # Auto, Czech, English; always in Settings and tray
 SAFE_STANDALONE_KEYS: frozenset[int]   # VKs bindable without a modifier (F-keys, locks, etc.)
 MODIFIER_VK_TO_NAME: dict[int, str]    # LL-hook modifier VK → "ctrl"/"alt"/"shift"/"win"
 
@@ -131,6 +132,7 @@ class AppConfig:
     stt_base_url: str = ""
     stt_model: str = ""
     stt_language: str = ""
+    stt_language_favorites: list[str] = field(default_factory=list)
     stt_custom_headers: str = ""
     # STT fallback
     stt_fallback_enabled: bool = False
@@ -158,10 +160,20 @@ class AppConfig:
     def llm_fallback_provider(self) -> FallbackProviderConfig: ...
 
 def load_config() -> AppConfig: ...
-    """Load QSettings + DPAPI. Unknown keys get field defaults."""
+    """Load QSettings + DPAPI. Missing favorites default to []; malformed favorites
+    reset only that collection, preserving the active stt_language."""
 
 def save_config(cfg: AppConfig) -> None: ...
     """Serialize plain and DPAPI-encrypted fields to an INI, then atomically replace settings.ini."""
+
+def normalize_language_code(value: str) -> str: ...
+    """Trim and lowercase a BCP-47-like code; reject invalid syntax or >32 characters."""
+
+def normalize_language_favorites(codes: list[str]) -> list[str]: ...
+    """Validate at most 32 codes; normalize and deduplicate in input order."""
+
+def language_choices(active: str, favorites: list[str]) -> list[tuple[str, str]]: ...
+    """Auto, Czech, English, ordered favorites, and any unmatched active code."""
 
 def has_plaintext_secrets() -> bool: ...
     """True if legacy plaintext INI or keys.enc secrets need migration."""
@@ -405,10 +417,21 @@ ruff format --check src/ tests/ .github/scripts/
 
 - Settings survive dialog close/reopen and full app restart.
 - Tray menu quick-toggles sync bidirectionally with Settings dialog values.
+- The tray Language radio submenu switches the persisted active STT code immediately.
+  Auto omits the STT language field and rewrite hint; a selected code is sent to both
+  primary and fallback STT and added to the optional rewrite prompt. Provider support
+  for a language code is not guaranteed. Settings manages the ordered favorites;
+  removing an active additional favorite selects Auto. A failed tray save restores
+  the previous visible and live selection.
 - Tray icon: grey (idle) → red (recording) → yellow (processing) → grey.
 - Errors appear as tray balloons (user-facing `AppError` messages).
 - Initial Settings opens only after the main Qt event loop starts. Settings cannot open
   during dictation, and hotkey presses cannot start dictation while Settings is open.
+  Config-mutating tray controls are disabled during Settings, including after Apply;
+  Enabled and Exit remain usable.
+- Recording start takes one config copy for audio setup, STT primary/fallback, optional
+  rewrite and post-type key. Tray setting changes during recording or processing do not
+  alter that session; the next recording uses the then-current configuration.
 - Binding/mode changes during recording are saved immediately but the listener restarts
   only after the current recording ends. The old HOLD release remains effective.
 - Apply and OK save before updating the Windows startup registration. A registry failure
@@ -434,6 +457,11 @@ ruff format --check src/ tests/ .github/scripts/
   even if legacy-file cleanup fails. A failed encrypted read
   fails closed rather than overwriting stored credentials. On non-Windows, secret
   persistence is unsupported. Source runs read `.env` at cwd; frozen runs read it beside the exe.
+- Active `stt_language` remains a scalar in `settings.ini`; ordered
+  `stt_language_favorites` are stored there as a JSON array. Missing or malformed
+  favorites load as empty without deleting an old active language. New favorite
+  codes are lower-case, up to 32 characters, and capped at 32 entries; older
+  active hints with different syntax remain available until explicitly changed.
 - HTTP diagnostics omit provider URLs and raw transport exception strings. The shared
   client suppresses URL-bearing HTTP library INFO/DEBUG logs; custom header names are
   case-insensitive. Plain HTTP remains supported; no new TLS policy is imposed.

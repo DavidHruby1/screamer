@@ -60,6 +60,42 @@ POST_KEY_OPTIONS: list[tuple[str, str]] = [
     ("backspace", "Backspace"),
 ]
 
+LANGUAGE_OPTIONS: list[tuple[str, str]] = [("", "Auto"), ("cs", "Czech"), ("en", "English")]
+_LANGUAGE_LABELS = dict(LANGUAGE_OPTIONS)
+_LANGUAGE_CODE = re.compile(r"[a-z]{2,8}(?:-[a-z0-9]{1,8})*")
+_MAX_LANGUAGE_CODE_LENGTH = 32
+_MAX_LANGUAGE_FAVORITES = 32
+
+
+def normalize_language_code(value: str) -> str:
+    """Normalize a provider language hint without assuming provider support."""
+    if not isinstance(value, str):
+        raise ValueError("Language code must be text")
+    code = value.strip().lower()
+    if len(code) > _MAX_LANGUAGE_CODE_LENGTH or not _LANGUAGE_CODE.fullmatch(code):
+        raise ValueError("Use a language code such as cs, en, or pt-br (up to 32 characters)")
+    return code
+
+
+def normalize_language_favorites(codes: list[str]) -> list[str]:
+    if not isinstance(codes, list) or len(codes) > _MAX_LANGUAGE_FAVORITES:
+        raise ValueError("Choose no more than 32 favorite languages")
+    result: list[str] = []
+    for value in codes:
+        code = normalize_language_code(value)
+        if code not in result:
+            result.append(code)
+    return result
+
+
+def language_choices(active: str, favorites: list[str]) -> list[tuple[str, str]]:
+    """Built-ins, ordered favorites, then an old active code if it is not already listed."""
+    codes = [code for code, _ in LANGUAGE_OPTIONS]
+    for code in [*favorites, active]:
+        if code and code not in codes:
+            codes.append(code)
+    return [(code, _LANGUAGE_LABELS.get(code, code)) for code in codes]
+
 
 # Mouse trigger ids (our own discriminators, not Win32 constants).
 MOUSE_X1 = 1  # "back" side button (XBUTTON1)
@@ -275,6 +311,7 @@ class AppConfig:
     stt_base_url: str = ""
     stt_model: str = ""
     stt_language: str = ""
+    stt_language_favorites: list[str] = field(default_factory=list)
     stt_custom_headers: str = ""
     # STT fallback
     stt_fallback_enabled: bool = False
@@ -502,6 +539,12 @@ def load_config() -> AppConfig:
                     continue
                 setattr(cfg, key, val)
                 continue
+            if key == "stt_language_favorites":
+                try:
+                    cfg.stt_language_favorites = normalize_language_favorites(json.loads(val))
+                except (TypeError, ValueError):
+                    log.warning("Invalid favorite language settings; using an empty list")
+                continue
             current = getattr(cfg, key)
             # Coerce types to match dataclass fields.
             if isinstance(current, bool):
@@ -533,6 +576,11 @@ def load_config() -> AppConfig:
         cfg.hotkey = parsed_hotkey.to_canonical()
     if cfg.post_type_key not in {key for key, _label in POST_KEY_OPTIONS}:
         cfg.post_type_key = "none"
+    if cfg.stt_language:
+        try:
+            cfg.stt_language = normalize_language_code(cfg.stt_language)
+        except ValueError:
+            pass  # Keep a legacy value visible until the user explicitly changes it.
     return cfg
 
 
@@ -567,7 +615,12 @@ def save_config(cfg: AppConfig) -> None:
                 if encrypted:
                     pending.setValue(f.name, encrypted[f.name])
                 continue
-            pending.setValue(f.name, getattr(cfg, f.name))
+            if f.name == "stt_language_favorites":
+                pending.setValue(
+                    f.name, json.dumps(normalize_language_favorites(cfg.stt_language_favorites))
+                )
+            else:
+                pending.setValue(f.name, getattr(cfg, f.name))
         if encrypted:
             pending.setValue("secret_storage", "dpapi-v1")
         pending.sync()
@@ -642,6 +695,11 @@ def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]:
     parsed_hotkey = Hotkey.parse(cfg.hotkey)
     if parsed_hotkey is None or parsed_hotkey.validate() is not None:
         issues.append(ConfigValidationIssue("Choose a valid global hotkey.", 0))
+
+    try:
+        normalize_language_favorites(cfg.stt_language_favorites)
+    except ValueError as e:
+        issues.append(ConfigValidationIssue(f"Favorite STT languages are invalid: {e}", 1))
 
     stt = cfg.stt_provider()
     stt_fallback = cfg.stt_fallback_provider()
@@ -760,6 +818,11 @@ def import_from_env(cfg: AppConfig) -> AppConfig:
     for env_name, field_name in env_map.items():
         val = env.get(env_name, "")
         if val and not getattr(cfg, field_name):
+            if field_name == "stt_language":
+                try:
+                    val = normalize_language_code(val)
+                except ValueError:
+                    pass  # Keep a legacy hint visible rather than silently dropping it.
             setattr(cfg, field_name, val)
 
     return cfg

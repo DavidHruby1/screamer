@@ -12,7 +12,12 @@ from src.config import (
     ProviderConfig,
     _env_path,
     import_from_env,
+    language_choices,
+    load_config,
+    normalize_language_code,
+    normalize_language_favorites,
     parse_custom_headers,
+    save_config,
     validate_config,
 )
 from src.utils import AppError, ScreamerError
@@ -120,6 +125,83 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(imported.stt_api_key, "existing")
         self.assertEqual(imported.stt_base_url, "https://env.test/v1")
         self.assertEqual(imported.stt_model, "env-model")
+
+
+class LanguageFavoritesTests(unittest.TestCase):
+    def test_normalizes_order_and_rejects_invalid_entries(self) -> None:
+        self.assertEqual(
+            normalize_language_favorites([" CS ", "pt-BR", "cs", "DE"]),
+            ["cs", "pt-br", "de"],
+        )
+        for value in ("", "c!", "a" * 33, "en--us"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                normalize_language_code(value)
+        with self.assertRaises(ValueError):
+            normalize_language_favorites(["de"] * 33)
+
+    def test_old_ini_and_malformed_list_preserve_active_language(self) -> None:
+        from src.config import _get_qsettings
+
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            settings = _get_qsettings()
+            settings.setValue("stt_language", "pt-BR")
+            settings.sync()
+            self.assertEqual(load_config().stt_language, "pt-br")
+            self.assertEqual(load_config().stt_language_favorites, [])
+
+            settings.setValue("stt_language", "zh_CN")
+            settings.sync()
+            self.assertEqual(load_config().stt_language, "zh_CN")
+
+            for stored in ('{"wrong":"type"}', '["cs", 12]', "not-json"):
+                with self.subTest(stored=stored):
+                    settings.setValue("stt_language_favorites", stored)
+                    settings.sync()
+                    loaded = load_config()
+                    self.assertEqual(loaded.stt_language, "zh_CN")
+                    self.assertEqual(loaded.stt_language_favorites, [])
+
+    def test_favorites_and_active_language_round_trip_together(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            save_config(AppConfig(stt_language="cs", stt_language_favorites=[" DE ", "cs", "de"]))
+            restored = load_config()
+            self.assertEqual(restored.stt_language, "cs")
+            self.assertEqual(restored.stt_language_favorites, ["de", "cs"])
+            save_config(
+                AppConfig(stt_language="", stt_language_favorites=restored.stt_language_favorites)
+            )
+            self.assertEqual(load_config().stt_language, "")
+            self.assertEqual(load_config().stt_language_favorites, ["de", "cs"])
+
+    def test_choices_include_old_or_env_language_without_adding_favorite(self) -> None:
+        choices = language_choices("fr", ["de", "cs"])
+        self.assertEqual(
+            choices, [("", "Auto"), ("cs", "Czech"), ("en", "English"), ("de", "de"), ("fr", "fr")]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp, ".env")
+            env_path.write_text("STT_LANGUAGE=PT-BR\n", encoding="utf-8")
+            with patch("src.config._env_path", return_value=str(env_path)):
+                cfg = import_from_env(AppConfig())
+        self.assertEqual(cfg.stt_language_favorites, [])
+        self.assertEqual(
+            language_choices(cfg.stt_language, cfg.stt_language_favorites)[-1],
+            ("pt-br", "pt-br"),
+        )
+
+    def test_settings_preserves_legacy_active_code_but_rejects_invalid_favorites(self) -> None:
+        cfg = AppConfig(
+            stt_api_key="key",
+            stt_base_url="https://example.test/v1",
+            stt_model="model",
+            stt_language="zh_CN",
+            stt_language_favorites=["cs", "--"],
+        )
+        issues = validate_config(cfg)
+        self.assertEqual([issue.tab_index for issue in issues], [1])
+        self.assertIn("Favorite STT languages", issues[0].message)
+        cfg.stt_language_favorites = ["cs"]
+        self.assertEqual(validate_config(cfg), [])
 
 
 class SecretHeaderTests(unittest.TestCase):
