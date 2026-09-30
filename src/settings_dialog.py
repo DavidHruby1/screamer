@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLayout,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -38,13 +40,17 @@ from src.config import (
     AppConfig,
     DEFAULT_LLM_SYSTEM_PROMPT,
     HOTKEY_OPTIONS,
+    LANGUAGE_OPTIONS,
     Hotkey,
     MOUSE_MIDDLE,
     MOUSE_X1,
     MOUSE_X2,
     POST_KEY_OPTIONS,
     import_from_env,
+    language_choices,
     load_config,
+    normalize_language_code,
+    normalize_language_favorites,
     reset_config,
     save_config,
     validate_config,
@@ -311,9 +317,28 @@ class SettingsDialog(QDialog):
             base_url_placeholder="https://api.openai.com/v1",
         )
 
-        self._stt_lang = QLineEdit()
-        self._stt_lang.setPlaceholderText("auto-detect")
-        form.addRow("Language:", self._stt_lang)
+        self._stt_lang = QComboBox()
+        form.addRow("Active language:", self._stt_lang)
+
+        self._stt_favorites = QListWidget()
+        self._stt_favorites.setMaximumHeight(120)
+        self._stt_favorites.itemSelectionChanged.connect(self._on_favorite_selected)
+        form.addRow("Favorite languages:", self._stt_favorites)
+
+        self._stt_favorite_input = QLineEdit()
+        self._stt_favorite_input.setPlaceholderText("Language code, e.g. de or pt-br")
+        form.addRow("Favorite code:", self._stt_favorite_input)
+
+        btn_add = QPushButton("Add")
+        btn_add.clicked.connect(self._on_favorite_add)
+        btn_edit = QPushButton("Edit selected")
+        btn_edit.clicked.connect(self._on_favorite_edit)
+        btn_remove = QPushButton("Remove selected")
+        btn_remove.clicked.connect(self._on_favorite_remove)
+        favorites_buttons = QHBoxLayout()
+        for button in (btn_add, btn_edit, btn_remove):
+            favorites_buttons.addWidget(button)
+        form.addRow("", favorites_buttons)
 
         # --- Fallback ---
         self._stt_fb_check = QCheckBox("Enable fallback STT provider")
@@ -331,6 +356,82 @@ class SettingsDialog(QDialog):
         form.addRow(self._stt_fb_group)
 
         self._tabs.addTab(tab, "STT")
+
+    def _refresh_language_choices(self, active: str | None = None) -> None:
+        if active is None:
+            active = self._stt_lang.currentData() or ""
+        favorites = [
+            self._stt_favorites.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self._stt_favorites.count())
+        ]
+        self._stt_lang.clear()
+        for code, label in language_choices(active, favorites):
+            self._stt_lang.addItem(label, code)
+        self._stt_lang.setCurrentIndex(_combo_index(self._stt_lang, active))
+
+    def _on_favorite_selected(self) -> None:
+        item = self._stt_favorites.currentItem()
+        if item is not None:
+            self._stt_favorite_input.setText(item.data(Qt.ItemDataRole.UserRole))
+
+    def _favorite_code(self) -> str | None:
+        try:
+            return normalize_language_code(self._stt_favorite_input.text())
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid Language", str(e))
+            return None
+
+    def _on_favorite_add(self) -> None:
+        code = self._favorite_code()
+        if code is None:
+            return
+        existing = [
+            self._stt_favorites.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self._stt_favorites.count())
+        ]
+        if code in existing:
+            QMessageBox.warning(self, "Invalid Language", "That language is already a favorite.")
+            return
+        try:
+            normalize_language_favorites([*existing, code])
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid Language", str(e))
+            return
+        label = dict(LANGUAGE_OPTIONS).get(code, code)
+        item = QListWidgetItem(label)
+        item.setData(Qt.ItemDataRole.UserRole, code)
+        self._stt_favorites.addItem(item)
+        self._refresh_language_choices()
+
+    def _on_favorite_edit(self) -> None:
+        item = self._stt_favorites.currentItem()
+        if item is None:
+            return
+        code = self._favorite_code()
+        if code is None:
+            return
+        old = item.data(Qt.ItemDataRole.UserRole)
+        if code != old and any(
+            self._stt_favorites.item(i).data(Qt.ItemDataRole.UserRole) == code
+            for i in range(self._stt_favorites.count())
+        ):
+            QMessageBox.warning(self, "Invalid Language", "That language is already a favorite.")
+            return
+        active = self._stt_lang.currentData()
+        item.setData(Qt.ItemDataRole.UserRole, code)
+        item.setText(dict(LANGUAGE_OPTIONS).get(code, code))
+        self._refresh_language_choices(code if active == old else active)
+
+    def _on_favorite_remove(self) -> None:
+        row = self._stt_favorites.currentRow()
+        if row < 0:
+            return
+        active = self._stt_lang.currentData()
+        code = self._stt_favorites.takeItem(row).data(Qt.ItemDataRole.UserRole)
+        self._stt_favorite_input.clear()
+        if active == code and code not in dict(LANGUAGE_OPTIONS):
+            active = ""
+        self._refresh_language_choices(active)
 
     # --- LLM tab -------------------------------------------------------
 
@@ -435,7 +536,13 @@ class SettingsDialog(QDialog):
         self._stt_key.setText(cfg.stt_api_key)
         self._stt_url.setText(cfg.stt_base_url)
         self._stt_model.setText(cfg.stt_model)
-        self._stt_lang.setText(cfg.stt_language)
+        self._stt_favorites.clear()
+        for code in cfg.stt_language_favorites:
+            item = QListWidgetItem(dict(LANGUAGE_OPTIONS).get(code, code))
+            item.setData(Qt.ItemDataRole.UserRole, code)
+            self._stt_favorites.addItem(item)
+        self._stt_favorite_input.clear()
+        self._refresh_language_choices(cfg.stt_language)
         self._stt_headers.setText(cfg.stt_custom_headers)
         self._stt_fb_check.setChecked(cfg.stt_fallback_enabled)
         self._stt_fb_key.setText(cfg.stt_fallback_api_key)
@@ -476,7 +583,11 @@ class SettingsDialog(QDialog):
         cfg.stt_api_key = self._stt_key.text().strip()
         cfg.stt_base_url = self._stt_url.text().strip()
         cfg.stt_model = self._stt_model.text().strip()
-        cfg.stt_language = self._stt_lang.text().strip()
+        cfg.stt_language = self._stt_lang.currentData()
+        cfg.stt_language_favorites = [
+            self._stt_favorites.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self._stt_favorites.count())
+        ]
         cfg.stt_custom_headers = self._stt_headers.text().strip()
         cfg.stt_fallback_enabled = self._stt_fb_check.isChecked()
         cfg.stt_fallback_api_key = self._stt_fb_key.text().strip()

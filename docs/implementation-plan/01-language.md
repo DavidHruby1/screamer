@@ -1,8 +1,9 @@
 # 1. Quick Language Switching in the Tray
 
-> **Status:** planned, not shipped. This plan expands P0 from
-> [FEATURES.md](../FEATURES.md#1-quick-language-switching-in-the-tray-p0).
-> Current `AppConfig` still has only `stt_language`.
+> **Status:** code implemented (2026-09-29); packaged Windows tray and long-recording
+> manual acceptance still pending. See [progress](../IMPLEMENTATION-PLAN.md#progress-2026-09-29)
+> and the shipped API in [IMPLEMENTATION.md](../IMPLEMENTATION.md).
+> This plan expands P0 from [FEATURES.md](../FEATURES.md#1-quick-language-switching-in-the-tray-p0).
 
 ## Summary
 
@@ -26,26 +27,23 @@ fallback STT and rewrite hint remain consistent.
 - [`src/stt.py`](../../src/stt.py) and [`src/rewrite.py`](../../src/rewrite.py):
   consume `stt_language` without a signature change.
 
-## Proposed Data Contract
+## Implemented Data Contract
 
-Add `stt_language_favorites: list[str] = field(default_factory=list)` to
-`AppConfig`; retain `stt_language: str = ""`, with empty meaning automatic
-detection. Serialize favorites under `stt_language_favorites`, e.g.
-`"[\"cs\",\"en\",\"de\"]"`. The domain
-codec belongs in `config.py`, not a generic collection registry:
+`AppConfig` has `stt_language_favorites: list[str] = field(default_factory=list)`
+and retains `stt_language: str = ""`, with empty meaning automatic detection.
+Favorites serialize as a JSON array under `stt_language_favorites`, e.g.
+`"[\"cs\",\"en\",\"de\"]"`. `config.py` owns the codec directly:
 
 ```python
-def encode_language_favorites(codes: list[str]) -> str: ...
-def decode_language_favorites(value: object) -> list[str]: ...
 def normalize_language_code(value: str) -> str: ...
+def normalize_language_favorites(codes: list[str]) -> list[str]: ...
+def language_choices(active: str, favorites: list[str]) -> list[tuple[str, str]]: ...
 ```
 
-These are proposed private-or-module helpers, not shipped APIs. Canonical
-language identifiers should be trimmed lower-case BCP-47-like tags (for
+Canonical language identifiers are trimmed lower-case BCP-47-like tags (for
 example `cs`, `en`, `pt-br`); do not claim validation against a complete
-IANA/provider catalog. Reject malformed syntax at the Settings validation
-boundary. A suggested engineering bound is 32 characters/code and 32
-favorites; these are practical limits, not agreed product requirements. Stable
+IANA/provider catalog. Settings rejects malformed syntax. The engineering
+bound is 32 characters/code and 32 favorites. Stable
 deduplication is case-insensitive after normalization, preserving first order.
 `""` is not a favorite: Auto is always a fixed tray choice.
 
@@ -68,13 +66,12 @@ flowchart LR
 
 ### Persistence and migration
 
-The existing loader only coerces scalar dataclass fields. Add explicit decoding
-for this one JSON-backed list. Distinguish a missing INI key from malformed
-contents:
+The loader explicitly decodes this JSON-backed list and distinguishes a missing
+INI key from malformed contents:
 
 | Stored state | Active language after load | Favorites after load |
 | --- | --- | --- |
-| Key absent (old install) | Preserve existing `stt_language` | `[]` |
+| Key absent (old install) | Preserve existing `stt_language` (normalize if valid) | `[]` |
 | Valid JSON array | Preserve active value | Normalize and deduplicate |
 | Malformed JSON, wrong root type, invalid entries | Preserve active value | Safe empty list; log a non-sensitive warning |
 | Valid legacy language from INI or `.env`, not a favorite | Preserve it | Do not silently discard it from the active display |
@@ -91,9 +88,8 @@ selection persists the same `stt_language` edited by Settings.
 
 ### Settings draft and tray
 
-Replace the free-text-only STT language editor with an active-language control
-and ordered favorites editor, or a compact equivalent that supports add,
-rename/edit and remove. Keep Czech and English available independent of the
+The STT tab now has an active-language combo and ordered favorites editor with
+add, edit and remove. Czech and English stay available independent of the
 favorites list. Unknown currently active values must remain selectable/displayed
 until the user explicitly changes them. The dialog's existing deep-copy model
 means Cancel discards active language and favorite edits; Apply/OK validate and
@@ -172,36 +168,33 @@ sequenceDiagram
 
 ## Known Risks
 
-- The original plan calls for malformed favorites to "fall back safely" but
-  does not specify whether to clear favorites or fail settings load. Clearing
-  only the malformed collection while preserving `stt_language` is the least
-  destructive policy; surface/log a warning without language data.
-- The original plan gives no code grammar, count cap or item length. The
-  proposed defaults above are engineering constraints and should be confirmed
-  in implementation review; they are not acceptance criteria.
-- Settings runs a nested Qt event loop. Tray callbacks can execute while the
-  dialog draft is open. The shared integration rule is to disable
-  config-mutating tray actions during Settings (leave Enable and Exit usable)
-  so an Apply cannot overwrite a concurrent tray change. This belongs in the
-  shared tray/settings integration, not in the language codec.
+- Malformed favorites default to an empty list without changing `stt_language`;
+  the loader logs a warning without language data.
+- The implemented BCP-47-like syntax and bounds (32 characters/code, 32
+  favorites) are engineering constraints, not provider capability checks.
+- Settings runs a nested Qt event loop. Config-mutating tray controls are
+  disabled while its draft is open (Enable and Exit remain usable), preventing
+  an Apply from overwriting an intervening tray choice.
 - Provider acceptance of codes cannot be determined from this repository;
   unknown-code display is necessary because an in-house exhaustive catalog
   would be misleading.
 
 ## Slices and Verification
 
-1. Add codec, `AppConfig` field and load/save/validation tests. Cover missing
+1. **Implemented:** codec, `AppConfig` field and load/save/validation tests. Cover missing
    key migration, malformed JSON, wrong root type, normalization, stable
    deduplication, invalid syntax, bounds, ordering, and round trip.
-2. Add STT Settings editing and test initial population, Apply/OK persistence,
+2. **Implemented:** STT Settings editing and tests for initial population, Apply/OK persistence,
    invalid edit rejection and Cancel behavior, including an unknown active code.
-3. Add tray submenu and persistence handling; test Auto, `cs`, `en`, extra
+3. **Implemented:** tray submenu and persistence handling; tests cover Auto, `cs`, `en`, extra
    favorite, unknown active selection, failed save rollback and visible choice.
-4. Capture at recording start; test tray change during recording/processing
-   affects next snapshot only. Extend request tests to assert primary,
-   fallback and rewrite hint all use the old snapshot; Auto omits STT field and
-   rewrite hint.
-5. Windows manual: switch during a long recording and confirm current/next
+4. **Implemented:** capture at recording start, freeze the
+   worker and post-key settings, and test changed live config during recording
+   and processing. Request tests assert primary/fallback and rewrite use a
+   frozen language, and Auto omits the STT field and rewrite hint. Settings
+   also disables config-mutating tray controls throughout the nested dialog.
+   The next session after an actual tray selection is covered by an offscreen test.
+5. **Pending:** Windows manual switch during a long recording and confirm current/next
    request behavior. Automated request tests do not establish real provider
    language quality.
 
@@ -211,12 +204,12 @@ sequenceDiagram
   required behavior, acceptance and P0 independence.
 - [`docs/IMPLEMENTATION-PLAN.md`](../IMPLEMENTATION-PLAN.md#1-quick-language-switching-in-the-tray-p0):
   initial design, migration intent and tests; underspecifies schema and limits.
-- [`src/config.py`](../../src/config.py): current scalar `stt_language`,
-  scalar-only load coercion, atomic INI save and `.env` backfill.
-- [`src/settings_dialog.py`](../../src/settings_dialog.py): current free-text
-  language field and deep-copy/Apply/Cancel workflow.
+- [`src/config.py`](../../src/config.py): active `stt_language`, JSON favorites,
+  atomic INI save and `.env` backfill.
+- [`src/settings_dialog.py`](../../src/settings_dialog.py): active-language selector,
+  favorites editor and deep-copy/Apply/Cancel workflow.
 - [`src/main.py`](../../src/main.py): tray submenu pattern, immediate setters,
-  mutable live config passed to worker today, session integration point.
+  and the shipped recording-start session snapshot.
 - [`src/stt.py`](../../src/stt.py), [`src/rewrite.py`](../../src/rewrite.py):
   current language propagation and automatic-language omission.
 - [`tests/test_config.py`](../../tests/test_config.py),

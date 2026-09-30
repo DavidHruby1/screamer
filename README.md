@@ -35,7 +35,8 @@ That's it.
 - **Optional AI cleanup** - fix punctuation, grammar, spelling, and capitalization after transcription.
 - **Fallback providers** - configure backup STT and LLM providers if the primary one fails.
 - **On-screen recording indicator** - a small pulsing pill appears at the bottom-center of the screen while recording and processing.
-- **System tray app** - enable/disable, change hotkey, toggle rewrite, open settings, or exit from the tray.
+- **System tray app** - enable/disable, switch STT language, change hotkey, toggle rewrite, open settings, or exit from the tray.
+- **Session-safe settings** - tray changes during dictation apply to the next recording; Settings temporarily locks other tray configuration controls.
 - **Microphone selection** - pick your input device and calibrate silence detection.
 - **Post-type key** - optionally press `Enter`, `Tab`, `Space`, or `Backspace` after typing.
 - **Windows startup support** - launch Screamer automatically when you log in.
@@ -68,7 +69,7 @@ For Groq, prefer:
 ```text
 Base URL: https://api.groq.com/openai/v1
 Model: whisper-large-v3-turbo
-Language: en
+Active language: English (en)
 ```
 
 If accuracy matters more than speed, use `whisper-large-v3` instead.
@@ -90,7 +91,8 @@ The LLM rewrite step is optional. Leave it off if you want raw transcription.
 
 - Primary speech-to-text provider
 - Optional fallback STT provider
-- Optional transcription language
+- Active language (Auto, Czech, English, or an added favorite)
+- Ordered favorite language codes: add, edit, or remove them here, then switch from the tray Language menu. Language hints depend on provider support and do not translate or automatically handle mixed-language speech.
 - Custom headers
 
 ### LLM

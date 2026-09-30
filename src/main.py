@@ -32,6 +32,7 @@ from src.config import (
     Hotkey,
     has_plaintext_secrets,
     import_from_env,
+    language_choices,
     load_config,
     save_config,
     validate_config,
@@ -126,6 +127,7 @@ class _TrayApp(QObject):
         self._bridge = SignalBridge()
         self._cancel_event = threading.Event()
         self._worker: _WorkerThread | None = None
+        self._session_config: AppConfig | None = None
         self._settings_dlg: SettingsDialog | None = None
         self._settings_hotkey_capture_paused = False
         self._hotkey_restart_pending = False
@@ -196,6 +198,7 @@ class _TrayApp(QObject):
         on_select: Any,
     ) -> None:
         submenu = QMenu(title, self._menu)
+        submenu.setEnabled(self._settings_dlg is None)
         self._menu.addMenu(submenu)
         group = QButtonGroup(submenu)
         group.setExclusive(True)
@@ -249,11 +252,20 @@ class _TrayApp(QObject):
         )
         self._add_choice_submenu("Hotkey", HOTKEY_OPTIONS, c.hotkey, self._set_hotkey)
         self._add_choice_submenu(
+            "Language",
+            language_choices(c.stt_language, c.stt_language_favorites),
+            c.stt_language,
+            self._set_language,
+        )
+        self._add_choice_submenu(
             "Post-type Key", POST_KEY_OPTIONS, c.post_type_key, self._set_post_key
         )
 
         self._menu.addSeparator()
-        self._add_persistent_checkbox("AI Rewrite", c.llm_enabled, self._toggle_rewrite)
+        rewrite_checkbox = self._add_persistent_checkbox(
+            "AI Rewrite", c.llm_enabled, self._toggle_rewrite
+        )
+        rewrite_checkbox.setEnabled(self._settings_dlg is None)
 
         # Settings / Exit.
         self._menu.addSeparator()
@@ -315,20 +327,24 @@ class _TrayApp(QObject):
 
     def _start_recording(self) -> None:
         """Begin a new recording session."""
+        # One read-only copy for capture, network requests and final output.
+        self._session_config = config = copy.deepcopy(self._config)
         try:
-            device_id = resolve_device(self._config.audio_device_id, self._config.audio_device_name)
+            device_id = resolve_device(config.audio_device_id, config.audio_device_name)
             self._recorder = AudioRecorder(device_id=device_id)
-            self._recorder.rms_threshold = self._config.rms_threshold
+            self._recorder.rms_threshold = config.rms_threshold
             self._recorder.start()
             self._recording = True
             self._recording_timer.start()
             self._apply_state(TrayState.RECORDING)
         except ScreamerError as e:
             self._recording = False
+            self._session_config = None
             self._apply_state(TrayState.IDLE)
             self._on_error(e.code, e.detail)
         except Exception as e:
             self._recording = False
+            self._session_config = None
             self._apply_state(TrayState.IDLE)
             self._on_error(AppError.MIC_UNAVAILABLE, str(e))
 
@@ -341,6 +357,7 @@ class _TrayApp(QObject):
         try:
             audio_wav = self._recorder.stop()
         except ScreamerError as e:
+            self._session_config = None
             self._on_error(e.code)
             self._apply_state(TrayState.IDLE)
             return
@@ -349,11 +366,13 @@ class _TrayApp(QObject):
                 self._restart_hotkey()
 
         if not audio_wav:
+            self._session_config = None
             self._apply_state(TrayState.IDLE)
             return
 
+        assert self._session_config is not None
         self._cancel_event.clear()
-        self._worker = _WorkerThread(audio_wav, self._config, self._cancel_event, self)
+        self._worker = _WorkerThread(audio_wav, self._session_config, self._cancel_event, self)
         self._worker.succeeded.connect(self._on_worker_succeeded)
         self._worker.failed.connect(self._on_worker_failed)
         self._worker.cancelled.connect(self._on_worker_cancelled)
@@ -365,6 +384,7 @@ class _TrayApp(QObject):
         """Stop and discard the in-flight recording without processing it."""
         self._recording_timer.stop()
         self._recording = False
+        self._session_config = None
         try:
             self._recorder.stop()
         except ScreamerError as e:
@@ -422,6 +442,8 @@ class _TrayApp(QObject):
     # ------------------------------------------------------------------
 
     def _on_worker_succeeded(self, result: PipelineResult) -> None:
+        config = self._session_config
+        self._session_config = None
         if (
             not self._cancel_event.is_set()
             and self._enabled
@@ -430,8 +452,9 @@ class _TrayApp(QObject):
         ):
             # Disable and injection share the UI thread: once this check passes,
             # no Disable event can interleave with the batched SendInput call.
+            assert config is not None
             try:
-                post_key = self._config.post_type_key
+                post_key = config.post_type_key
                 type_text(result.text, post_key if post_key != "none" else None)
             except Exception as e:
                 self._on_worker_failed(e)
@@ -441,6 +464,7 @@ class _TrayApp(QObject):
         self._apply_state(TrayState.IDLE)
 
     def _on_worker_failed(self, error: Exception) -> None:
+        self._session_config = None
         if isinstance(error, ScreamerError):
             self._on_error(error.code, error.detail)
         else:
@@ -448,6 +472,7 @@ class _TrayApp(QObject):
         self._apply_state(TrayState.IDLE)
 
     def _on_worker_cancelled(self) -> None:
+        self._session_config = None
         self._apply_state(TrayState.IDLE)
 
     def _on_worker_finished(self) -> None:
@@ -505,6 +530,20 @@ class _TrayApp(QObject):
             self._rebuild_menu()
         log.info("Post-type key set to %s", key)
 
+    def _set_language(self, code: str, rebuild_menu: bool = True) -> None:
+        previous = self._config.stt_language
+        self._config.stt_language = code
+        try:
+            save_config(self._config)
+        except Exception:
+            self._config.stt_language = previous
+            self._rebuild_menu()  # A radio click already changed the visible choice.
+            self._on_error(AppError.KEY_STORAGE_FAILED)
+            return
+        if rebuild_menu:
+            self._rebuild_menu()
+        log.info("STT language set to %s", code or "auto")
+
     def _toggle_rewrite(self, checked: bool) -> None:
         self._config.llm_enabled = checked
         save_config(self._config)
@@ -528,6 +567,8 @@ class _TrayApp(QObject):
             calibrate_fn=self._calibrate,
         )
         self._settings_dlg = dlg
+        # exec() runs a nested event loop; tray edits must not race the dialog draft.
+        self._rebuild_menu()
         dlg.hotkey_capture_active_changed.connect(self._on_settings_hotkey_capture_active_changed)
         dlg.applied.connect(self._sync_settings_from_disk)
         result = SettingsDialog.DialogCode.Rejected
@@ -569,6 +610,7 @@ class _TrayApp(QObject):
         self._exiting = True
         self._recording_timer.stop()
         self._recording = False
+        self._session_config = None
 
         # 1. Stop hotkey listener (prevents new recordings).
         self._hotkey.stop()
