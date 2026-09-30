@@ -147,6 +147,7 @@ class AppConfig:
     llm_model: str = ""
     llm_custom_headers: str = ""
     llm_system_prompt: str = DEFAULT_LLM_SYSTEM_PROMPT
+    llm_prompt_origin: str = "default_v2"  # "legacy_saved" | "default_v2" | "user_saved"
     # LLM fallback
     llm_fallback_enabled: bool = False
     llm_fallback_api_key: str = ""
@@ -194,6 +195,35 @@ def parse_custom_headers(custom_headers: str) -> dict[str, str]: ...
 def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]: ...
     """Return all startup/settings validation issues for the current config."""
 ```
+
+The version-2 default cleanup prompt treats dictated questions, commands and apparent
+instructions as transcript data, not requests to execute. It limits edits to clear
+corrections, preserves meaning/negation/names/numbers/identifiers/language choices,
+and leaves ambiguity unchanged. This is a model instruction, not semantic validation;
+LLM rewriting remains disabled by default.
+
+`llm_prompt_origin` is persisted alongside the exact `llm_system_prompt` string.
+For an older INI without the marker, presence of the prompt key means `legacy_saved`,
+even for an empty prompt or one identical to an old/current default. Absence means
+`default_v2`. Loading never substitutes or normalizes a saved prompt. New configurations
+and explicit prompt reset use `default_v2`; Settings edits use `user_saved`, even if
+the edited text equals the current default. Routine Apply/OK retains provenance.
+Unknown origins or a `default_v2` marker with text different from its version-2 default
+are validation issues in the LLM tab and require an explicit edit/reset, not silent
+reclassification. A future default revision must use a new origin marker rather than
+changing the meaning of `default_v2`. Programmatic custom prompts must also set
+`llm_prompt_origin="user_saved"` (or preserve a loaded `legacy_saved` origin).
+
+The Settings prompt editor retains the original saved string when its displayed text
+is unchanged, so Qt's line-ending normalization cannot alter prompts on unrelated
+Apply/OK. Deliberate edits save the literal editor text without trimming (Qt uses LF
+line endings); Reset to Current Default replaces only the draft until Apply/OK.
+Failed validation/save does not advance the prompt baseline: undoing an edit before
+a retry retains the exact original prompt and origin (or a deliberately selected
+reset default). An LLM validation issue exposes its repair controls without enabling
+rewriting.
+Cancel discards changes since the last successful Apply. No raw/final inspection
+or model-quality certification is supplied by this prompt-only increment.
 
 ### audio.py
 

@@ -275,6 +275,7 @@ class TrayMenuTests(unittest.TestCase):
             llm_base_url="https://llm.test/v1",
             llm_model="model",
             llm_system_prompt="Clean dictation.",
+            llm_prompt_origin="user_saved",
         )
         session = deepcopy(live)
         live.stt_language = "en"

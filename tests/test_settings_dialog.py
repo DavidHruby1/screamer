@@ -12,7 +12,7 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QApplication, QLineEdit, QDialog
 
-from src.config import AppConfig
+from src.config import AppConfig, DEFAULT_LLM_SYSTEM_PROMPT, load_config, save_config
 from src.utils import AppError, ScreamerError
 from src.settings_dialog import PasswordField, SettingsDialog
 
@@ -145,6 +145,147 @@ class AcceptValidationTests(unittest.TestCase):
             self.assertEqual(dlg.result(), 1)
         finally:
             dlg.deleteLater()
+
+
+class PromptSettingsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch("src.config.APP_DIR", tmp))
+        self.enterContext(patch("src.config._dpapi_available", return_value=False))
+        self.enterContext(patch("src.settings_dialog.is_supported", return_value=False))
+        self.cfg = AppConfig(
+            stt_api_key="key",
+            stt_base_url="https://example.test/v1",
+            stt_model="stt",
+            llm_system_prompt=" \tSaved prompt\r\nKeep whitespace.  \r\n\r\n",
+            llm_prompt_origin="legacy_saved",
+        )
+        save_config(self.cfg)
+        self.dlg = SettingsDialog(self.cfg, devices=[])
+        self.addCleanup(self.dlg.deleteLater)
+
+    def test_unchanged_apply_and_ok_preserve_saved_line_endings_and_origin(self) -> None:
+        self.dlg._mode_toggle.setChecked(True)
+        self.dlg._on_apply()
+        self.dlg._on_apply()
+        self.dlg.accept()
+        self.assertEqual(self.dlg.result(), QDialog.DialogCode.Accepted)
+        restored = load_config()
+        self.assertEqual(restored.llm_system_prompt, self.cfg.llm_system_prompt)
+        self.assertEqual(restored.llm_prompt_origin, "legacy_saved")
+        self.assertEqual(restored.recording_mode, "toggle")
+
+    def test_reset_then_cancel_keeps_saved_prompt_and_live_config(self) -> None:
+        self.dlg._llm_reset_prompt_btn.click()
+        self.assertEqual(self.dlg._llm_prompt.toPlainText(), DEFAULT_LLM_SYSTEM_PROMPT)
+        self.dlg.reject()
+        restored = load_config()
+        self.assertEqual(restored.llm_system_prompt, self.cfg.llm_system_prompt)
+        self.assertEqual(restored.llm_prompt_origin, "legacy_saved")
+        self.assertEqual(self.cfg.llm_prompt_origin, "legacy_saved")
+
+    def test_reset_apply_and_edit_keep_distinct_origins_across_repeated_apply(self) -> None:
+        self.dlg._llm_reset_prompt_btn.click()
+        self.dlg._on_apply()
+        self.dlg._on_apply()
+        restored = load_config()
+        self.assertEqual(restored.llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
+        self.assertEqual(restored.llm_prompt_origin, "default_v2")
+
+        edited = " \nMy edited prompt.  \n\n"
+        self.dlg._llm_prompt.setPlainText(edited)
+        self.dlg._on_apply()
+        self.dlg._on_apply()
+        restored = load_config()
+        self.assertEqual(restored.llm_system_prompt, edited)
+        self.assertEqual(restored.llm_prompt_origin, "user_saved")
+        self.dlg._llm_reset_prompt_btn.click()
+        self.dlg.reject()
+        self.assertEqual(load_config().llm_system_prompt, edited)
+        self.assertEqual(load_config().llm_prompt_origin, "user_saved")
+        self.assertEqual(self.cfg.llm_prompt_origin, "legacy_saved")
+
+    def test_edit_to_current_default_is_user_saved_not_an_implicit_reset(self) -> None:
+        self.dlg._llm_prompt.setPlainText(DEFAULT_LLM_SYSTEM_PROMPT)
+        self.dlg.accept()
+        self.assertEqual(self.dlg.result(), QDialog.DialogCode.Accepted)
+        self.assertEqual(load_config().llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
+        self.assertEqual(load_config().llm_prompt_origin, "user_saved")
+
+    def test_fresh_default_remains_default_v2_on_routine_apply(self) -> None:
+        cfg = AppConfig(stt_api_key="key", stt_base_url="https://example.test/v1", stt_model="stt")
+        dlg = SettingsDialog(cfg, devices=[])
+        self.addCleanup(dlg.deleteLater)
+        dlg._on_apply()
+        self.assertEqual(load_config().llm_prompt_origin, "default_v2")
+        self.assertFalse(load_config().llm_enabled)
+
+    def test_failed_apply_then_undo_preserves_exact_prompt_and_origin_on_retry(self) -> None:
+        for prompt, origin, failure in (
+            (self.cfg.llm_system_prompt, "legacy_saved", "validation"),
+            (self.cfg.llm_system_prompt, "legacy_saved", "save"),
+            (DEFAULT_LLM_SYSTEM_PROMPT, "default_v2", "save"),
+        ):
+            with self.subTest(origin=origin, failure=failure):
+                cfg = AppConfig(
+                    stt_api_key="key",
+                    stt_base_url="https://example.test/v1",
+                    stt_model="stt",
+                    llm_system_prompt=prompt,
+                    llm_prompt_origin=origin,
+                )
+                save_config(cfg)
+                dlg = SettingsDialog(cfg, devices=[])
+                self.addCleanup(dlg.deleteLater)
+                dlg._llm_prompt.insertPlainText("Temporary edit. ")
+                if failure == "validation":
+                    dlg._stt_model.clear()
+                with (
+                    patch(
+                        "src.config.os.replace", side_effect=OSError("read-only disk")
+                    ) as replace,
+                    patch("src.settings_dialog.QMessageBox.warning") as warning,
+                ):
+                    dlg._on_apply()
+                warning.assert_called_once()
+                self.assertEqual(replace.call_count, 0 if failure == "validation" else 1)
+                self.assertEqual(load_config().llm_system_prompt, prompt)
+                self.assertEqual(load_config().llm_prompt_origin, origin)
+                dlg._llm_prompt.undo()
+                dlg._stt_model.setText("stt")
+                dlg._on_apply()
+                self.assertEqual(load_config().llm_system_prompt, prompt)
+                self.assertEqual(load_config().llm_prompt_origin, origin)
+
+    def test_failed_apply_does_not_lose_explicit_reset_after_undoing_later_edit(self) -> None:
+        self.dlg._llm_reset_prompt_btn.click()
+        self.dlg._llm_prompt.insertPlainText("Temporary edit. ")
+        with (
+            patch("src.config.os.replace", side_effect=OSError("read-only disk")),
+            patch("src.settings_dialog.QMessageBox.warning"),
+        ):
+            self.dlg._on_apply()
+        self.dlg._llm_prompt.undo()
+        self.dlg._on_apply()
+        self.assertEqual(load_config().llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
+        self.assertEqual(load_config().llm_prompt_origin, "default_v2")
+
+    def test_invalid_provenance_is_blocked_until_explicit_reset(self) -> None:
+        self.cfg.llm_prompt_origin = "default_v2"
+        dlg = SettingsDialog(self.cfg, devices=[])
+        self.addCleanup(dlg.deleteLater)
+        with patch("src.settings_dialog.QMessageBox.warning") as warning:
+            dlg.accept()
+        self.assertEqual(dlg.result(), QDialog.DialogCode.Rejected)
+        warning.assert_called_once()
+        self.assertFalse(dlg._llm_group.isHidden())
+        self.assertFalse(dlg._llm_check.isChecked())
+        self.assertEqual(load_config().llm_prompt_origin, "legacy_saved")
+        dlg._llm_reset_prompt_btn.click()
+        dlg.accept()
+        self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted)
+        self.assertEqual(load_config().llm_prompt_origin, "default_v2")
+        self.assertFalse(load_config().llm_enabled)
 
 
 class MicrophoneSettingsTests(unittest.TestCase):

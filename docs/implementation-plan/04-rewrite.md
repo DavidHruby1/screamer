@@ -4,14 +4,27 @@
 
 This plan tightens the default LLM cleanup contract and makes the already-existing raw transcript recoverable and inspectable. Current `rewrite()` already uses an editable system prompt, primary/fallback providers, and returns the input on failure; the important gap is that the current worker hands only its final result to the tray app. Feature 3 owns durable/in-memory result records and recovery lifecycle. This feature must use that boundary rather than inventing a second result store.
 
+## Progress (2026-09-30)
+
+The independent prompt revision/provenance slice is implemented. Current prompt,
+persistence and Settings guarantees are documented in [IMPLEMENTATION.md](../IMPLEMENTATION.md#configpy).
+Linux verification passed: 213 tests with 4 Windows-only skips, compileall, import,
+Ruff check/format and diff whitespace checks. Independent review's failed-Apply/undo
+finding was reproduced and fixed with regressions; follow-up review found no remaining
+defects in this slice.
+The example matrix below is the retained manual evaluation fixture, not an observed
+benchmark. Provider/model selection and actual quality evaluation, Windows Settings
+verification, and Feature 3/2-dependent inspection/recovery remain **not run or not
+implemented**. This feature is not complete.
+
 ## Start Here
 
 - `src/config.py`: owns `DEFAULT_LLM_SYSTEM_PROMPT`, `AppConfig.llm_system_prompt`, persistence and validation.
 - `src/rewrite.py`: constructs the system/user messages and implements disabled, primary/fallback, empty-output and failure behavior.
-- `src/main.py`: current network pipeline worker and result handling; feature 3 changes how raw/final values are retained. The current worker is passed `self._config`; capture one deep copy at recording start is a required integration change, not current behavior.
+- `src/main.py`: current network pipeline worker and result handling; feature 3 changes how raw/final values are retained. Feature 1 already supplies one main-owned config snapshot captured at recording start; reuse it instead of creating another snapshot.
 - `docs/FEATURES.md`: accepted fidelity, migration, inspection and non-goals.
 
-## Current-Source Audit
+## Baseline Before This Slice
 
 - The default prompt already says input is microphone transcription, says not to answer or converse, limits changes and says to preserve uncertain text (`config.py:20-39`). Repeating those rules verbatim is not a sufficient prompt revision.
 - `rewrite(text: str, config: AppConfig) -> PipelineResult` returns the input unchanged when `llm_enabled` is false. It sends `llm_system_prompt` (plus a configured `stt_language` hint) as system message and dictated text as user message (`rewrite.py:17-59,84-90`).
@@ -110,7 +123,7 @@ sequenceDiagram
 | Function / owner | Responsibility and invariant |
 |---|---|
 | `config.load_config()` / save path | Load saved prompt without rewriting it. Identify legacy key presence, assign/persist `llm_prompt_origin`, and give only absent keys the revised default. New default remains disabled (`llm_enabled=False`). |
-| `validate_config(cfg)` | Continue enforcing enabled-LLM provider requirements; prompt policy adds no validation constraints or provider dependency. |
+| `validate_config(cfg)` | Continue enforcing enabled-LLM provider requirements; validate the origin marker and exact version-2 default identity without constraining user-authored prompt content or adding a provider dependency. |
 | `SettingsDialog._populate()` / `_collect()` / reset handler | Edit a copied config; retain origin on unchanged Apply, set `user_saved` on edits and `default_v2` on explicit Reset; Cancel discards unapplied edits. |
 | `rewrite(text, config)` | Keep signature and provider loop. Build system content from effective clean prompt plus language context, then use identical effective instructions for primary and fallback. Disabled mode yields input with no LLM warning. |
 | `_call_llm(provider, system_prompt, user_text)` | Keep transcript in user message and policy in system message; keep current endpoint, response parsing, timeout and non-sensitive logging contract. |

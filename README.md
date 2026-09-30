@@ -101,6 +101,7 @@ The LLM rewrite step is optional. Leave it off if you want raw transcription.
 - Primary LLM provider
 - Optional fallback LLM provider
 - Editable system prompt
+- Reset to Current Default explicitly selects the conservative cleanup prompt. Upgrades preserve every saved prompt, including an old default; unrelated Apply/OK preserves its whitespace and line endings. Rewriting remains off by default. Prompt rules guide the model, not guarantee unchanged meaning, so review important dictation.
 - Custom headers
 
 ### Audio

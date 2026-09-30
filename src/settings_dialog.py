@@ -464,11 +464,15 @@ class SettingsDialog(QDialog):
         self._llm_prompt.setTabChangesFocus(True)
         llm_form.addRow("System Prompt:", self._llm_prompt)
 
-        btn_reset_prompt = QPushButton("Reset to Default")
-        btn_reset_prompt.clicked.connect(
-            lambda: self._llm_prompt.setPlainText(DEFAULT_LLM_SYSTEM_PROMPT)
+        self._llm_reset_prompt_btn = QPushButton("Reset to Current Default")
+        self._llm_reset_prompt_btn.clicked.connect(self._on_reset_prompt)
+        llm_form.addRow(self._llm_reset_prompt_btn)
+        prompt_hint = QLabel(
+            "Saved prompts are kept unchanged on upgrade. Reset explicitly selects the current "
+            "cleanup default. Models can still change meaning; review important dictation."
         )
-        llm_form.addRow(btn_reset_prompt)
+        prompt_hint.setWordWrap(True)
+        llm_form.addRow(prompt_hint)
 
         # --- LLM Fallback ---
         self._llm_fb_check = QCheckBox("Enable fallback LLM provider")
@@ -490,6 +494,14 @@ class SettingsDialog(QDialog):
         form.addRow(self._llm_group)
 
         self._tabs.addTab(tab, "LLM")
+
+    def _on_reset_prompt(self) -> None:
+        self._llm_prompt.setPlainText(DEFAULT_LLM_SYSTEM_PROMPT)
+        self._llm_prompt_baseline = (
+            DEFAULT_LLM_SYSTEM_PROMPT,
+            "default_v2",
+            self._llm_prompt.toPlainText(),
+        )
 
     # --- Audio tab -----------------------------------------------------
 
@@ -579,6 +591,11 @@ class SettingsDialog(QDialog):
         self._llm_model.setText(cfg.llm_model)
         self._llm_headers.setText(cfg.llm_custom_headers)
         self._llm_prompt.setPlainText(cfg.llm_system_prompt)
+        self._llm_prompt_baseline = (
+            cfg.llm_system_prompt,
+            cfg.llm_prompt_origin,
+            self._llm_prompt.toPlainText(),
+        )
         self._llm_fb_check.setChecked(cfg.llm_fallback_enabled)
         self._llm_fb_key.setText(cfg.llm_fallback_api_key)
         self._llm_fb_url.setText(cfg.llm_fallback_base_url)
@@ -623,7 +640,15 @@ class SettingsDialog(QDialog):
         cfg.llm_base_url = self._llm_url.text().strip()
         cfg.llm_model = self._llm_model.text().strip()
         cfg.llm_custom_headers = self._llm_headers.text().strip()
-        cfg.llm_system_prompt = self._llm_prompt.toPlainText()
+        prompt = self._llm_prompt.toPlainText()
+        original_prompt, origin, displayed_prompt = self._llm_prompt_baseline
+        # Qt normalizes line endings; unrelated Apply/OK must keep the original string.
+        if prompt != displayed_prompt:
+            cfg.llm_system_prompt = prompt
+            cfg.llm_prompt_origin = "user_saved"
+        else:
+            cfg.llm_system_prompt = original_prompt
+            cfg.llm_prompt_origin = origin
         cfg.llm_fallback_enabled = self._llm_fb_check.isChecked()
         cfg.llm_fallback_api_key = self._llm_fb_key.text().strip()
         cfg.llm_fallback_base_url = self._llm_fb_url.text().strip()
@@ -836,6 +861,8 @@ class SettingsDialog(QDialog):
 
         QMessageBox.warning(self, "Missing Configuration", issue.message)
         self._tabs.setCurrentIndex(issue.tab_index)
+        if issue.tab_index == 2:
+            self._llm_group.setVisible(True)
         return False
 
     def _save_or_warn(self) -> bool:
@@ -846,6 +873,11 @@ class SettingsDialog(QDialog):
         except ScreamerError as e:
             QMessageBox.warning(self, "Settings Save Failed", e.code.value)
             return False
+        self._llm_prompt_baseline = (
+            self._working.llm_system_prompt,
+            self._working.llm_prompt_origin,
+            self._llm_prompt.toPlainText(),
+        )
         self.applied.emit()
         return self._sync_startup_or_warn()
 
