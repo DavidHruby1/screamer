@@ -92,3 +92,50 @@ class SnackbarWidgetTests(unittest.TestCase):
         self.assertTrue(bar.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents))
         self.assertTrue(bar.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating))
         self.assertEqual(bar.focusPolicy(), Qt.FocusPolicy.NoFocus)
+
+    def test_meter_distinguishes_waiting_from_quiet_and_resets_after_recording(self):
+        from src.snackbar import RecordingSnackbar
+
+        bar = RecordingSnackbar()
+        self.addCleanup(bar.close)
+        bar.show_state("Recording", (229, 57, 53))
+        bar.set_input_status("USB microphone", 0.7, False)
+        self.assertEqual(bar.input_status_text(), "Waiting for samples - USB microphone")
+        self.assertEqual(bar.input_level(), 0.0)
+        bar.set_input_status("USB microphone", 0.0, True)
+        self.assertEqual(bar.input_status_text(), "Input level - USB microphone")
+        self.assertEqual(bar.input_level(), 0.0)
+        bar.set_input_status("USB microphone", 1.5, True)
+        self.assertEqual(bar.input_level(), 1.0)
+        bar.set_input_status("USB microphone", -0.1, True)
+        self.assertEqual(bar.input_level(), 0.0)
+        recording_height = bar.height()
+        # Render the extended paint path, not just its stored values.
+        self.assertFalse(bar.grab().isNull())
+        bar.show_state("Processing", (255, 179, 0))
+        bar.set_input_status("Late sample", 1.0, True)
+        self.assertEqual(bar.input_status_text(), "")
+        self.assertEqual(bar.input_level(), 0.0)
+        self.assertLess(bar.height(), recording_height)
+        bar.show_state("Recording", (229, 57, 53))
+        self.assertIn("Waiting for samples", bar.input_status_text())
+        bar.hide_state()
+        self.assertEqual(bar.input_status_text(), "")
+
+    def test_long_device_label_cannot_hide_waiting_or_quiet_observation(self):
+        from src.snackbar import RecordingSnackbar
+
+        bar = RecordingSnackbar()
+        self.addCleanup(bar.close)
+        label = "Very long USB microphone name " * 10
+        bar.show_state("Recording", (229, 57, 53))
+        bar.set_input_status(label, 0.0, False)
+        waiting_text = bar.input_status_text()
+        self.assertTrue(waiting_text.startswith("Waiting for samples - "))
+        self.assertNotIn(label, waiting_text)
+        self.assertFalse(bar.grab().isNull())
+        bar.set_input_status(label, 0.0, True)
+        quiet_text = bar.input_status_text()
+        self.assertTrue(quiet_text.startswith("Input level - "))
+        self.assertNotEqual(waiting_text, quiet_text)
+        self.assertFalse(bar.grab().isNull())

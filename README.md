@@ -34,10 +34,10 @@ That's it.
 - **OpenAI-compatible speech-to-text** - use OpenAI, Groq, or another compatible `/audio/transcriptions` endpoint.
 - **Optional AI cleanup** - fix punctuation, grammar, spelling, and capitalization after transcription.
 - **Fallback providers** - configure backup STT and LLM providers if the primary one fails.
-- **On-screen recording indicator** - a small pulsing pill appears at the bottom-center of the screen while recording and processing.
+- **On-screen recording indicator** - a click-through pill shows the opened microphone and live input level while recording, then processing status.
 - **System tray app** - enable/disable, switch STT language, change hotkey, toggle rewrite, open settings, or exit from the tray.
 - **Session-safe settings** - tray changes during dictation apply to the next recording; Settings temporarily locks other tray configuration controls.
-- **Microphone selection** - pick your input device and calibrate silence detection.
+- **Microphone selection and recovery** - pick your input device, refresh the list after device changes, and calibrate silence detection. An unavailable explicit selection never silently switches to another microphone.
 - **Post-type key** - optionally press `Enter`, `Tab`, `Space`, or `Backspace` after typing.
 - **Windows startup support** - launch Screamer automatically when you log in.
 - **Secure API key storage** - API keys are stored locally with Windows DPAPI.
@@ -106,7 +106,17 @@ The LLM rewrite step is optional. Leave it off if you want raw transcription.
 ### Audio
 
 - Input device selection
+- Refresh the input-device list without closing Settings. Unavailable selections stay saved until you choose another input; System Default deliberately follows the current default on the next recording.
 - Silence threshold calibration
+
+The recording meter measures the latest captured block's RMS on a fixed full-scale
+range; low-level microphones can show a small bar. "Waiting for samples" differs
+from captured quiet input. Neither a moving meter nor a quiet signal establishes
+recognition quality or a hardware fault. Capture errors let you refresh/reselect
+in **Settings > Audio** and try the next hotkey without restarting Screamer.
+Device IDs are enumeration indexes, not permanent hardware identities: a missing
+ID can remap only by a unique exact name, while conflicts or duplicate names require
+reselection (or an intentional System Default choice).
 
 ## Hotkeys
 

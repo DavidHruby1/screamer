@@ -55,7 +55,8 @@ from src.config import (
     save_config,
     validate_config,
 )
-from src.utils import APP_NAME, log_duration
+from src.audio import resolve_device
+from src.utils import APP_NAME, AppError, ScreamerError, log_duration
 from src.startup import is_supported
 
 log = logging.getLogger(__name__)
@@ -73,15 +74,21 @@ class _CalibrateThread(QThread):
     failed = Signal(str)
 
     def __init__(
-        self, fn: Callable[[int | None], float], device_id: int | None, parent=None
+        self,
+        fn: Callable[[int | None], float],
+        device_id: int | None,
+        device_name: str,
+        parent=None,
     ) -> None:
         super().__init__(parent)
         self._fn = fn
         self._device_id = device_id
+        self._device_name = device_name
 
     def run(self) -> None:
         try:
-            self.succeeded.emit(self._fn(self._device_id))
+            device_id = resolve_device(self._device_id, self._device_name)
+            self.succeeded.emit(self._fn(device_id))
         except Exception as e:  # surface any calibration failure to the dialog
             self.failed.emit(str(e))
 
@@ -124,6 +131,7 @@ class SettingsDialog(QDialog):
         Pass an empty list if audio is unavailable.
     *calibrate_fn*: ``fn(device_id) -> float`` that runs RMS calibration.
         ``None`` disables the calibrate button.
+    *refresh_devices_fn*: optional user-triggered input-device enumeration.
     """
 
     hotkey_capture_active_changed = Signal(bool)
@@ -135,6 +143,7 @@ class SettingsDialog(QDialog):
         parent: QWidget | None = None,
         devices: list[DeviceItem] | None = None,
         calibrate_fn: Callable[[int | None], float] | None = None,
+        refresh_devices_fn: Callable[[], list[DeviceItem]] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"{APP_NAME} — Settings")
@@ -142,6 +151,7 @@ class SettingsDialog(QDialog):
 
         self._devices = devices if devices is not None else []
         self._calibrate_fn = calibrate_fn
+        self._refresh_devices_fn = refresh_devices_fn
         self._calib_thread: _CalibrateThread | None = None
         self._pending_result: int | None = None
 
@@ -497,7 +507,19 @@ class SettingsDialog(QDialog):
 
         self._device_combo = QComboBox()
         self._populate_devices()
-        form.addRow("Input Device:", self._device_combo)
+        self._refresh_devices_btn = QPushButton("Refresh")
+        self._refresh_devices_btn.setEnabled(self._refresh_devices_fn is not None)
+        self._refresh_devices_btn.clicked.connect(self.refresh_devices)
+        device_row = QHBoxLayout()
+        device_row.addWidget(self._device_combo, 1)
+        device_row.addWidget(self._refresh_devices_btn)
+        form.addRow("Input Device:", device_row)
+        policy = QLabel(
+            "An unavailable or ambiguous explicit input will not switch to System Default. "
+            "Refresh and reselect after device changes. Device IDs/names do not prove physical identity."
+        )
+        policy.setWordWrap(True)
+        form.addRow(policy)
 
         self._calibrate_btn = QPushButton(_CALIBRATE_LABEL)
         self._calibrate_btn.clicked.connect(self._on_calibrate)
@@ -564,7 +586,7 @@ class SettingsDialog(QDialog):
         self._llm_fb_headers.setText(cfg.llm_fallback_custom_headers)
 
         # Audio
-        self._select_device(cfg)
+        self._select_device(cfg.audio_device_id, cfg.audio_device_name)
         self._rms_spin.setValue(cfg.rms_threshold)
         self._rms_label.setText(f"Threshold: {cfg.rms_threshold:.1f}")
 
@@ -609,18 +631,8 @@ class SettingsDialog(QDialog):
         cfg.llm_fallback_custom_headers = self._llm_fb_headers.text().strip()
 
         # Audio
-        cfg.audio_device_id = self._device_combo.currentData()
+        cfg.audio_device_id, cfg.audio_device_name = self._selected_device()
         cfg.rms_threshold = self._rms_spin.value()
-        unavailable_name = self._device_combo.currentData(Qt.ItemDataRole.UserRole + 1)
-        if unavailable_name is not None:
-            cfg.audio_device_name = unavailable_name
-            return
-        cfg.audio_device_name = ""
-        if cfg.audio_device_id is not None:
-            text = self._device_combo.currentText()
-            cfg.audio_device_name = _clean_device_name(
-                text.split("] ", 1)[1] if "] " in text else text
-            )
 
     # ------------------------------------------------------------------
     # Audio tab helpers
@@ -628,6 +640,7 @@ class SettingsDialog(QDialog):
 
     def _populate_devices(self) -> None:
         """Fill the device combo from the pre-fetched device list."""
+        self._device_combo.clear()
         default_name = next(
             (
                 _clean_device_name(dev_name)
@@ -639,50 +652,58 @@ class SettingsDialog(QDialog):
         self._device_combo.addItem(f"System Default ({default_name})", None)
         for dev_id, dev_name in self._devices:
             self._device_combo.addItem(f"[{dev_id}] {dev_name}", dev_id)
+            self._device_combo.setItemData(
+                self._device_combo.count() - 1,
+                _clean_device_name(dev_name),
+                Qt.ItemDataRole.UserRole + 2,
+            )
 
-        self._select_device(self._working)
+    def _selected_device(self) -> tuple[int | None, str]:
+        device_id = self._device_combo.currentData()
+        unavailable_name = self._device_combo.currentData(Qt.ItemDataRole.UserRole + 1)
+        if unavailable_name is not None:
+            return device_id, unavailable_name
+        name = self._device_combo.currentData(Qt.ItemDataRole.UserRole + 2)
+        return device_id, name if device_id is not None else ""
 
-    def _select_device(self, cfg: AppConfig) -> None:
-        """Select saved device by current ID, then by stable device name."""
+    def refresh_devices(self) -> None:
+        """Refresh on request without replacing an unresolved explicit preference."""
+        if self._refresh_devices_fn is None or self._pending_result is not None:
+            return
+        preferred_id, preferred_name = self._selected_device()
+        try:
+            devices = self._refresh_devices_fn()
+            if not devices:
+                raise ScreamerError(AppError.MIC_UNAVAILABLE)
+        except Exception:
+            QMessageBox.warning(
+                self,
+                "Microphone Refresh Failed",
+                "No input-device list available. The selection was kept; try Refresh again.",
+            )
+            return
+        self._devices = devices
+        self._populate_devices()
+        self._select_device(preferred_id, preferred_name)
+
+    def _select_device(self, preferred_id: int | None, preferred_name: str) -> None:
+        """Use the recorder policy; preserve unresolved identity until reselection."""
         for i in range(self._device_combo.count() - 1, -1, -1):
             if self._device_combo.itemData(i, Qt.ItemDataRole.UserRole + 1) is not None:
                 self._device_combo.removeItem(i)
         self._device_combo.setCurrentIndex(0)
-        saved_name = _clean_device_name(cfg.audio_device_name).lower()
-
-        if cfg.audio_device_id is not None:
-            for i in range(self._device_combo.count()):
-                if self._device_combo.itemData(i) == cfg.audio_device_id:
-                    item_name = _clean_device_name(
-                        self._device_combo.itemText(i).split("] ", 1)[-1]
-                    )
-                    if not saved_name or saved_name == item_name.lower():
-                        self._device_combo.setCurrentIndex(i)
-                        return
-
-        if saved_name:
-            for exact in (True, False):
-                for i in range(1, self._device_combo.count()):
-                    item_name = _clean_device_name(
-                        self._device_combo.itemText(i).split("] ", 1)[-1]
-                    ).lower()
-                    if (exact and saved_name != item_name) or (
-                        not exact and saved_name not in item_name
-                    ):
-                        continue
-                    self._device_combo.setCurrentIndex(i)
-                    return
-
-        if cfg.audio_device_id is not None or cfg.audio_device_name:
+        try:
+            device_id = resolve_device(preferred_id, preferred_name, devices=self._devices)
+        except ScreamerError:
             self._device_combo.addItem(
-                f"[{cfg.audio_device_id}] {cfg.audio_device_name} (Unavailable)",
-                cfg.audio_device_id,
+                f"[{preferred_id}] {preferred_name} (Unavailable / reselect)",
+                preferred_id,
             )
             index = self._device_combo.count() - 1
-            self._device_combo.setItemData(
-                index, cfg.audio_device_name, Qt.ItemDataRole.UserRole + 1
-            )
+            self._device_combo.setItemData(index, preferred_name, Qt.ItemDataRole.UserRole + 1)
             self._device_combo.setCurrentIndex(index)
+        else:
+            self._device_combo.setCurrentIndex(self._device_combo.findData(device_id))
 
     def _on_calibrate(self) -> None:
         """Run RMS auto-calibration in a worker thread; keep the dialog responsive."""
@@ -693,6 +714,12 @@ class SettingsDialog(QDialog):
         ):
             return
 
+        device_id, device_name = self._selected_device()
+        try:
+            resolve_device(device_id, device_name, devices=self._devices)
+        except ScreamerError as e:
+            QMessageBox.warning(self, "Calibration Failed", str(e))
+            return
         QMessageBox.information(
             self,
             "Calibrating",
@@ -701,7 +728,7 @@ class SettingsDialog(QDialog):
         self._calibrate_btn.setEnabled(False)
         self._calibrate_btn.setText("Calibrating...")
 
-        thread = _CalibrateThread(self._calibrate_fn, self._device_combo.currentData(), self)
+        thread = _CalibrateThread(self._calibrate_fn, device_id, device_name, self)
         thread.succeeded.connect(self._on_calibrate_succeeded)
         thread.failed.connect(self._on_calibrate_failed)
         thread.finished.connect(self._on_calibrate_finished)

@@ -141,6 +141,10 @@ class _TrayApp(QObject):
         self._recording_timer.setInterval(5 * 60 * 1000)
         self._recording_timer.timeout.connect(self._finalize_recording)
 
+        self._level_timer = QTimer(self)
+        self._level_timer.setInterval(100)
+        self._level_timer.timeout.connect(self._poll_recording_level)
+
         self._snackbar = RecordingSnackbar()
 
         self._build_tray()
@@ -327,6 +331,8 @@ class _TrayApp(QObject):
 
     def _start_recording(self) -> None:
         """Begin a new recording session."""
+        self._recording_timer.stop()
+        self._level_timer.stop()
         # One read-only copy for capture, network requests and final output.
         self._session_config = config = copy.deepcopy(self._config)
         try:
@@ -337,6 +343,7 @@ class _TrayApp(QObject):
             self._recording = True
             self._recording_timer.start()
             self._apply_state(TrayState.RECORDING)
+            self._level_timer.start()
         except ScreamerError as e:
             self._recording = False
             self._session_config = None
@@ -348,9 +355,26 @@ class _TrayApp(QObject):
             self._apply_state(TrayState.IDLE)
             self._on_error(AppError.MIC_UNAVAILABLE, str(e))
 
+    def _poll_recording_level(self) -> None:
+        if not self._recording:
+            return
+        capture = self._recorder.snapshot()
+        if capture.capture_error is not None:
+            # stop() reports the retained error once and discards incomplete audio.
+            self._cancel_recording()
+            return
+        label = capture.device.name if capture.device is not None else "Input device unknown"
+        assert self._session_config is not None
+        if self._session_config.audio_device_id is None:
+            label = f"System Default ({label})"
+        self._snackbar.set_input_status(
+            label, min(capture.level_rms / 32767.0, 1.0), capture.has_callback_data
+        )
+
     def _finalize_recording(self) -> None:
         """Stop recording and start the processing worker."""
         self._recording_timer.stop()
+        self._level_timer.stop()
         self._recording = False
         self._apply_state(TrayState.PROCESSING)
 
@@ -358,7 +382,7 @@ class _TrayApp(QObject):
             audio_wav = self._recorder.stop()
         except ScreamerError as e:
             self._session_config = None
-            self._on_error(e.code)
+            self._on_error(e.code, e.detail)
             self._apply_state(TrayState.IDLE)
             return
         finally:
@@ -383,6 +407,7 @@ class _TrayApp(QObject):
     def _cancel_recording(self) -> None:
         """Stop and discard the in-flight recording without processing it."""
         self._recording_timer.stop()
+        self._level_timer.stop()
         self._recording = False
         self._session_config = None
         try:
@@ -565,6 +590,7 @@ class _TrayApp(QObject):
             self._config,
             devices=devices,
             calibrate_fn=self._calibrate,
+            refresh_devices_fn=self._get_device_list,
         )
         self._settings_dlg = dlg
         # exec() runs a nested event loop; tray edits must not race the dialog draft.
@@ -609,6 +635,7 @@ class _TrayApp(QObject):
         log.info("Exit requested")
         self._exiting = True
         self._recording_timer.stop()
+        self._level_timer.stop()
         self._recording = False
         self._session_config = None
 

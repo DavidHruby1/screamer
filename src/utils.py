@@ -17,8 +17,10 @@ APP_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), 
 
 
 class AppError(Enum):
-    MIC_UNAVAILABLE = "No microphone detected. Check your audio settings."
-    MIC_DISCONNECTED = "Microphone disconnected during recording."
+    MIC_UNAVAILABLE = (
+        "Microphone unavailable. Open Settings > Audio, refresh devices, and try again."
+    )
+    MIC_DISCONNECTED = "Microphone capture failed. Check Settings > Audio and try again."
     STT_FAILED = "Transcription failed. Check your API key and internet."
     STT_FALLBACK_USED = "Primary STT failed. Used fallback provider."
     LLM_FAILED = "AI rewrite failed. Using raw transcription."

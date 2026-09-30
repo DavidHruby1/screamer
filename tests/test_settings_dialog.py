@@ -4,7 +4,7 @@ import io
 import runpy
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -145,6 +145,138 @@ class AcceptValidationTests(unittest.TestCase):
             self.assertEqual(dlg.result(), 1)
         finally:
             dlg.deleteLater()
+
+
+class MicrophoneSettingsTests(unittest.TestCase):
+    def test_refresh_preserves_unavailable_device_on_apply_and_explicit_reselection(self) -> None:
+        cfg = AppConfig(
+            stt_api_key="k",
+            stt_base_url="https://example.test/v1",
+            stt_model="m",
+            audio_device_id=42,
+            audio_device_name="USB mic",
+        )
+        refresh = Mock(return_value=[(3, "Laptop mic (Default input)")])
+        dlg = SettingsDialog(cfg, devices=[(1, "Laptop mic")], refresh_devices_fn=refresh)
+        self.addCleanup(dlg.deleteLater)
+        refresh.assert_not_called()
+        dlg._refresh_devices_btn.click()
+        self.assertIn("Unavailable", dlg._device_combo.currentText())
+        with (
+            patch("src.settings_dialog.save_config") as save,
+            patch.object(dlg, "_sync_startup_or_warn", return_value=True),
+        ):
+            dlg._on_apply()
+        self.assertEqual(
+            (save.call_args.args[0].audio_device_id, save.call_args.args[0].audio_device_name),
+            (42, "USB mic"),
+        )
+        dlg._device_combo.setCurrentIndex(dlg._device_combo.findData(3))
+        dlg._collect()
+        self.assertEqual(
+            (dlg.get_config().audio_device_id, dlg.get_config().audio_device_name),
+            (3, "Laptop mic"),
+        )
+        dlg.reject()
+        self.assertEqual((cfg.audio_device_id, cfg.audio_device_name), (42, "USB mic"))
+
+    def test_refresh_recognizes_unique_exact_replug_without_substring_substitution(self) -> None:
+        cfg = AppConfig(audio_device_id=42, audio_device_name="USB mic")
+        dlg = SettingsDialog(
+            cfg, devices=[(1, "USB mic Pro")], refresh_devices_fn=lambda: [(7, "USB mic")]
+        )
+        self.addCleanup(dlg.deleteLater)
+        self.assertIn("Unavailable", dlg._device_combo.currentText())
+        dlg.refresh_devices()
+        self.assertEqual(dlg._device_combo.currentData(), 7)
+        self.assertNotIn("Unavailable", dlg._device_combo.currentText())
+        dlg._collect()
+        self.assertEqual(dlg.get_config().audio_device_name, "USB mic")
+
+    def test_refresh_failure_keeps_current_choice_and_reports_failure(self) -> None:
+        for outcome in ([], OSError("enumeration failed")):
+            with self.subTest(outcome=outcome):
+                refresh = (
+                    Mock(side_effect=outcome)
+                    if isinstance(outcome, Exception)
+                    else Mock(return_value=outcome)
+                )
+                dlg = SettingsDialog(
+                    AppConfig(audio_device_id=2, audio_device_name="USB mic"),
+                    devices=[(2, "USB mic")],
+                    refresh_devices_fn=refresh,
+                )
+                try:
+                    with patch("src.settings_dialog.QMessageBox.warning") as warning:
+                        dlg.refresh_devices()
+                    warning.assert_called_once()
+                    dlg._collect()
+                    self.assertEqual(
+                        (dlg.get_config().audio_device_id, dlg.get_config().audio_device_name),
+                        (2, "USB mic"),
+                    )
+                finally:
+                    dlg.deleteLater()
+
+    def test_conflicting_or_duplicate_names_are_not_silently_selected(self) -> None:
+        for devices in ([(2, "Other mic"), (3, "USB mic")], [(2, "USB mic"), (3, "USB mic")]):
+            with self.subTest(devices=devices):
+                dlg = SettingsDialog(
+                    AppConfig(audio_device_id=2, audio_device_name="USB mic"), devices=devices
+                )
+                try:
+                    self.assertIn("Unavailable", dlg._device_combo.currentText())
+                    self.assertTrue(dlg._device_combo.itemText(1).startswith("[2]"))
+                    self.assertTrue(dlg._device_combo.itemText(2).startswith("[3]"))
+                    dlg._collect()
+                    self.assertEqual(
+                        (dlg.get_config().audio_device_id, dlg.get_config().audio_device_name),
+                        (2, "USB mic"),
+                    )
+                finally:
+                    dlg.deleteLater()
+
+    def test_unavailable_input_cannot_calibrate_another_default(self) -> None:
+        calibrate = Mock()
+        dlg = SettingsDialog(
+            AppConfig(audio_device_id=42, audio_device_name="USB mic"),
+            devices=[(1, "Laptop mic")],
+            calibrate_fn=calibrate,
+        )
+        self.addCleanup(dlg.deleteLater)
+        with patch("src.settings_dialog.QMessageBox.warning") as warning:
+            dlg._on_calibrate()
+        warning.assert_called_once()
+        calibrate.assert_not_called()
+        self.assertIsNone(dlg._calib_thread)
+
+    def test_calibration_revalidates_current_identity_before_using_selected_id(self) -> None:
+        from src.audio import AudioDevice
+
+        for name in ("USB mic", "Reassigned mic"):
+            with self.subTest(current_name=name):
+                calibrate = Mock(return_value=7.5)
+                dlg = SettingsDialog(
+                    AppConfig(audio_device_id=2, audio_device_name="USB mic"),
+                    devices=[(2, "USB mic")],
+                    calibrate_fn=calibrate,
+                )
+                try:
+                    with (
+                        patch("src.audio.list_devices", return_value=[AudioDevice(2, name, 1)]),
+                        patch("src.settings_dialog.QMessageBox") as message,
+                    ):
+                        dlg._on_calibrate()
+                        self.assertTrue(dlg._calib_thread.wait(5000))
+                        QApplication.processEvents()
+                    if name == "USB mic":
+                        calibrate.assert_called_once_with(2)
+                        self.assertEqual(dlg._rms_spin.value(), 7.5)
+                    else:
+                        calibrate.assert_not_called()
+                        message.warning.assert_called_once()
+                finally:
+                    dlg.deleteLater()
 
 
 class LanguageSettingsTests(unittest.TestCase):

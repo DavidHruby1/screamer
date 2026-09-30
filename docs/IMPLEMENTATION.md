@@ -41,8 +41,8 @@ Application wiring uses these contracts; private helpers are implementation deta
 
 ```python
 class AppError(Enum):
-    MIC_UNAVAILABLE = "No microphone detected. Check your audio settings."
-    MIC_DISCONNECTED = "Microphone disconnected during recording."
+    MIC_UNAVAILABLE = "Microphone unavailable. Open Settings > Audio, refresh devices, and try again."
+    MIC_DISCONNECTED = "Microphone capture failed. Check Settings > Audio and try again."
     STT_FAILED = "Transcription failed. Check your API key and internet."
     STT_FALLBACK_USED = "Primary STT failed. Used fallback provider."
     LLM_FAILED = "AI rewrite failed. Using raw transcription."
@@ -202,6 +202,18 @@ def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]: ...
 class AudioDevice:
     id: int; name: str; channels: int
 
+@dataclass(frozen=True)
+class AudioDeviceIdentity:
+    id: int; name: str  # Actual opened PortAudio index/name, not stable hardware identity.
+
+@dataclass(frozen=True)
+class CaptureSnapshot:
+    level_rms: float
+    has_callback_data: bool
+    capture_error: str | None
+    device: AudioDeviceIdentity | None
+    input_status: str = ""  # Latest transient status; not a fatal-error diagnosis.
+
 def list_devices() -> list[AudioDevice]: ...
     """Raise ScreamerError(AppError.MIC_UNAVAILABLE) if none found."""
 
@@ -213,11 +225,26 @@ class AudioRecorder:
         """Return max(noise_floor * 2.0, DEFAULT_RMS_THRESHOLD); measurement failure falls back to 5.0."""
     def start(self) -> None: ...
         """Open and start the microphone; on failure close the stream and raise MIC_UNAVAILABLE."""
+    def snapshot(self) -> CaptureSnapshot: ...
+        """Immutable evidence under the recorder lock; no enumeration or audio copy.
+        Before callbacks: level 0, has_callback_data False. Captured zeros: True, level 0."""
     def stop(self) -> bytes: ...
-        """Return 16kHz mono int16 WAV bytes. Raise ScreamerError(AppError.MIC_DISCONNECTED) on failure."""
+        """Return mono int16 WAV; short/quiet capture returns b"". A valid-length
+        attempt without samples, unexpected stream finish, or stop/close failure
+        raises MIC_DISCONNECTED and discards frames. Late callbacks cannot append."""
 
-def resolve_device(preferred_id: int | None, preferred_name: str) -> int | None: ...
-    """Matching ID/name, then exact name, then substring, then current system default input."""
+def resolve_device(
+    preferred_id: int | None,
+    preferred_name: str,
+    *,
+    devices: list[tuple[int, str]] | None = None,
+) -> int | None: ...
+    """None intentionally defers to the stream's current system default. Otherwise
+    enumerate fresh input devices (or use the supplied input-only list). Match an
+    ID with an agreeing exact normalized name, or an existing ID with no saved name.
+    A missing ID can remap by one unique exact-name match. Conflicts, duplicate
+    saved names, missing evidence, and substring-only matches raise MIC_UNAVAILABLE;
+    explicit selection never falls back to the default. Strip the default annotation."""
 ```
 
 ### hotkey.py
@@ -295,6 +322,10 @@ class RecordingSnackbar(QWidget):
     Never takes focus or appears in the taskbar."""
     def show_state(self, label: str, dot_rgb: tuple[int, int, int]) -> None: ...
     def hide_state(self) -> None: ...
+    def set_input_status(self, device_label: str, level: float, has_callback_data: bool) -> None: ...
+        """Recording-only label and clamped 0..1 meter; no samples differs from measured quiet.
+        Main polls every 100 ms during recording and supplies min(block_RMS / 32767, 1).
+        Processing/idle reset the meter. No gain, speech-quality, or device-health claim."""
 ```
 
 ### settings_dialog.py
@@ -310,13 +341,17 @@ class SettingsDialog(QDialog):
         parent: QWidget | None = None,
         devices: list[tuple[int, str]] | None = None,
         calibrate_fn: Callable[[int | None], float] | None = None,
+        refresh_devices_fn: Callable[[], list[tuple[int, str]]] | None = None,
     ): ...
         """4-tab dialog (General, STT, LLM, Audio) prefilled from config.
         Edits a copy; Apply and OK persist validated settings.
         *devices*: list of (device_id, display_name) for the Audio tab.
-        *calibrate_fn*: fn(device_id) -> float for RMS calibration."""
+        *calibrate_fn*: fn(device_id) -> float for RMS calibration, after fresh identity validation.
+        *refresh_devices_fn*: user-triggered enumeration; None disables Refresh."""
     def get_config(self) -> AppConfig: ...
         """Return edited config. Call after exec() returns Accepted."""
+    def refresh_devices(self) -> None: ...
+        """Preserve unresolved choice; on enumeration failure keep the existing list and warn."""
 
 # if __name__ == "__main__": launches standalone for testing
 ```
@@ -356,7 +391,7 @@ No public exports. Entry point only:
 | Rule | Detail |
 |------|--------|
 | Composition root | `main.py` imports all other modules. Nothing imports `main.py`. |
-| Settings dialog | `settings_dialog.py` imports `config.py`, `startup.py`, and `utils.py`. |
+| Settings dialog | `settings_dialog.py` imports `config.py`, `startup.py`, `utils.py`, and the shared `audio.py` device-resolution policy. |
 | Shared utilities | `audio.py`, `hotkey.py`, `stt.py`, `rewrite.py`, `injector.py`, `startup.py` may import `utils.py`. |
 | Zero peer imports | The six backend modules must NOT import each other. |
 | Config consumer | `stt.py` and `rewrite.py` import config value types and receive `AppConfig` as a parameter; `audio.py` and `hotkey.py` use config constants and value objects. |
@@ -437,7 +472,16 @@ ruff format --check src/ tests/ .github/scripts/
 - Apply and OK save before updating the Windows startup registration. A registry failure
   leaves the requested setting saved, reports the partial result and permits retrying Apply/OK.
 - Unavailable saved microphones remain visible as unavailable; unrelated edits do not
-  replace the saved selection with the system default.
+  replace the saved selection with the system default. Settings Refresh is explicit;
+  conflicts/duplicate names remain unresolved. Calibration validates the selected
+  identity against fresh input enumeration in its existing worker before measuring.
+- The recording-only level timer reads one coherent latest audio snapshot every 100 ms.
+  The overlay labels the actual opened input (or unknown identity), distinguishes waiting
+  from captured quiet, and displays fixed full-scale RMS. Transient PortAudio flags are
+  observations, not repeated warnings. Unexpected stream finish cancels capture once;
+  valid-length no-data and stop/close errors report capture failure rather than silence.
+  Polling stops before finalize, discard, disable, start failure, and exit. Fresh resolution
+  on the next recording permits retry/reselection, not automatic source switching or restart.
 - Exit cancels queued processing, stops audio, and waits for the active network call and
   calibration thread to finish before saving settings and quitting Qt. A stalled network
   request can delay exit; the worker is never force-terminated. A failed shutdown save is
