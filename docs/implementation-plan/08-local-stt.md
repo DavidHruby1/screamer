@@ -1,5 +1,11 @@
 # Feature 8: Local STT Server Support
 
+> **Status (2026-09-30):** code implemented. A Linux CPU smoke passed against the
+> pinned Speaches configuration documented in [LOCAL-STT.md](../LOCAL-STT.md), but
+> final automated checks and Windows/offline acceptance remain open. This is not a
+> certified Windows offline preset, a release claim, or a local-only privacy guarantee.
+> Current API/config behavior is canonical in [IMPLEMENTATION.md](../IMPLEMENTATION.md).
+
 ## Summary
 
 This feature lets the existing OpenAI-compatible STT path call a local server without requiring an API key. It is an STT-only configuration and validation change: retain manual endpoint/model fields, multipart request behavior, existing authenticated cloud providers, and optional fallback. Candidate local servers are not certified by their product names; compatibility must be verified against an exact version/configuration before publishing a preset or claiming support.

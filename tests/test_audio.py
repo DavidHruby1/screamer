@@ -1,9 +1,11 @@
+import io
 import unittest
+import wave
 from unittest.mock import patch
 
 import numpy as np
 
-from src.audio import AudioRecorder, default_input_device_id, resolve_device
+from src.audio import AudioDeviceIdentity, AudioRecorder, default_input_device_id, resolve_device
 from src.config import DEFAULT_RMS_THRESHOLD
 from src.utils import AppError, ScreamerError
 
@@ -86,7 +88,29 @@ class AudioDeviceDefaultTests(unittest.TestCase):
             },
         )
         with patch("src.audio.sd", fake_sd):
-            self.assertEqual(resolve_device(None, "Microphone"), 1)
+            self.assertEqual(resolve_device(42, "Microphone"), 1)
+
+    def test_explicit_selection_requires_consistent_unique_identity(self) -> None:
+        devices = [(0, "Laptop"), (1, "USB mic (Default input)")]
+        self.assertEqual(resolve_device(1, " USB MIC ", devices=devices), 1)
+        self.assertEqual(resolve_device(1, "", devices=devices), 1)
+        self.assertEqual(resolve_device(42, "USB mic", devices=devices), 1)
+        for device_id, name, available in (
+            (0, "USB mic", devices),
+            (42, "", devices),
+            (42, "USB", devices),
+            (42, "Absent mic", devices),
+            (1, "USB mic", [(1, "USB mic"), (2, "USB mic")]),
+        ):
+            with self.subTest(device_id=device_id, name=name, available=available):
+                with self.assertRaises(ScreamerError) as error:
+                    resolve_device(device_id, name, devices=available)
+                self.assertEqual(error.exception.code, AppError.MIC_UNAVAILABLE)
+
+    def test_intentional_default_defers_to_stream_without_explicit_name_matching(self) -> None:
+        with patch("src.audio.list_devices") as enumerate_devices:
+            self.assertIsNone(resolve_device(None, "Old microphone"))
+        enumerate_devices.assert_not_called()
 
     def test_default_input_device_accepts_sounddevice_pair(self) -> None:
         fake_sd = FakeSoundDeviceDefaults(FakeInputOutputPair(3, 9))
@@ -129,11 +153,12 @@ class AudioStreamTests(unittest.TestCase):
     def test_failed_start_closes_partially_opened_stream(self) -> None:
         class Stream:
             closed = False
+            device = 2
 
             def start(self):
                 raise OSError("device busy")
 
-            def close(self):
+            def close(self, *, ignore_errors):
                 self.closed = True
 
         stream = Stream()
@@ -150,10 +175,10 @@ class AudioStreamTests(unittest.TestCase):
         class Stream:
             closed = False
 
-            def stop(self):
+            def stop(self, *, ignore_errors):
                 raise OSError("disconnected")
 
-            def close(self):
+            def close(self, *, ignore_errors):
                 self.closed = True
 
         stream = Stream()
@@ -164,6 +189,177 @@ class AudioStreamTests(unittest.TestCase):
         self.assertEqual(error.exception.code, AppError.MIC_DISCONNECTED)
         self.assertTrue(stream.closed)
         self.assertFalse(recorder.is_recording)
+
+
+class FakeCaptureStream:
+    device = 2
+
+    def __init__(self, callback, finished_callback) -> None:
+        self.callback = callback
+        self.finished_callback = finished_callback
+        self.start_error = False
+        self.stop_error = False
+        self.close_error = False
+        self.closed = False
+
+    def feed(self, samples, status="") -> None:
+        self.callback(samples, len(samples), None, status)
+
+    def start(self) -> None:
+        if self.start_error:
+            self.feed(np.full((160, 1), 1200, dtype=np.int16))
+            raise OSError("device busy")
+
+    def stop(self, *, ignore_errors) -> None:
+        assert ignore_errors is False
+        # Backends may finish an in-flight callback while stop is in progress.
+        self.feed(np.full((160, 1), 5000, dtype=np.int16))
+        self.finished_callback()
+        if self.stop_error:
+            raise OSError("stop failed")
+
+    def close(self, *, ignore_errors) -> None:
+        assert ignore_errors is False
+        self.closed = True
+        if self.close_error:
+            raise OSError("close failed")
+
+
+class FakeCaptureBackend:
+    PortAudioError = OSError
+
+    def __init__(self) -> None:
+        self.stream = None
+        self.start_error = False
+
+    def InputStream(self, **kwargs):
+        self.stream = FakeCaptureStream(kwargs["callback"], kwargs["finished_callback"])
+        self.stream.start_error = self.start_error
+        return self.stream
+
+    def query_devices(self, device_id, kind):
+        if device_id != 2 or kind != "input":
+            raise ValueError("missing device")
+        return {"name": "Actual USB microphone"}
+
+
+class AudioCaptureTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.backend = FakeCaptureBackend()
+        patcher = patch("src.audio.sd", self.backend)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.now = 10.0
+        clock = patch("src.audio.time.monotonic", side_effect=lambda: self.now)
+        clock.start()
+        self.addCleanup(clock.stop)
+        self.recorder = AudioRecorder()
+        self.recorder.start()
+        self.addCleanup(self._close_recorder)
+
+    def _close_recorder(self) -> None:
+        if self.recorder.is_recording:
+            try:
+                self.recorder.stop()
+            except ScreamerError:
+                pass
+
+    def test_latest_level_and_actual_identity_with_unchanged_wav_samples(self) -> None:
+        initial = self.recorder.snapshot()
+        self.assertFalse(initial.has_callback_data)
+        self.assertEqual(initial.level_rms, 0.0)
+        self.assertEqual(initial.device, AudioDeviceIdentity(2, "Actual USB microphone"))
+        samples = np.array([[1200], [-1200], [1200], [-1200]], dtype=np.int16)
+        self.backend.stream.feed(samples)
+        capture = self.recorder.snapshot()
+        self.assertTrue(capture.has_callback_data)
+        self.assertEqual(capture.level_rms, 1200.0)
+        self.backend.stream.feed(np.full((4, 1), 600, dtype=np.int16))
+        self.assertEqual(self.recorder.snapshot().level_rms, 600.0)
+        self.now = 11.0
+        wav = self.recorder.stop()
+        with wave.open(io.BytesIO(wav), "rb") as audio:
+            self.assertEqual(
+                (audio.getframerate(), audio.getnchannels(), audio.getsampwidth()), (16000, 1, 2)
+            )
+            self.assertEqual(
+                audio.readframes(8),
+                samples.tobytes() + np.full((4, 1), 600, dtype=np.int16).tobytes(),
+            )
+        self.assertEqual(self.recorder._frames, [])
+        self.backend.stream.feed(np.full((160, 1), 9000, dtype=np.int16))
+        self.assertEqual(self.recorder.snapshot().level_rms, 600.0)
+        self.assertEqual(self.recorder._frames, [])
+
+    def test_captured_zero_and_quiet_input_are_not_missing_data(self) -> None:
+        for value in (0, 2):
+            with self.subTest(value=value):
+                if not self.recorder.is_recording:
+                    self.recorder.start()
+                self.backend.stream.feed(np.full((160, 1), value, dtype=np.int16))
+                capture = self.recorder.snapshot()
+                self.assertTrue(capture.has_callback_data)
+                self.assertEqual(capture.level_rms, value)
+                self.now += 1.0
+                self.assertEqual(self.recorder.stop(), b"")
+                self.assertEqual(self.recorder.rms_threshold, DEFAULT_RMS_THRESHOLD)
+
+    def test_no_callback_after_valid_duration_is_capture_error(self) -> None:
+        self.now = 11.0
+        with self.assertRaises(ScreamerError) as error:
+            self.recorder.stop()
+        self.assertEqual(error.exception.code, AppError.MIC_DISCONNECTED)
+        self.assertIn("No microphone samples", error.exception.detail)
+        self.assertEqual(self.recorder._frames, [])
+        self.assertFalse(self.recorder.is_recording)
+
+    def test_short_capture_still_discards_without_no_data_error(self) -> None:
+        self.now = 10.1
+        self.assertEqual(self.recorder.stop(), b"")
+
+    def test_transient_status_is_observation_not_fatal_failure(self) -> None:
+        self.backend.stream.feed(np.full((160, 1), 1200, dtype=np.int16), "input overflow")
+        capture = self.recorder.snapshot()
+        self.assertEqual(capture.input_status, "input overflow")
+        self.assertIsNone(capture.capture_error)
+        self.now = 11.0
+        self.assertTrue(self.recorder.stop())
+
+    def test_unexpected_stream_finish_discards_partial_capture(self) -> None:
+        self.backend.stream.feed(np.full((160, 1), 1200, dtype=np.int16))
+        self.backend.stream.finished_callback()
+        self.assertIsNotNone(self.recorder.snapshot().capture_error)
+        self.now = 11.0
+        with self.assertRaises(ScreamerError) as error:
+            self.recorder.stop()
+        self.assertEqual(error.exception.code, AppError.MIC_DISCONNECTED)
+        self.assertEqual(self.recorder._frames, [])
+
+    def test_stop_and_close_failure_never_produce_partial_wav(self) -> None:
+        for failure in ("stop_error", "close_error"):
+            with self.subTest(failure=failure):
+                if not self.recorder.is_recording:
+                    self.recorder.start()
+                self.backend.stream.feed(np.full((160, 1), 1200, dtype=np.int16))
+                setattr(self.backend.stream, failure, True)
+                self.now += 1.0
+                with self.assertRaises(ScreamerError) as error:
+                    self.recorder.stop()
+                self.assertEqual(error.exception.code, AppError.MIC_DISCONNECTED)
+                self.assertTrue(self.backend.stream.closed)
+                self.assertFalse(self.recorder.is_recording)
+                self.assertEqual(self.recorder._frames, [])
+
+    def test_start_failure_clears_partial_frames_and_ignores_late_callback(self) -> None:
+        self.recorder.stop()
+        self.backend.start_error = True
+        with self.assertRaises(ScreamerError) as error:
+            self.recorder.start()
+        self.assertEqual(error.exception.code, AppError.MIC_UNAVAILABLE)
+        self.assertTrue(self.backend.stream.closed)
+        self.backend.stream.feed(np.full((160, 1), 5000, dtype=np.int16))
+        self.assertEqual(self.recorder._frames, [])
+        self.assertFalse(self.recorder.is_recording)
 
 
 if __name__ == "__main__":

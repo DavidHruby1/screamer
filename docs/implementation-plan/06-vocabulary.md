@@ -1,9 +1,8 @@
 # 6. Custom Vocabulary / Personal Dictionary
 
-> **Status:** planned, not shipped. This plan expands P2 from
+> **Status (2026-09-30):** code implemented; automated final checks and transcription-quality review remain pending. The current config, request and corruption contracts are canonical in [IMPLEMENTATION.md](../IMPLEMENTATION.md). This detailed design expands P2 from
 > [FEATURES.md](../FEATURES.md#6-custom-vocabulary--personal-dictionary-p2).
-> No vocabulary field or STT prompt support exists in the current config or
-> request builder.
+> Vocabulary and provider-specific STT prompt support now exist in config and request construction.
 
 ## Summary
 
@@ -193,7 +192,7 @@ avoiding a lost update when Apply reloads/persists settings.
 
 ## Key Dependencies
 
-- Feature 4's prompt fidelity rules apply: treat transcript as data; preserve
+- The existing cleanup prompt contract applies: treat transcript as data; preserve
   intent, names, identifiers and language choices; do not answer, translate or
   invent. Vocabulary is a nudge, not exact substitution.
 - Feature 1 language remains independently selectable and frozen with the same

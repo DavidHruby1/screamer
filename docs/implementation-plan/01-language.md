@@ -1,7 +1,7 @@
 # 1. Quick Language Switching in the Tray
 
 > **Status:** code implemented (2026-09-29); packaged Windows tray and long-recording
-> manual acceptance still pending. See [progress](../IMPLEMENTATION-PLAN.md#progress-2026-09-29)
+> manual acceptance still pending. See [progress](../IMPLEMENTATION-PLAN.md#progress-2026-09-30)
 > and the shipped API in [IMPLEMENTATION.md](../IMPLEMENTATION.md).
 > This plan expands P0 from [FEATURES.md](../FEATURES.md#1-quick-language-switching-in-the-tray-p0).
 

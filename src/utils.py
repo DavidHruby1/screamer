@@ -17,8 +17,10 @@ APP_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), 
 
 
 class AppError(Enum):
-    MIC_UNAVAILABLE = "No microphone detected. Check your audio settings."
-    MIC_DISCONNECTED = "Microphone disconnected during recording."
+    MIC_UNAVAILABLE = (
+        "Microphone unavailable. Open Settings > Audio, refresh devices, and try again."
+    )
+    MIC_DISCONNECTED = "Microphone capture failed. Check Settings > Audio and try again."
     STT_FAILED = "Transcription failed. Check your API key and internet."
     STT_FALLBACK_USED = "Primary STT failed. Used fallback provider."
     LLM_FAILED = "AI rewrite failed. Using raw transcription."
@@ -26,11 +28,18 @@ class AppError(Enum):
     NO_SPEECH = "No speech detected. Try speaking louder or closer."
     DICTATION_ACTIVE = "Finish the current dictation before opening Settings."
     INJECTION_FAILED = "Could not type text. Focus may have changed."
+    OUTPUT_WITHHELD = (
+        "Typing withheld because the target changed. Open Recovery to copy or arm insertion."
+    )
+    CLIPBOARD_FAILED = "Could not copy text. Open Recovery to try explicitly."
+    HISTORY_STORAGE_FAILED = "Could not read or save encrypted history. RAM recovery remains available; explicitly Clear to remove an unreadable file."
+    HISTORY_DISABLED = "Enable history to delete a saved entry, or explicitly Clear all."
     HOTKEY_CONFLICT = "Hotkey conflict. Choose a different hotkey."
     HOTKEY_INVALID = "That key combination can't be used. Add a modifier or pick another key."
     HOTKEY_HOOK_FAILED = "Could not install the global hotkey listener."
     UNSUPPORTED_PLATFORM = "This feature is only available on Windows."
     KEY_STORAGE_FAILED = "Could not save or load API keys securely."
+    CONFIG_INVALID = "Invalid settings. Open Settings and repair the rewrite profile configuration."
     STARTUP_REGISTRATION_FAILED = "Could not update Windows startup setting."
 
 
@@ -48,6 +57,8 @@ class SignalBridge(QObject):
 
     hotkey_pressed = Signal()
     hotkey_released = Signal()
+    recovery_requested = Signal()
+    recovery_cancelled = Signal()
     error_occurred = Signal(AppError)
 
 

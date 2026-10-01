@@ -35,6 +35,21 @@ class AudioDevice:
     channels: int
 
 
+@dataclass(frozen=True)
+class AudioDeviceIdentity:
+    id: int
+    name: str
+
+
+@dataclass(frozen=True)
+class CaptureSnapshot:
+    level_rms: float
+    has_callback_data: bool
+    capture_error: str | None
+    device: AudioDeviceIdentity | None
+    input_status: str = ""
+
+
 def _require_sd():
     """Raise if sounddevice is not available."""
     if sd is None:
@@ -100,6 +115,12 @@ class AudioRecorder:
         self._lock = threading.Lock()
         self._start_time: float = 0.0
         self._rms_threshold: float = DEFAULT_RMS_THRESHOLD
+        self._accepting_frames = False
+        self._level_rms = 0.0
+        self._has_callback_data = False
+        self._capture_error: str | None = None
+        self._device: AudioDeviceIdentity | None = None
+        self._input_status = ""
 
     @property
     def rms_threshold(self) -> float:
@@ -113,6 +134,17 @@ class AudioRecorder:
     def is_recording(self) -> bool:
         """True if the audio stream is currently open and recording."""
         return self._stream is not None
+
+    def snapshot(self) -> CaptureSnapshot:
+        """Return coherent capture evidence without copying audio or querying devices."""
+        with self._lock:
+            return CaptureSnapshot(
+                self._level_rms,
+                self._has_callback_data,
+                self._capture_error,
+                self._device,
+                self._input_status,
+            )
 
     def calibrate(self, duration: float = 2.0) -> float:
         """Record ambient noise and return a usable silence-gate threshold."""
@@ -142,15 +174,32 @@ class AudioRecorder:
             return DEFAULT_RMS_THRESHOLD
 
     def _callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:  # type: ignore[no-untyped-def]
-        if status:
-            log.warning("[audio] %s", status)
+        level_rms = float(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
         with self._lock:
+            if not self._accepting_frames:
+                return
             self._frames.append(indata.copy())
+            self._level_rms = level_rms
+            self._has_callback_data = True
+            self._input_status = str(status) if status else ""
+
+    def _on_stream_finished(self) -> None:
+        with self._lock:
+            if self._accepting_frames:
+                self._capture_error = "Input stream stopped unexpectedly."
+                self._accepting_frames = False
 
     def start(self) -> None:
         """Begin recording from the configured device."""
         _require_sd()
-        self._frames = []
+        with self._lock:
+            self._frames.clear()
+            self._level_rms = 0.0
+            self._has_callback_data = False
+            self._capture_error = None
+            self._device = None
+            self._input_status = ""
+            self._accepting_frames = True
         self._start_time = time.monotonic()
         try:
             stream = sd.InputStream(
@@ -159,13 +208,27 @@ class AudioRecorder:
                 dtype=DTYPE,
                 device=self._device_id,
                 callback=self._callback,
+                finished_callback=self._on_stream_finished,
             )
             try:
+                opened_id = stream.device
+                try:
+                    name = str(sd.query_devices(opened_id, "input")["name"])
+                    with self._lock:
+                        self._device = AudioDeviceIdentity(opened_id, name)
+                except (sd.PortAudioError, ValueError):
+                    # Identity is optional evidence; never echo a guessed default.
+                    log.warning("Could not identify the opened input device")
                 stream.start()
             except Exception:
-                stream.close()
+                with self._lock:
+                    self._accepting_frames = False
+                stream.close(ignore_errors=False)
                 raise
         except Exception as e:
+            with self._lock:
+                self._accepting_frames = False
+                self._frames.clear()
             raise ScreamerError(AppError.MIC_UNAVAILABLE, str(e)) from e
         self._stream = stream
         log.info("Recording started (device=%s)", self._device_id)
@@ -173,7 +236,8 @@ class AudioRecorder:
     def stop(self) -> bytes:
         """Stop recording and return 16kHz mono int16 WAV bytes.
 
-        Raise ``ScreamerError(AppError.MIC_DISCONNECTED)`` on stream failure.
+        Raise ``ScreamerError(AppError.MIC_DISCONNECTED)`` on stream failure
+        or a valid-length attempt without callback data.
         Return empty bytes if the recording is too short or silent.
         """
         if self._stream is None:
@@ -181,29 +245,33 @@ class AudioRecorder:
 
         stream = self._stream
         self._stream = None
+        with self._lock:
+            self._accepting_frames = False
+            capture_error = self._capture_error
         try:
             try:
-                stream.stop()
+                stream.stop(ignore_errors=False)
             finally:
-                stream.close()
+                stream.close(ignore_errors=False)
         except Exception as e:
             with self._lock:
                 self._frames.clear()
             raise ScreamerError(AppError.MIC_DISCONNECTED, str(e)) from e
 
+        with self._lock:
+            frames = self._frames
+            self._frames = []
+        if capture_error is not None:
+            raise ScreamerError(AppError.MIC_DISCONNECTED, capture_error)
+
         duration = time.monotonic() - self._start_time
         if duration < MIN_DURATION:
-            with self._lock:
-                self._frames.clear()
             log.info("Recording too short (%.2fs); discarding", duration)
             return b""
 
-        with self._lock:
-            if not self._frames:
-                log.info("No frames captured; discarding")
-                return b""
-            audio_data = np.concatenate(self._frames, axis=0)
-            self._frames.clear()
+        if not frames:
+            raise ScreamerError(AppError.MIC_DISCONNECTED, "No microphone samples were received.")
+        audio_data = np.concatenate(frames, axis=0)
 
         rms = float(np.sqrt(np.mean(audio_data.astype(np.float64) ** 2)))
         log.info(
@@ -225,45 +293,43 @@ class AudioRecorder:
         return wav_bytes
 
 
-def resolve_device(preferred_id: int | None, preferred_name: str) -> int | None:
-    """Resolve saved device ID/name, falling back to the current default input."""
-    _require_sd()
-    clean_name = _clean_device_name(preferred_name)
+def resolve_device(
+    preferred_id: int | None,
+    preferred_name: str,
+    *,
+    devices: list[tuple[int, str]] | None = None,
+) -> int | None:
+    """Resolve explicit input identity without substitution; None means system default.
 
-    if preferred_id is not None:
-        try:
-            dev = sd.query_devices(preferred_id)
-            dev_name = str(dev["name"])
-            if dev["max_input_channels"] > 0 and (
-                not clean_name or clean_name.lower() == dev_name.lower()
-            ):
-                return preferred_id
-            if dev["max_input_channels"] > 0:
-                log.warning(
-                    "Preferred device ID %d is now '%s', expected '%s'; trying name search",
-                    preferred_id,
-                    dev_name,
-                    clean_name,
-                )
-        except (sd.PortAudioError, ValueError):
-            log.warning("Preferred device ID %d not found; trying name search", preferred_id)
-
-    if clean_name:
-        devices = sd.query_devices()
-        expected = clean_name.lower()
-        for exact in (True, False):
-            for i, dev in enumerate(devices):
-                if dev["max_input_channels"] <= 0:
-                    continue
-                name = str(dev["name"]).lower()
-                if (exact and name != expected) or (not exact and expected not in name):
-                    continue
-                log.info("Resolved device '%s' to ID %d", clean_name, i)
-                return i
-
-    default_id = default_input_device_id()
-    log.info("Using current default input device: %s", default_id)
-    return default_id
+    Settings may supply an input-only device list to use the same policy without
+    re-enumerating. A stale ID can migrate only to a unique exact-name match.
+    """
+    if preferred_id is None:
+        return None
+    if devices is None:
+        devices = [(dev.id, dev.name) for dev in list_devices()]
+    expected = _clean_device_name(preferred_name).casefold()
+    matches = []
+    current_name = None
+    for device_id, name in devices:
+        clean_name = _clean_device_name(name).casefold()
+        if device_id == preferred_id:
+            current_name = clean_name
+        if expected and clean_name == expected:
+            matches.append(device_id)
+    if len(matches) > 1:
+        raise ScreamerError(
+            AppError.MIC_UNAVAILABLE, "Microphone name is ambiguous; reselect input."
+        )
+    if current_name is not None:
+        if not expected or current_name == expected:
+            return preferred_id
+        raise ScreamerError(AppError.MIC_UNAVAILABLE, "Saved microphone ID/name no longer agree.")
+    if len(matches) == 1:
+        return matches[0]
+    raise ScreamerError(
+        AppError.MIC_UNAVAILABLE, "Selected microphone is unavailable; reselect input."
+    )
 
 
 # ---------------------------------------------------------------------------

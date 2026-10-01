@@ -56,16 +56,30 @@ class HotkeyMode(Enum):
 class HotkeyListener:
     """Low-level-hook hotkey listener with hold/toggle modes and trigger suppression."""
 
-    def __init__(self, hotkey: Hotkey, mode: HotkeyMode, bridge: SignalBridge) -> None:
+    def __init__(
+        self,
+        hotkey: Hotkey,
+        mode: HotkeyMode,
+        bridge: SignalBridge,
+        *,
+        recovery_hotkey: Hotkey | None = None,
+    ) -> None:
         self._hotkey = hotkey
         self._mode = mode
         self._bridge = bridge
+        self._recovery_hotkey = recovery_hotkey
+        self._recovery_enabled = recovery_hotkey is not None
+        self._recovery_registered = False
+        self._recovery_trigger_held = False
+        self._recovery_matched = False
+        self._recovery_pending = False
         self._thread: threading.Thread | None = None
         self._thread_id: int = 0
         self._stop_event = threading.Event()
         self._ready = threading.Event()
         # Matching state.
         self._held: set[int] = set()
+        self._recovery_held: set[int] = set()
         self._armed = False
         self._trigger_held = False
         # Keep ctypes callbacks alive across the message loop's lifetime.
@@ -84,8 +98,13 @@ class HotkeyListener:
         self._stop_event.clear()
         self._ready.clear()
         self._held.clear()
+        self._recovery_held.clear()
         self._armed = False
         self._trigger_held = False
+        self._recovery_enabled = self._recovery_hotkey is not None
+        self._recovery_trigger_held = False
+        self._recovery_matched = False
+        self._recovery_pending = False
         self._thread = threading.Thread(target=self._message_loop, daemon=True)
         self._thread.start()
         # Block until the loop thread has created its message queue and attempted
@@ -140,15 +159,39 @@ class HotkeyListener:
     # Pure matching core (OS-independent; unit-tested)
     # ------------------------------------------------------------------
 
-    def _on_kb_event(self, wparam: int, vk: int) -> bool:
+    def _on_kb_event(self, wparam: int, vk: int, flags: int = 0) -> bool:
         """Handle a keyboard hook event. Return True to suppress (swallow) it."""
+        if flags & 0x10:  # LLKHF_INJECTED; only physical keyboard events drive shortcuts
+            return False
+        if vk == 0x1B and wparam in _KEY_DOWN and self._recovery_hotkey is not None:
+            self._recovery_pending = False
+            self._bridge.recovery_cancelled.emit()
         mod = MODIFIER_VK_TO_NAME.get(vk)
         if mod is not None:
             if wparam in _KEY_DOWN:
                 self._held.add(vk)
             elif wparam in _KEY_UP:
                 self._held.discard(vk)
+            if wparam in _KEY_DOWN:
+                self._recovery_held.add(vk)
+            elif wparam in _KEY_UP:
+                self._recovery_held.discard(vk)
+                self._finish_recovery()
             return False  # modifiers always pass through
+
+        recovery = self._recovery_hotkey
+        if (
+            self._recovery_enabled
+            and recovery is not None
+            and recovery.kind == "key"
+            and vk == recovery.code
+        ):
+            if wparam in _KEY_DOWN:
+                if self._recovery_down():
+                    return True
+            elif wparam in _KEY_UP:
+                if self._recovery_up():
+                    return True
 
         if self._hotkey.kind != "key" or vk != self._hotkey.code:
             return False
@@ -159,8 +202,9 @@ class HotkeyListener:
             return self._trigger_up()
         return False
 
-    def _on_mouse_event(self, wparam: int, mouse_data: int) -> bool:
+    def _on_mouse_event(self, wparam: int, mouse_data: int, flags: int = 0) -> bool:
         """Handle a mouse hook event. Return True to suppress (swallow) it."""
+        injected = bool(flags & 0x01)  # LLMHF_INJECTED
         if wparam == WM_MBUTTONDOWN:
             btn, is_down = MOUSE_MIDDLE, True
         elif wparam == WM_MBUTTONUP:
@@ -177,9 +221,48 @@ class HotkeyListener:
         else:
             return False  # left/right/move/wheel — never our trigger
 
+        recovery = self._recovery_hotkey
+        if (
+            not injected
+            and self._recovery_enabled
+            and recovery is not None
+            and recovery.kind == "mouse"
+            and btn == recovery.code
+        ):
+            if self._recovery_down() if is_down else self._recovery_up():
+                return True
         if self._hotkey.kind != "mouse" or btn != self._hotkey.code:
             return False
         return self._trigger_down() if is_down else self._trigger_up()
+
+    def _recovery_down(self) -> bool:
+        recovery = self._recovery_hotkey
+        if recovery is None:
+            return False
+        if self._recovery_trigger_held:
+            return self._recovery_matched
+        self._recovery_trigger_held = True
+        if {MODIFIER_VK_TO_NAME[vk] for vk in self._recovery_held} != recovery.mods:
+            return False
+        self._recovery_matched = True
+        self._recovery_pending = True
+        return True
+
+    def _recovery_up(self) -> bool:
+        self._recovery_trigger_held = False
+        matched = self._recovery_matched
+        self._recovery_matched = False
+        self._finish_recovery()
+        return matched
+
+    def _finish_recovery(self) -> None:
+        recovery = self._recovery_hotkey
+        if not self._recovery_pending or self._recovery_trigger_held or recovery is None:
+            return
+        if {MODIFIER_VK_TO_NAME[vk] for vk in self._recovery_held} & recovery.mods:
+            return
+        self._recovery_pending = False
+        self._bridge.recovery_requested.emit()
 
     def _trigger_down(self) -> bool:
         if self._trigger_held:
@@ -243,14 +326,14 @@ class HotkeyListener:
         def kb_callback(ncode, wparam, lparam):
             if ncode == HC_ACTION:
                 kb = ctypes.cast(lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-                if self._on_kb_event(wparam, kb.vkCode):
+                if self._on_kb_event(wparam, kb.vkCode, kb.flags):
                     return 1
             return user32.CallNextHookEx(None, ncode, wparam, lparam)
 
         def mouse_callback(ncode, wparam, lparam):
             if ncode == HC_ACTION:
                 ms = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                if self._on_mouse_event(wparam, ms.mouseData):
+                if self._on_mouse_event(wparam, ms.mouseData, ms.flags):
                     return 1
             return user32.CallNextHookEx(None, ncode, wparam, lparam)
 
@@ -264,6 +347,8 @@ class HotkeyListener:
         # can deliver WM_QUIT via PostThreadMessageW even before the pump runs.
         msg = ctypes.wintypes.MSG()
         user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_NOREMOVE)
+
+        self._reserve_recovery(user32)
 
         self._kb_hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._kb_proc, hmod, 0)
         self._mouse_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, self._mouse_proc, hmod, 0)
@@ -289,6 +374,9 @@ class HotkeyListener:
         log.info("Message loop exited")
 
     def _uninstall(self, user32) -> None:
+        if self._recovery_registered:
+            user32.UnregisterHotKey(None, 1)
+            self._recovery_registered = False
         if self._kb_hook:
             user32.UnhookWindowsHookEx(self._kb_hook)
             self._kb_hook = None
@@ -296,9 +384,34 @@ class HotkeyListener:
             user32.UnhookWindowsHookEx(self._mouse_hook)
             self._mouse_hook = None
 
+    def _reserve_recovery(self, user32) -> None:
+        """Reserve registered keyboard chords without replacing another owner.
+
+        RegisterHotKey cannot discover other apps' low-level-hook bindings, nor
+        safely reserve mouse chords. Mouse recovery remains disabled at runtime
+        until a conflict-safe policy is available; dictation stays operational.
+        """
+        recovery = self._recovery_hotkey
+        if recovery is None:
+            return
+        if recovery.kind == "key":
+            modifiers = {"alt": 0x1, "ctrl": 0x2, "shift": 0x4, "win": 0x8}
+            mask = sum(modifiers[mod] for mod in recovery.mods)
+            self._recovery_registered = bool(
+                user32.RegisterHotKey(None, 1, mask | 0x4000, recovery.code)
+            )
+        self._recovery_enabled = self._recovery_registered
+        if not self._recovery_enabled:
+            log.warning("Recovery shortcut unavailable: conflict or unsupported reservation")
+            self._bridge.error_occurred.emit(AppError.HOTKEY_CONFLICT)
+
 
 def _declare_win32_functions(ctypes, user32, kernel32, hookproc, lresult) -> None:
     wintypes = ctypes.wintypes
+    user32.RegisterHotKey.restype = wintypes.BOOL
+    user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
+    user32.UnregisterHotKey.restype = wintypes.BOOL
+    user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
     kernel32.GetModuleHandleW.restype = ctypes.c_void_p
     kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
     kernel32.GetCurrentThreadId.restype = wintypes.DWORD

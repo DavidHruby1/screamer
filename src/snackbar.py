@@ -63,6 +63,9 @@ class RecordingSnackbar(QWidget):
         self._label = "Recording"
         self._dot = QColor(229, 57, 53)
         self._pulse = 1.0  # 0.25..1.0, drives dot alpha
+        self._input_label: str | None = None
+        self._input_level = 0.0
+        self._has_callback_data = False
 
         # Looping pulse on the custom "pulse" property (ping-pong via mid keyframe).
         self._pulse_anim = QPropertyAnimation(self, b"pulse", self)
@@ -97,10 +100,37 @@ class RecordingSnackbar(QWidget):
         return self._pulse_anim.state() == QAbstractAnimation.State.Running
 
     # --- show / hide ----------------------------------------------------
+    def set_input_status(self, device_label: str, level: float, has_callback_data: bool) -> None:
+        """Display fixed full-scale RMS (0..1), not gain or recognition confidence."""
+        if self._label != "Recording":
+            return
+        self._input_label = device_label
+        self._input_level = max(0.0, min(level, 1.0)) if has_callback_data else 0.0
+        self._has_callback_data = has_callback_data
+        self._resize_to_content()
+        self._reposition()
+        self.update()
+
+    def input_status_text(self) -> str:
+        if self._input_label is None:
+            return ""
+        observation = "Input level" if self._has_callback_data else "Waiting for samples"
+        prefix = f"{observation} - "
+        fm = QFontMetrics(self.font())
+        device_width = max(0, self.width() - 2 * self._PAD_X - fm.horizontalAdvance(prefix))
+        device_label = fm.elidedText(self._input_label, Qt.TextElideMode.ElideRight, device_width)
+        return prefix + device_label
+
+    def input_level(self) -> float:
+        return self._input_level
+
     def show_state(self, label: str, dot_rgb: tuple[int, int, int]) -> None:
         """Show (or update) the pill with *label* and dot color *dot_rgb*."""
         self._label = label
         self._dot = QColor(*dot_rgb)
+        self._input_label = "Input device unknown" if label == "Recording" else None
+        self._input_level = 0.0
+        self._has_callback_data = False
         self._resize_to_content()
         self._reposition()
         # Cancel any in-flight fade first so a pending fade-out (from a recent
@@ -121,6 +151,9 @@ class RecordingSnackbar(QWidget):
     def hide_state(self) -> None:
         """Fade out and hide. Safe to call when already hidden."""
         self._pulse_anim.stop()
+        self._input_label = None
+        self._input_level = 0.0
+        self._has_callback_data = False
         if not self.isVisible():
             return
         self._fade.stop()
@@ -140,6 +173,23 @@ class RecordingSnackbar(QWidget):
         text_h = fm.height()
         width = self._PAD_X + (2 * self._DOT_R) + self._GAP + text_w + self._PAD_X
         height = self._PAD_Y + max(text_h, 2 * self._DOT_R) + self._PAD_Y
+        if self._input_label is not None:
+            prefix_w = fm.horizontalAdvance("Waiting for samples - ")
+            status_padding = 4 + 2 * self._PAD_X
+            # Match the separate prefix/device advances used by input_status_text.
+            status_w = prefix_w + fm.horizontalAdvance(self._input_label) + status_padding
+            max_status_w = prefix_w + fm.horizontalAdvance("M" * 32) + status_padding
+            screen = QGuiApplication.primaryScreen()
+            if screen is not None:
+                max_status_w = min(
+                    max_status_w, screen.availableGeometry().width() - 2 * self._MARGIN
+                )
+            width = max(
+                width,
+                prefix_w + status_padding,
+                min(status_w, max_status_w),
+            )
+            height += text_h + 14
         self.setFixedSize(width, height)
 
     def _reposition(self) -> None:
@@ -169,7 +219,9 @@ class RecordingSnackbar(QWidget):
         dot = QColor(self._dot)
         dot.setAlphaF(max(0.0, min(1.0, self._pulse)))
         cx = rect.x() + self._PAD_X + self._DOT_R
-        cy = rect.center().y()
+        fm = QFontMetrics(self.font())
+        title_height = max(fm.height(), 2 * self._DOT_R)
+        cy = self._PAD_Y + title_height // 2
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(dot)
         painter.drawEllipse(QPoint(cx, cy), self._DOT_R, self._DOT_R)
@@ -178,8 +230,22 @@ class RecordingSnackbar(QWidget):
         painter.setPen(QColor(245, 245, 247))
         text_x = cx + self._DOT_R + self._GAP
         painter.drawText(
-            QRect(text_x, rect.y(), rect.width() - text_x - self._PAD_X, rect.height()),
+            QRect(text_x, self._PAD_Y, rect.width() - text_x - self._PAD_X, title_height),
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
             self._label,
         )
+        if self._input_label is not None:
+            input_width = rect.width() - 2 * self._PAD_X
+            painter.setPen(QColor(190, 190, 195))
+            painter.drawText(
+                QRect(self._PAD_X, self._PAD_Y + title_height, input_width, fm.height()),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                self.input_status_text(),
+            )
+            meter_y = self._PAD_Y + title_height + fm.height() + 4
+            painter.fillRect(QRect(self._PAD_X, meter_y, input_width, 5), QColor(75, 75, 80))
+            painter.fillRect(
+                QRect(self._PAD_X, meter_y, round(input_width * self._input_level), 5),
+                QColor(90, 205, 150),
+            )
         painter.end()

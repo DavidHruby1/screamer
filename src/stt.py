@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import logging
+import json
 from time import perf_counter
 
 import httpx
 
 from src import http_client
-from src.config import AppConfig, ProviderConfig, parse_custom_headers
+from src.config import (
+    AppConfig,
+    ProviderConfig,
+    parse_custom_headers,
+    normalize_vocabulary_entries,
+    stt_provider_is_configured,
+)
 from src.utils import AppError, PipelineResult, ScreamerError, log_duration
 
 log = logging.getLogger(__name__)
@@ -31,8 +38,18 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
         primary = config.stt_provider()
         fallback = config.stt_fallback_provider()
 
-        if not primary.is_complete and not fallback.is_complete:
-            raise ScreamerError(AppError.STT_FAILED, "No STT API key configured")
+        if not stt_provider_is_configured(primary) and not (
+            fallback.enabled and stt_provider_is_configured(fallback.provider)
+        ):
+            raise ScreamerError(AppError.STT_FAILED, "No STT base URL and model configured")
+
+        vocabulary_prompt = ""
+        if config.stt_prompt_primary_enabled or config.stt_prompt_fallback_enabled:
+            terms = normalize_vocabulary_entries(config.vocabulary_entries)
+            if terms:
+                vocabulary_prompt = "Preferred spellings: " + ", ".join(
+                    json.dumps(term, ensure_ascii=False) for term in terms
+                )
 
         for is_fallback, provider, language in (
             (False, primary, config.stt_language),
@@ -40,11 +57,21 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
         ):
             if is_fallback and not fallback.enabled:
                 continue
-            if not provider.is_complete:
+            if not stt_provider_is_configured(provider):
                 continue
 
             try:
-                text = _call_stt(provider=provider, language=language, audio_wav=audio_wav)
+                prompt_enabled = (
+                    config.stt_prompt_fallback_enabled
+                    if is_fallback
+                    else config.stt_prompt_primary_enabled
+                )
+                text = _call_stt(
+                    provider=provider,
+                    language=language,
+                    audio_wav=audio_wav,
+                    prompt=vocabulary_prompt if prompt_enabled else "",
+                )
                 if text is not None:
                     if is_fallback:
                         warnings.append(AppError.STT_FALLBACK_USED)
@@ -69,15 +96,18 @@ def _call_stt(
     provider: ProviderConfig,
     language: str,
     audio_wav: bytes,
+    prompt: str = "",
 ) -> str | None:
     """POST to an OpenAI-compatible STT endpoint. Returns text, or None if unconfigured."""
-    if not provider.api_key:
+    if not stt_provider_is_configured(provider):
         return None
 
     url = provider.base_url.rstrip("/") + "/audio/transcriptions"
     response_format = "json" if provider.is_groq else "verbose_json"
 
-    headers = httpx.Headers({"Authorization": f"Bearer {provider.api_key}"})
+    headers = httpx.Headers()
+    if provider.api_key:
+        headers["Authorization"] = f"Bearer {provider.api_key}"
     try:
         headers.update(parse_custom_headers(provider.custom_headers))
     except ValueError as e:
@@ -86,6 +116,8 @@ def _call_stt(
     data: dict[str, str] = {"model": provider.model, "response_format": response_format}
     if language:
         data["language"] = language
+    if prompt:
+        data["prompt"] = prompt
 
     files = {"file": ("recording.wav", audio_wav, "audio/wav")}
 
@@ -146,9 +178,12 @@ if __name__ == "__main__":
     cfg = load_config()
     cfg = import_from_env(cfg)
 
-    if not cfg.stt_api_key:
+    fallback = cfg.stt_fallback_provider()
+    if not stt_provider_is_configured(cfg.stt_provider()) and not (
+        fallback.enabled and stt_provider_is_configured(fallback.provider)
+    ):
         print(
-            "No API configuration found. Set up credentials via:\n"
+            "No STT configuration found. Set a base URL and model (API key optional) via:\n"
             "  - Place a .env file in the project root\n"
             "  - Or run python -m src.settings_dialog (Phase 2)",
             file=sys.stderr,

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from src.config import (
     AppConfig,
+    DEFAULT_LLM_SYSTEM_PROMPT,
     ProviderConfig,
     _env_path,
     import_from_env,
@@ -23,6 +24,29 @@ from src.config import (
 from src.utils import AppError, ScreamerError
 
 
+# Exact pre-v2 default: equality must not be used to migrate a saved prompt.
+LEGACY_LLM_SYSTEM_PROMPT = (
+    "You are a post-processing filter inside a speech-to-text dictation tool "
+    "called Screamer. Your ONLY job is to clean up the raw transcription output.\n\n"
+    "CRITICAL RULES \u2014 follow these exactly:\n"
+    "1. You are NOT a chatbot. You are NOT having a conversation. The text you\n"
+    "   receive is transcribed speech from a microphone \u2014 do NOT respond to it,\n"
+    "   answer any questions in it, or engage with its content in any way.\n"
+    "2. Fix ONLY: spelling mistakes, grammar errors, missing punctuation,\n"
+    "   capitalization. Nothing else.\n"
+    '3. Do NOT rephrase, rewrite, summarize, shorten, or "improve" the text.\n'
+    "4. Do NOT add, remove, or change ANY words beyond fixing obvious typos.\n"
+    "5. Do NOT add commentary, explanations, notes, or meta-text.\n"
+    "6. If the text has no errors, return it EXACTLY as received \u2014 character\n"
+    "   for character.\n"
+    "7. The input may contain speech recognition errors (homophones, missing\n"
+    "   words, garbled phrases). Use context to fix only clear mistakes. When\n"
+    "   in doubt, leave it as-is.\n"
+    "8. Output ONLY the cleaned text. No prefixes, no labels, no quotes\n"
+    "   around it. The raw text and nothing else."
+)
+
+
 class ConfigValidationTests(unittest.TestCase):
     def test_complete_stt_config_is_valid(self) -> None:
         cfg = AppConfig(stt_api_key="key", stt_base_url="https://example.test/v1", stt_model="stt")
@@ -34,8 +58,11 @@ class ConfigValidationTests(unittest.TestCase):
 
         messages = [issue.message for issue in validate_config(cfg)]
 
-        self.assertIn("Primary STT requires an API key, base URL, and model.", messages)
-        self.assertIn("Configure a complete primary or fallback STT provider.", messages)
+        self.assertIn("Primary STT requires a base URL and model; API key is optional.", messages)
+        self.assertIn(
+            "Configure a primary or enabled fallback STT provider with a base URL and model.",
+            messages,
+        )
 
     def test_fallback_stt_can_satisfy_required_config(self) -> None:
         cfg = AppConfig(
@@ -57,7 +84,7 @@ class ConfigValidationTests(unittest.TestCase):
         )
         self.assertEqual(
             [issue.message for issue in validate_config(cfg)],
-            ["Primary STT requires an API key, base URL, and model."],
+            ["Primary STT requires a base URL and model; API key is optional."],
         )
 
     def test_plain_http_remains_supported(self) -> None:
@@ -128,6 +155,33 @@ class ConfigValidationTests(unittest.TestCase):
 
 
 class LanguageFavoritesTests(unittest.TestCase):
+    def test_saved_auto_survives_restart_with_env_language_but_absent_key_backfills(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            env_path = Path(tmp, ".env")
+            env_path.write_text(
+                "STT_LANGUAGE=cs\nSTT_BASE_URL=http://localhost:8000/v1\n", encoding="utf-8"
+            )
+            with patch("src.config._env_path", return_value=str(env_path)):
+                missing = import_from_env(load_config())
+                self.assertEqual(missing.stt_language, "cs")
+                save_config(AppConfig(stt_language=""))
+                restarted = import_from_env(load_config())
+                self.assertEqual(restarted.stt_language, "")
+                self.assertEqual(restarted.stt_base_url, "http://localhost:8000/v1")
+                save_config(restarted)
+                self.assertEqual(load_config().stt_language, "")
+
+    def test_failed_save_does_not_turn_missing_language_into_persisted_auto(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            env_path = Path(tmp, ".env")
+            env_path.write_text("STT_LANGUAGE=cs\n", encoding="utf-8")
+            cfg = AppConfig()
+            with patch("src.config.os.replace", side_effect=OSError("disk full")):
+                with self.assertRaises(ScreamerError):
+                    save_config(cfg)
+            with patch("src.config._env_path", return_value=str(env_path)):
+                self.assertEqual(import_from_env(cfg).stt_language, "cs")
+
     def test_normalizes_order_and_rejects_invalid_entries(self) -> None:
         self.assertEqual(
             normalize_language_favorites([" CS ", "pt-BR", "cs", "DE"]),
@@ -202,6 +256,90 @@ class LanguageFavoritesTests(unittest.TestCase):
         self.assertIn("Favorite STT languages", issues[0].message)
         cfg.stt_language_favorites = ["cs"]
         self.assertEqual(validate_config(cfg), [])
+
+
+class PromptPersistenceTests(unittest.TestCase):
+    def test_absent_prompt_uses_v2_without_changing_rewrite_enablement(self) -> None:
+        from src.config import _get_qsettings
+
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            cfg = load_config()
+            self.assertEqual(cfg.llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
+            self.assertEqual(cfg.llm_prompt_origin, "default_v2")
+            self.assertFalse(cfg.llm_enabled)
+            settings = _get_qsettings()
+            settings.setValue("llm_enabled", True)
+            settings.sync()
+            cfg = load_config()
+            self.assertTrue(cfg.llm_enabled)
+            self.assertEqual(cfg.llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
+            self.assertEqual(cfg.llm_prompt_origin, "default_v2")
+            save_config(cfg)
+            self.assertEqual(load_config().llm_prompt_origin, "default_v2")
+
+    def test_every_legacy_saved_prompt_survives_unrelated_save_exactly(self) -> None:
+        from src.config import _get_qsettings
+
+        for prompt in (
+            LEGACY_LLM_SYSTEM_PROMPT,
+            DEFAULT_LLM_SYSTEM_PROMPT,
+            "",
+            " \tCustom prompt\r\nKeep this line.  \r\n\r\n",
+        ):
+            with (
+                self.subTest(prompt=prompt),
+                tempfile.TemporaryDirectory() as tmp,
+                patch("src.config.APP_DIR", tmp),
+            ):
+                settings = _get_qsettings()
+                settings.setValue("llm_system_prompt", prompt)
+                settings.sync()
+                cfg = load_config()
+                self.assertEqual(cfg.llm_system_prompt, prompt)
+                self.assertEqual(cfg.llm_prompt_origin, "legacy_saved")
+                cfg.stt_language = "cs"
+                save_config(cfg)
+                restored = load_config()
+                self.assertEqual(restored.llm_system_prompt, prompt)
+                self.assertEqual(restored.llm_prompt_origin, "legacy_saved")
+                self.assertEqual(_get_qsettings().value("llm_prompt_origin"), "legacy_saved")
+
+    def test_explicit_origins_round_trip_even_when_text_equals_current_default(self) -> None:
+        for origin in ("legacy_saved", "default_v2", "user_saved"):
+            with (
+                self.subTest(origin=origin),
+                tempfile.TemporaryDirectory() as tmp,
+                patch("src.config.APP_DIR", tmp),
+            ):
+                save_config(AppConfig(llm_prompt_origin=origin))
+                restored = load_config()
+                self.assertEqual(restored.llm_prompt_origin, origin)
+                self.assertEqual(restored.llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
+
+    def test_invalid_provenance_requires_repair_without_reclassifying_saved_prompt(self) -> None:
+        from src.config import _get_qsettings
+
+        for origin in ("default_v2", "unknown"):
+            with (
+                self.subTest(origin=origin),
+                tempfile.TemporaryDirectory() as tmp,
+                patch("src.config.APP_DIR", tmp),
+            ):
+                settings = _get_qsettings()
+                settings.setValue("llm_system_prompt", "Keep this saved prompt.\r\n")
+                settings.setValue("llm_prompt_origin", origin)
+                settings.sync()
+                cfg = load_config()
+                self.assertEqual(cfg.llm_system_prompt, "Keep this saved prompt.\r\n")
+                self.assertEqual(cfg.llm_prompt_origin, origin)
+                cfg.stt_api_key = "key"
+                cfg.stt_base_url = "https://example.test/v1"
+                cfg.stt_model = "stt"
+                issues = validate_config(cfg)
+                self.assertEqual([issue.tab_index for issue in issues], [2])
+                self.assertIn("Reset to Current Default", issues[0].message)
+                cfg.llm_prompt_origin = "user_saved"
+                self.assertEqual(validate_config(cfg), [])
 
 
 class SecretHeaderTests(unittest.TestCase):

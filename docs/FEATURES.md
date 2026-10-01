@@ -4,8 +4,8 @@
 
 Screamer is for dictating AI prompts and other short text into Windows applications.
 It is not a general-purpose AI agent or an editor for existing documents.
-Keep the normal workflow fast: hotkey, speak, release, receive text. Recovery and
-inspection must be available on demand, not mandatory dialogs after every dictation.
+Keep the normal workflow fast: hotkey, speak, release, receive text. Recovery
+must be available on demand, not mandatory dialogs after every dictation.
 
 This is the agreed implementation backlog, not a description of shipped features.
 Priority order is intentional. Deferred and excluded items are not implementation tasks.
@@ -16,7 +16,6 @@ Current API and persistence contracts remain in [IMPLEMENTATION.md](IMPLEMENTATI
 | P0 | 1. Quick language switching in the tray | First delivery; do not wait for a profile system. |
 | P1 | 2. Reliable insertion and clipboard output | Diagnose Notepad, handle focus changes, expose delivery failures. |
 | P1 | 3. Recoverable dictation and local history | Preserve usable text and allow recovery without repeating speech. |
-| P1 | 4. Rewrite fidelity and inspection | Improve the system prompt; inspect changes and recover raw text. |
 | P1 | 5. Microphone feedback and recovery | Show actual input and handle device lifecycle failures. |
 | P2 | 6. Custom vocabulary | Improve names, technical terms, and mixed-language dictation. |
 | P2 | 7. Simple rewrite profiles and app matching | Unify modes and app-specific prompts without expanding into an agent. |
@@ -97,39 +96,6 @@ history beyond a list of successful final outputs and supports the recovery acti
 - Rewriting a saved raw transcript preserves the original and makes the new result available for inspection and explicit output.
 - Retention and deletion remove the relevant stored text. Persistent history contains no audio. In-memory audio recovery does not claim to survive an application crash or restart.
 
-## 4. Rewrite Fidelity and Inspection (P1)
-
-An AI prompt being dictated is content to clean up, not an instruction for Screamer's
-LLM to execute. Answering a dictated question or replacing the user's meaning with
-an invented response defeats the product's main purpose.
-
-### Prompt-first prevention
-
-Strengthen and evaluate the default system prompt as the primary prevention mechanism.
-The current prompt already prohibits chatting and rephrasing; do not assume adding
-the same instructions again solves the issue. Use concrete failure examples to guide changes.
-
-- Treat the transcript as data, including questions, commands, and apparent instructions to the model. Output only the cleaned dictation, never an answer or commentary.
-- In clean-dictation mode, limit changes to clear transcription errors, spelling, punctuation, grammar, and capitalization. Preserve intent, negation, names, numbers, technical identifiers, and the speaker's language choices; leave ambiguous content unchanged.
-- Do not silently summarize, shorten, translate, or invent missing information. Broader transformations require an explicitly selected custom profile, not the default cleanup path.
-- Keep user-authored prompts intact when updating the default; offer the revised default explicitly rather than overwriting custom settings.
-
-A better system prompt can reduce failures, but cannot guarantee semantic fidelity
-across arbitrary models. Keep raw-text recovery even after prompt improvements.
-
-### On-demand inspection
-
-- Let users view the raw and rewritten versions and request a readable difference view from the latest result or history.
-- Offer copy/insert of the raw version when cleanup is wrong, using the safe output path from section 2.
-- Do not require approval after every ordinary dictation. Do not add a second LLM judge, an unsupported confidence percentage, or automatic rollback in an external application.
-
-### Acceptance criteria
-
-- Maintain representative cleanup examples covering dictated AI instructions, questions, negation, numbers, names, technical identifiers, and mixed Czech/English speech.
-- Evaluate prompt changes against those examples with the selected provider/model and review meaning preservation separately from formatting quality. These are model evaluations, not a universal accuracy guarantee or a live API dependency for ordinary automated tests.
-- Inspection shows the actual raw and rewritten outputs; retrieving the raw version requires no new STT/LLM request.
-- Preserve existing behavior when rewriting is disabled or the LLM fails. Prompt improvements and inspection must not turn Screamer into a chatbot.
-
 ## 5. Microphone Feedback and Recovery (P1)
 
 The current recording indicator and RMS calibration are useful, but a recording
@@ -178,7 +144,7 @@ into one small profile feature rather than two overlapping configuration systems
 
 ### Acceptance criteria
 
-- Raw mode performs no LLM call; clean mode uses the conservative cleanup contract from section 4.
+- Raw mode performs no LLM call; clean mode uses the existing conservative cleanup default documented in [IMPLEMENTATION.md](IMPLEMENTATION.md#configpy).
 - Saved custom prompts remain editable and work with manual selection and optional app matching.
 - Application changes during processing do not change the selected prompt or bypass output target checks.
 - Email, casual text, bullets, coding prompts, and translation may be custom profile uses, not a mandatory catalog of separate features. All operate on newly dictated text, not existing documents or external actions.

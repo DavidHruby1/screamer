@@ -1,6 +1,6 @@
 # 3. Recoverable Dictation and Local History
 
-> **Status:** planned, not shipped. Expands [feature 3](../FEATURES.md#3-recoverable-dictation-and-local-history-p1). The in-memory slice precedes feature 2's guarded withholding; encrypted disk history is a later, separately verifiable increment.
+> **Status (2026-09-30):** code implemented; final automated checks and Windows/DPAPI manual acceptance remain open. Current schema and persistence behavior are canonical in [IMPLEMENTATION.md](../IMPLEMENTATION.md). Expands [feature 3](../FEATURES.md#3-recoverable-dictation-and-local-history-p1); this detailed page retains the design rationale and acceptance record, not the current API reference.
 
 ## Current-source review and decisions
 
@@ -155,7 +155,7 @@ The tray exposes `Recent dictation...` even when disk history is off if a usable
 
 For failed STT: `Retry STT` starts the single worker with `PendingAudio` and its old config after the prior worker has fully finished; it may succeed into a new record marked recovery-only, never automatically copy/type. Clear pending WAV at `raw_ready`, not on starting retry, so a second explicit attempt remains possible after another STT failure. `Discard` clears it. Disable blocks retry until enabled; exit discards it. No retry of capture failures that produced no WAV.
 
-For rewrite rerun: select stored raw and explicitly start `rewrite(raw, current selected rewrite configuration)` on the one worker. Snapshot current rewrite/provider/language/profile preferences at request time; do not reuse source record's secrets/prompt silently. Render `RewriteCandidate` and diff for inspection; old record and last delivery stay unchanged. User may explicitly copy/arm candidate or save it as a separate linked entry after review; no automatic insertion, replacement of the original or STT request. A failed rerun leaves original raw/final untouched. `difflib` for diff belongs with [feature 4](04-rewrite.md), and user-controlled content must be rendered as text or escaped rich text.
+For rewrite rerun: select stored raw and explicitly start `rewrite(raw, current selected rewrite configuration)` on the one worker. Snapshot current rewrite/provider/language/profile preferences at request time; do not reuse source record's secrets/prompt silently. Render `RewriteCandidate` as text; old record and last delivery stay unchanged. User may explicitly copy/arm candidate or save it as a separate linked entry; no automatic insertion, replacement of the original or STT request. A failed rerun leaves original raw/final untouched. User-controlled content must be rendered as text or escaped rich text. No dedicated difference view is required.
 
 ## Slices, error paths and verification
 
@@ -163,7 +163,7 @@ For rewrite rerun: select stored raw and explicitly start `rewrite(raw, current 
 2. Add `PendingAudio` only for usable WAV after STT failure, explicit retry/discard, replacement at successful new recording and exit. Test failed first retry then successful retry, cancellation while HTTP is in flight and retry-no-auto-output. Confirm memory release on raw checkpoint, not when retry starts.
 3. Add single-instance guard before history/settings migrations; integration test a second Windows process cannot become an active writer or second hook owner, and stale-lock recovery after crash. Linux import-safety tests do not establish Windows locking.
 4. Add `history_enabled=False`, `history_limit=100` (validate 1..100), Settings disclosure and separate clear. Implement versioned DPAPI store with fail-closed load, ciphertext-only temporary files, atomic commit, eviction, delete and clear. Test 1/100/101 records, corrupt ciphertext, invalid records/version, old file with opt-out, failed replace and re-enable merge; check no audio field or transcript in normal logs. DPAPI tests on Windows; use a fake crypt boundary for Linux codec tests without claiming at-rest protection there.
-5. Add bounded browsing, individual delete, clear, raw/final/diff and explicit recovery/rewrite candidate. Test Settings Cancel, redraw after commit failure, wrong internal foreground, clipboard cleanup in Qt offscreen, no work while busy/disabled/exiting, and stable source after rerun. Manual Windows offline->online STT retry, result recovery, restart with opt-in and clipboard inspection are release gates.
+5. Add bounded browsing, individual delete, clear, raw/final text and explicit recovery/rewrite candidate. Test Settings Cancel, redraw after commit failure, wrong internal foreground, clipboard cleanup in Qt offscreen, no work while busy/disabled/exiting, and stable source after rerun. Manual Windows offline->online STT retry, result recovery, restart with opt-in and clipboard inspection are release gates.
 
 ## Limits and alternatives
 

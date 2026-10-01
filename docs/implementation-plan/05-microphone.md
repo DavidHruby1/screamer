@@ -1,12 +1,17 @@
 # Microphone Feedback and Recovery
 
+> **Status:** code implemented (2026-09-30); packaged Windows and real-hardware
+> acceptance remains open. Current APIs and runtime guarantees are maintained in
+> [IMPLEMENTATION.md](../IMPLEMENTATION.md#audiopy), not in the design tables below.
+> The [Windows manual gate](#windows-manual-gate) remains the completion checklist.
+
 ## Summary
 
 This is the detailed implementation plan for feature 5 in
 [`../FEATURES.md`](../FEATURES.md): make captured input visible during a
 dictation and make device failures recoverable without silently choosing a
-different explicitly selected microphone. It is a future plan, not a statement
-that the feature is implemented. The existing recording flow is deliberately
+different explicitly selected microphone. The following records the accepted design
+and pre-implementation baseline; the implementation status is above. The recording flow is deliberately
 single-session: `main.py` owns recording lifecycle and Qt, while `audio.py`
 owns PortAudio capture and WAV construction. Keep that boundary. The first
 maintainer decision is that a meter reads captured PCM, not a recording-state
@@ -24,8 +29,8 @@ intelligibility.
   calibration, stream lifecycle, and current error behavior.
 - `src/main.py`: recording start/stop, timer, snackbar, settings device-list
   helper, calibration helper, and user-visible error path.
-- `src/snackbar.py`: non-focusable click-through overlay that currently shows
-  only Recording or Processing.
+- `src/snackbar.py`: non-focusable click-through overlay with recording input evidence
+  and Processing state.
 - `src/settings_dialog.py`: saved device selection, unavailable-device
   preservation, and calibration controls.
 - `src/utils.py`: existing microphone error enum values and `ScreamerError`.
@@ -33,7 +38,7 @@ intelligibility.
   `tests/test_snackbar_wiring.py`, `tests/test_settings_dialog.py`, and
   `tests/test_tray_menu.py`: current seams to extend.
 
-## Review of the Existing Plan
+## Pre-Implementation Review
 
 Section 5 of `docs/IMPLEMENTATION-PLAN.md` has the right core constraints:
 single latest-level observation, recording-only Qt polling, reuse of the
@@ -129,7 +134,7 @@ guess between conflicting or ambiguous evidence.
 | --- | --- | --- |
 | `audio_device_id is None` (system default is intentional) | Open current default input; if none can be resolved/opened, report unavailable. | `None` is the existing representation of system default. |
 | Saved ID exists, is an input, and its exact normalized name agrees with saved name (or saved name is empty) | Use that ID; report the actual opened ID/name. | ID-first matching is useful while the current enumeration remains consistent. |
-| Saved ID is stale/missing, saved name has exactly one input match | Use the unique exact-name match, subject to verifying that name-based migration is acceptable for the persisted contract. | It can support replug/re-enumeration, but names are not unique identities. |
+| Saved ID is stale/missing, saved name has exactly one input match | Use the unique exact-name match; the implemented contract retains exact-name re-enumeration but rejects conflicts and ambiguity. | It can support replug/re-enumeration, but names are not unique identities. |
 | Saved ID now identifies an input whose name conflicts with a nonempty saved name | Fail unavailable and require reselection; do not search by name or use default. | Avoid opening the wrong device after index reassignment. |
 | Saved ID is missing and saved name is empty | Fail unavailable and require selection. | There is no evidence for which explicit device was intended. |
 | More than one input has the saved exact name | Fail as ambiguous and require selection. | Never take the first duplicate-name device. |
@@ -470,14 +475,14 @@ inspection or mocked test can substitute for this hardware gate.
 
 ## Implementation Slices
 
-1. **Audio evidence and resolver policy:** add snapshot/status and actual opened
+1. **Implemented, audio evidence and resolver policy:** add snapshot/status and actual opened
    identity; make explicit resolution fail closed; preserve WAV format, silence
    gate, and calibration behavior. Land focused `test_audio.py` coverage.
-2. **Overlay and recording polling:** add the bounded meter and actual-device
+2. **Implemented, overlay and recording polling:** add the bounded meter and actual-device
    label to `RecordingSnackbar`; wire a modest, tunable timer in main with
    complete start/stop cleanup and single-error reporting. Land snackbar and
    tray wiring tests.
-3. **Settings refresh and recovery path:** inject the main-owned refresh
+3. **Code implemented, Settings refresh and recovery path:** inject the main-owned refresh
    callable, retain unavailable identity, test explicit reselection, and verify
    calibration still uses the user's selection. Add Windows manual results
    before calling recovery complete.
@@ -488,15 +493,11 @@ parallel device resolver.
 
 ## Documentation Updates When Implemented
 
-Once shipped, update `README.md` for the user-visible microphone meter and
-recovery behavior, and update `docs/IMPLEMENTATION.md` only if the public audio
-signature, device-resolution contract, persisted preference semantics, or
-error guarantees change. Update `docs/FEATURES.md` to reflect completion only
-after its acceptance criteria, including the Windows manual gate, are met.
-Keep this file and section 5 of `docs/IMPLEMENTATION-PLAN.md` as plans until
-implementation lands; then replace or link the concise duplicate so there is
-one maintained detailed plan. No hardware test should be reported as completed
-without an actual Windows device run.
+`README.md` and `docs/IMPLEMENTATION.md` now describe the implemented behavior;
+section 5 of `docs/IMPLEMENTATION-PLAN.md` links here rather than duplicating this
+design. Leave `docs/FEATURES.md` acceptance open until the Windows manual gate
+passes. No hardware test should be reported as completed without an actual
+Windows device run.
 
 ## Sources
 
@@ -523,3 +524,7 @@ without an actual Windows device run.
 - `tests/test_settings_dialog.py`: unavailable selection and calibration
   worker behavior.
 - `tests/test_tray_menu.py`: recording start/stop, timer, and error wiring.
+- [sounddevice 0.5.5 stream API](https://python-sounddevice.readthedocs.io/en/0.5.5/api/streams.html):
+  opened device IDs, callback flags, unexpected stream inactivity and finished callbacks.
+  The installed 0.5.6 source also confirms `stop()`/`close()` default to ignoring
+  errors; capture calls explicitly request error reporting with `ignore_errors=False`.
