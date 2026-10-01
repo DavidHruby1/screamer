@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import patch
 
 # Set before any PySide6 import so the helper tests need no display server.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -141,7 +142,7 @@ class SnackbarWidgetTests(unittest.TestCase):
         self.assertFalse(bar.grab().isNull())
 
     def test_larger_font_keeps_normal_device_names_and_bounds_long_names(self):
-        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtCore import QRect
         from src.snackbar import RecordingSnackbar
 
         bar = RecordingSnackbar()
@@ -149,6 +150,8 @@ class SnackbarWidgetTests(unittest.TestCase):
         font = bar.font()
         font.setPointSize(18)
         bar.setFont(font)
+        screen = self.enterContext(patch("src.snackbar.QGuiApplication.primaryScreen"))
+        screen.return_value.availableGeometry.return_value = QRect(0, 0, 3840, 2160)
         bar.show_state("Recording", (229, 57, 53))
         bar.set_input_status("USB microphone", 0.0, False)
         self.assertEqual(bar.input_status_text(), "Waiting for samples - USB microphone")
@@ -158,7 +161,5 @@ class SnackbarWidgetTests(unittest.TestCase):
         bar.set_input_status(long_name, 0.0, False)
         self.assertTrue(bar.input_status_text().startswith("Waiting for samples - "))
         self.assertNotIn(long_name, bar.input_status_text())
-        self.assertLessEqual(
-            bar.width(), QGuiApplication.primaryScreen().availableGeometry().width()
-        )
+        self.assertLessEqual(bar.width(), 3840)
         self.assertFalse(bar.grab().isNull())
