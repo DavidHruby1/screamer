@@ -174,15 +174,20 @@ class RecordingSnackbar(QWidget):
         width = self._PAD_X + (2 * self._DOT_R) + self._GAP + text_w + self._PAD_X
         height = self._PAD_Y + max(text_h, 2 * self._DOT_R) + self._PAD_Y
         if self._input_label is not None:
+            prefix_w = fm.horizontalAdvance("Waiting for samples - ")
+            status_padding = 4 + 2 * self._PAD_X
+            # Match the separate prefix/device advances used by input_status_text.
+            status_w = prefix_w + fm.horizontalAdvance(self._input_label) + status_padding
+            max_status_w = prefix_w + fm.horizontalAdvance("M" * 32) + status_padding
+            screen = QGuiApplication.primaryScreen()
+            if screen is not None:
+                max_status_w = min(
+                    max_status_w, screen.availableGeometry().width() - 2 * self._MARGIN
+                )
             width = max(
                 width,
-                min(
-                    fm.horizontalAdvance("Waiting for samples - ")
-                    + fm.horizontalAdvance(self._input_label)
-                    + 4
-                    + 2 * self._PAD_X,
-                    420,
-                ),
+                prefix_w + status_padding,
+                min(status_w, max_status_w),
             )
             height += text_h + 14
         self.setFixedSize(width, height)

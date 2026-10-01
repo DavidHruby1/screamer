@@ -626,8 +626,10 @@ ruff format --check src/ tests/ .github/scripts/
 - The recording-only level timer reads one coherent latest audio snapshot every 100 ms.
   The overlay labels the actual opened input (or unknown identity), distinguishes waiting
   from captured quiet, and displays fixed full-scale RMS. Transient PortAudio flags are
-  observations, not repeated warnings. Unexpected stream finish cancels capture once;
-  valid-length no-data and stop/close errors report capture failure rather than silence.
+  observations, not repeated warnings. Unexpected stream finish cancels capture once.
+  Overlay width follows the active font metrics and available screen width, not a fixed
+  pixel cap; long device names are elided while the observation prefix remains visible.
+  Valid-length no-data and stop/close errors report capture failure rather than silence.
   Polling stops before finalize, discard, disable, start failure, and exit. Fresh resolution
   on the next recording permits retry/reselection, not automatic source switching or restart.
 - Exit cancels queued processing, stops audio, and waits for the active network call and
@@ -723,7 +725,7 @@ Windows acceptance has passed, a release has been published, or all Windows beha
 is certified. Features 1 and 5 remain code-implemented with their original manual gates
 open, as tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md). Feature 2's
 Notepad root cause is unconfirmed and has not been fixed by diagnosis: no confirmed
-reproducer/evidence is asserted here. The integrated Linux run passed 287 tests with
+reproducer/evidence is asserted here. The integrated Linux run passed 288 tests with
 5 Windows-only skips, compileall, import, Ruff check/format and `git diff --check`.
 A packaged Windows build and its real-desktop acceptance checks have not been run.
 

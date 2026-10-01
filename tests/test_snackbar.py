@@ -139,3 +139,26 @@ class SnackbarWidgetTests(unittest.TestCase):
         self.assertTrue(quiet_text.startswith("Input level - "))
         self.assertNotEqual(waiting_text, quiet_text)
         self.assertFalse(bar.grab().isNull())
+
+    def test_larger_font_keeps_normal_device_names_and_bounds_long_names(self):
+        from PySide6.QtGui import QGuiApplication
+        from src.snackbar import RecordingSnackbar
+
+        bar = RecordingSnackbar()
+        self.addCleanup(bar.close)
+        font = bar.font()
+        font.setPointSize(18)
+        bar.setFont(font)
+        bar.show_state("Recording", (229, 57, 53))
+        bar.set_input_status("USB microphone", 0.0, False)
+        self.assertEqual(bar.input_status_text(), "Waiting for samples - USB microphone")
+        bar.set_input_status("System Default (Actual USB mic)", 0.0, True)
+        self.assertEqual(bar.input_status_text(), "Input level - System Default (Actual USB mic)")
+        long_name = "Very long USB microphone name " * 10
+        bar.set_input_status(long_name, 0.0, False)
+        self.assertTrue(bar.input_status_text().startswith("Waiting for samples - "))
+        self.assertNotIn(long_name, bar.input_status_text())
+        self.assertLessEqual(
+            bar.width(), QGuiApplication.primaryScreen().availableGeometry().width()
+        )
+        self.assertFalse(bar.grab().isNull())
