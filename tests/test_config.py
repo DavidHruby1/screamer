@@ -58,8 +58,11 @@ class ConfigValidationTests(unittest.TestCase):
 
         messages = [issue.message for issue in validate_config(cfg)]
 
-        self.assertIn("Primary STT requires an API key, base URL, and model.", messages)
-        self.assertIn("Configure a complete primary or fallback STT provider.", messages)
+        self.assertIn("Primary STT requires a base URL and model; API key is optional.", messages)
+        self.assertIn(
+            "Configure a primary or enabled fallback STT provider with a base URL and model.",
+            messages,
+        )
 
     def test_fallback_stt_can_satisfy_required_config(self) -> None:
         cfg = AppConfig(
@@ -81,7 +84,7 @@ class ConfigValidationTests(unittest.TestCase):
         )
         self.assertEqual(
             [issue.message for issue in validate_config(cfg)],
-            ["Primary STT requires an API key, base URL, and model."],
+            ["Primary STT requires a base URL and model; API key is optional."],
         )
 
     def test_plain_http_remains_supported(self) -> None:
@@ -152,6 +155,33 @@ class ConfigValidationTests(unittest.TestCase):
 
 
 class LanguageFavoritesTests(unittest.TestCase):
+    def test_saved_auto_survives_restart_with_env_language_but_absent_key_backfills(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            env_path = Path(tmp, ".env")
+            env_path.write_text(
+                "STT_LANGUAGE=cs\nSTT_BASE_URL=http://localhost:8000/v1\n", encoding="utf-8"
+            )
+            with patch("src.config._env_path", return_value=str(env_path)):
+                missing = import_from_env(load_config())
+                self.assertEqual(missing.stt_language, "cs")
+                save_config(AppConfig(stt_language=""))
+                restarted = import_from_env(load_config())
+                self.assertEqual(restarted.stt_language, "")
+                self.assertEqual(restarted.stt_base_url, "http://localhost:8000/v1")
+                save_config(restarted)
+                self.assertEqual(load_config().stt_language, "")
+
+    def test_failed_save_does_not_turn_missing_language_into_persisted_auto(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            env_path = Path(tmp, ".env")
+            env_path.write_text("STT_LANGUAGE=cs\n", encoding="utf-8")
+            cfg = AppConfig()
+            with patch("src.config.os.replace", side_effect=OSError("disk full")):
+                with self.assertRaises(ScreamerError):
+                    save_config(cfg)
+            with patch("src.config._env_path", return_value=str(env_path)):
+                self.assertEqual(import_from_env(cfg).stt_language, "cs")
+
     def test_normalizes_order_and_rejects_invalid_entries(self) -> None:
         self.assertEqual(
             normalize_language_favorites([" CS ", "pt-BR", "cs", "DE"]),

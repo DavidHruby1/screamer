@@ -1,4 +1,4 @@
-"""4-tab settings dialog: General, STT, LLM, Audio.
+"""Settings dialog: General, STT, LLM, Audio, Vocabulary, Rewrite Profiles.
 
 Edits a copy of AppConfig; Apply and OK persist validated settings.
 Standalone mode: ``python -m src.settings_dialog`` launches the dialog for testing.
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import uuid
 from typing import Callable
 
 from PySide6.QtCore import QCoreApplication, QEvent, Qt, QThread, Signal
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QInputDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -31,6 +33,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QDoubleSpinBox,
+    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -38,6 +41,12 @@ from PySide6.QtWidgets import (
 
 from src.config import (
     AppConfig,
+    AppMapping,
+    RewriteProfile,
+    builtin_rewrite_profiles,
+    decode_rewrite_catalog,
+    encode_rewrite_catalog,
+    migrate_rewrite_catalog,
     DEFAULT_LLM_SYSTEM_PROMPT,
     HOTKEY_OPTIONS,
     LANGUAGE_OPTIONS,
@@ -51,6 +60,7 @@ from src.config import (
     load_config,
     normalize_language_code,
     normalize_language_favorites,
+    normalize_vocabulary_entries,
     reset_config,
     save_config,
     validate_config,
@@ -125,7 +135,7 @@ class PasswordField(QLineEdit):
 
 
 class SettingsDialog(QDialog):
-    """4-tab settings dialog editing a copy of *config*.
+    """Settings dialog editing a copy of *config*.
 
     *devices*: list of ``(device_id, display_name)`` for the Audio tab combo.
         Pass an empty list if audio is unavailable.
@@ -136,6 +146,7 @@ class SettingsDialog(QDialog):
 
     hotkey_capture_active_changed = Signal(bool)
     applied = Signal()
+    clear_history_requested = Signal()
 
     def __init__(
         self,
@@ -157,6 +168,8 @@ class SettingsDialog(QDialog):
 
         # Edit a deep copy so the original is untouched until accept.
         self._working = copy.deepcopy(config)
+        self._profile_loading = False
+        self._rewrite_error: str | None = None
 
         self._build_ui()
         self.layout().setSizeConstraint(QLayout.SetFixedSize)
@@ -184,6 +197,8 @@ class SettingsDialog(QDialog):
         self._build_stt_tab()
         self._build_llm_tab()
         self._build_audio_tab()
+        self._build_vocabulary_tab()
+        self._build_profiles_tab()
 
         # Bottom bar.
         btn_import = QPushButton("Import from .env")
@@ -252,6 +267,42 @@ class SettingsDialog(QDialog):
             self._post_key_combo.addItem(label, key)
         form.addRow("Post-type key:", self._post_key_combo)
 
+        self._output_mode_combo = QComboBox()
+        for value, label in (
+            ("type", "Type into target application"),
+            ("copy", "Copy to clipboard only"),
+            ("copy_and_type", "Copy to clipboard and type"),
+        ):
+            self._output_mode_combo.addItem(label, value)
+        form.addRow("Output mode:", self._output_mode_combo)
+
+        self._recovery_hotkey_input = QLineEdit()
+        self._recovery_hotkey_input.setPlaceholderText("ctrl+alt+shift+key:0x56")
+        self._recovery_hotkey_input.setToolTip(
+            "Canonical keyboard shortcut: modifiers plus key:0x56 (V). "
+            "Mouse bindings are not supported. Must differ from the dictation shortcut. "
+            "The registered-shortcut conflict check cannot detect other low-level-hook apps."
+        )
+        form.addRow("Recovery shortcut:", self._recovery_hotkey_input)
+
+        self._history_check = QCheckBox("Save local text history (opt-in)")
+        form.addRow(self._history_check)
+        disclosure = QLabel(
+            "History may contain dictated text, AI prompts you dictate, and spoken secrets. "
+            "Saved history is protected under your Windows account, not from software running "
+            "as that account. Clipboard contents, other apps, and backups are separate copies. "
+            "Deletion has no secure-erasure guarantee. Turning history off leaves existing "
+            "saved history until you use Clear History."
+        )
+        disclosure.setWordWrap(True)
+        form.addRow(disclosure)
+        self._history_limit_spin = QSpinBox()
+        self._history_limit_spin.setRange(1, 100)
+        form.addRow("Retain latest results:", self._history_limit_spin)
+        self._clear_history_btn = QPushButton("Clear History…")
+        self._clear_history_btn.clicked.connect(self._on_clear_history)
+        form.addRow(self._clear_history_btn)
+
         self._startup_check = QCheckBox("Start Screamer with Windows")
         if not is_supported():
             self._startup_check.setEnabled(False)
@@ -259,6 +310,20 @@ class SettingsDialog(QDialog):
         form.addRow(self._startup_check)
 
         self._tabs.addTab(tab, "General")
+
+    def _on_clear_history(self) -> None:
+        if (
+            QMessageBox.question(
+                self,
+                "Clear History",
+                "Delete all saved text history now? This is separate from "
+                "Apply/Cancel and cannot be undone. Copies in other apps or backups are not deleted.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            == QMessageBox.StandardButton.Yes
+        ):
+            self.clear_history_requested.emit()
 
     # --- Hotkey capture interaction -----------------------------------
 
@@ -326,6 +391,12 @@ class SettingsDialog(QDialog):
             form,
             base_url_placeholder="https://api.openai.com/v1",
         )
+        self._stt_prompt_primary_check = QCheckBox("Send vocabulary prompt to primary STT")
+        self._stt_prompt_primary_check.setToolTip(
+            "Enable only if this endpoint accepts the multipart prompt field. "
+            "A rejected prompt follows the normal fallback path, without retrying it removed."
+        )
+        form.addRow(self._stt_prompt_primary_check)
 
         self._stt_lang = QComboBox()
         form.addRow("Active language:", self._stt_lang)
@@ -360,6 +431,18 @@ class SettingsDialog(QDialog):
         self._stt_fb_key, self._stt_fb_url, self._stt_fb_model, self._stt_fb_headers = (
             _add_provider_fields(fb_form)
         )
+        for key in (self._stt_key, self._stt_fb_key):
+            key.setToolTip(
+                "Optional: leave blank intentionally for a local endpoint that needs no API key."
+            )
+        for url in (self._stt_url, self._stt_fb_url):
+            url.setToolTip(
+                "Enter the base URL, not the full transcription route. "
+                "Screamer appends /audio/transcriptions."
+            )
+        self._stt_prompt_fallback_check = QCheckBox("Send vocabulary prompt to fallback STT")
+        self._stt_prompt_fallback_check.setToolTip(self._stt_prompt_primary_check.toolTip())
+        fb_form.addRow(self._stt_prompt_fallback_check)
 
         self._stt_fb_group.setVisible(False)
         self._stt_fb_check.toggled.connect(self._stt_fb_group.setVisible)
@@ -462,6 +545,7 @@ class SettingsDialog(QDialog):
         self._llm_prompt = QPlainTextEdit()
         self._llm_prompt.setMaximumHeight(120)
         self._llm_prompt.setTabChangesFocus(True)
+        self._llm_prompt.textChanged.connect(self._on_profile_prompt_changed)
         llm_form.addRow("System Prompt:", self._llm_prompt)
 
         self._llm_reset_prompt_btn = QPushButton("Reset to Current Default")
@@ -496,12 +580,420 @@ class SettingsDialog(QDialog):
         self._tabs.addTab(tab, "LLM")
 
     def _on_reset_prompt(self) -> None:
-        self._llm_prompt.setPlainText(DEFAULT_LLM_SYSTEM_PROMPT)
-        self._llm_prompt_baseline = (
-            DEFAULT_LLM_SYSTEM_PROMPT,
-            "default_v2",
-            self._llm_prompt.toPlainText(),
+        if self._working._rewrite_catalog_corrupt_original is not None:
+            if not self._confirm_catalog_repair("Reset"):
+                return
+            self._repair_catalog()
+        self._working.llm_system_prompt = DEFAULT_LLM_SYSTEM_PROMPT
+        self._working.llm_prompt_origin = "default_v2"
+        self._working.rewrite_selection_mode = "manual"
+        self._working.rewrite_manual_profile_id = "clean"
+        if self._working.rewrite_catalog is None:
+            self._working.rewrite_catalog = encode_rewrite_catalog(
+                self._rewrite_profiles, self._rewrite_app_mappings
+            )
+        self._rewrite_error = None
+        self._rewrite_mode_combo.setCurrentIndex(0)
+        self._rewrite_manual_combo.setCurrentIndex(
+            _combo_index(self._rewrite_manual_combo, "clean")
         )
+        self._refresh_profile_choices("clean")
+
+    # --- Rewrite profiles (sixth tab; existing tab indexes stay intact) ---
+
+    def _build_profiles_tab(self) -> None:
+        tab = QWidget()
+        form = QFormLayout(tab)
+        hint = QLabel(
+            "AI rewrite off always uses Raw. Manual selection ignores application mappings. "
+            "Automatic selection matches the full executable path, then uses the default. "
+            "Raw never calls an LLM. Edit the selected profile's prompt on the LLM tab; "
+            "editing Clean creates a custom profile. Limits: 32 custom profiles, "
+            "100-character names, 32 KiB UTF-8 prompts."
+        )
+        hint.setWordWrap(True)
+        form.addRow(hint)
+        self._rewrite_warning = QLabel(
+            "Saved rewrite catalog is damaged. Its exact value is retained during unrelated "
+            "saves. Explicitly Reset or Replace to repair; Apply/OK saves the repair, "
+            "Cancel discards it. Rewrite resolution is unavailable until repaired."
+        )
+        self._rewrite_warning.setWordWrap(True)
+        form.addRow(self._rewrite_warning)
+        self._rewrite_reset_btn = QPushButton("Reset damaged catalog…")
+        self._rewrite_replace_btn = QPushButton("Replace damaged catalog…")
+        self._rewrite_reset_btn.clicked.connect(lambda: self._on_catalog_repair("Reset"))
+        self._rewrite_replace_btn.clicked.connect(lambda: self._on_catalog_repair("Replace"))
+        row = QHBoxLayout()
+        row.addWidget(self._rewrite_reset_btn)
+        row.addWidget(self._rewrite_replace_btn)
+        form.addRow(row)
+        self._rewrite_mode_combo = QComboBox()
+        self._rewrite_mode_combo.addItem("Manual", "manual")
+        self._rewrite_mode_combo.addItem("Automatic (application mappings)", "automatic")
+        self._rewrite_default_combo = QComboBox()
+        self._rewrite_manual_combo = QComboBox()
+        form.addRow("Selection mode:", self._rewrite_mode_combo)
+        form.addRow("Default profile:", self._rewrite_default_combo)
+        form.addRow("Manual profile:", self._rewrite_manual_combo)
+        self._rewrite_profile_combo = QComboBox()
+        self._rewrite_profile_combo.currentIndexChanged.connect(self._on_profile_selected)
+        form.addRow("Profile to edit:", self._rewrite_profile_combo)
+        self._rewrite_edit_prompt_btn = QPushButton("Edit selected prompt on LLM tab")
+        self._rewrite_edit_prompt_btn.clicked.connect(self._on_edit_profile_prompt)
+        form.addRow(self._rewrite_edit_prompt_btn)
+        self._rewrite_name_input = QLineEdit()
+        form.addRow("Custom profile name:", self._rewrite_name_input)
+        self._rewrite_add_btn = QPushButton("Add custom")
+        self._rewrite_rename_btn = QPushButton("Rename selected")
+        self._rewrite_delete_btn = QPushButton("Delete selected")
+        self._rewrite_add_btn.clicked.connect(self._on_profile_add)
+        self._rewrite_rename_btn.clicked.connect(self._on_profile_rename)
+        self._rewrite_delete_btn.clicked.connect(self._on_profile_delete)
+        row = QHBoxLayout()
+        for button in (self._rewrite_add_btn, self._rewrite_rename_btn, self._rewrite_delete_btn):
+            row.addWidget(button)
+        form.addRow(row)
+        self._rewrite_mappings = QListWidget()
+        self._rewrite_mappings.setMaximumHeight(140)
+        self._rewrite_mappings.itemSelectionChanged.connect(self._on_mapping_selected)
+        form.addRow("Application mappings:", self._rewrite_mappings)
+        self._rewrite_path_input = QLineEdit()
+        self._rewrite_path_input.setPlaceholderText(r"C:\Program Files\Application\app.exe")
+        self._rewrite_mapping_profile_combo = QComboBox()
+        form.addRow("Full executable path:", self._rewrite_path_input)
+        form.addRow("Mapped profile:", self._rewrite_mapping_profile_combo)
+        self._rewrite_mapping_add_btn = QPushButton("Add mapping")
+        self._rewrite_mapping_edit_btn = QPushButton("Edit selected")
+        self._rewrite_mapping_remove_btn = QPushButton("Remove selected")
+        self._rewrite_mapping_add_btn.clicked.connect(lambda: self._on_mapping_write(False))
+        self._rewrite_mapping_edit_btn.clicked.connect(lambda: self._on_mapping_write(True))
+        self._rewrite_mapping_remove_btn.clicked.connect(self._on_mapping_remove)
+        row = QHBoxLayout()
+        for button in (
+            self._rewrite_mapping_add_btn,
+            self._rewrite_mapping_edit_btn,
+            self._rewrite_mapping_remove_btn,
+        ):
+            row.addWidget(button)
+        form.addRow(row)
+        self._tabs.addTab(tab, "Profiles")
+
+    def _all_rewrite_profiles(self) -> list[RewriteProfile]:
+        return [*builtin_rewrite_profiles(), *self._rewrite_profiles]
+
+    def _populate_profiles(self, cfg: AppConfig) -> None:
+        try:
+            migrate_rewrite_catalog(cfg)
+            self._rewrite_profiles, self._rewrite_app_mappings = decode_rewrite_catalog(
+                cfg.rewrite_catalog
+            )
+        except (TypeError, ValueError):
+            self._rewrite_profiles, self._rewrite_app_mappings = [], []
+            if cfg.rewrite_catalog is not None:
+                cfg._rewrite_catalog_corrupt_original = (cfg.rewrite_catalog,)
+        self._rewrite_error = None
+        self._rewrite_mode_combo.setCurrentIndex(
+            _combo_index(self._rewrite_mode_combo, cfg.rewrite_selection_mode)
+        )
+        self._rewrite_default_combo.clear()
+        self._rewrite_manual_combo.clear()
+        for profile in self._all_rewrite_profiles():
+            self._rewrite_default_combo.addItem(profile.name, profile.id)
+            self._rewrite_manual_combo.addItem(profile.name, profile.id)
+        self._rewrite_default_combo.setCurrentIndex(
+            _combo_index(self._rewrite_default_combo, cfg.rewrite_default_profile_id)
+        )
+        self._rewrite_manual_combo.setCurrentIndex(
+            _combo_index(self._rewrite_manual_combo, cfg.rewrite_manual_profile_id)
+        )
+        self._refresh_profile_choices(cfg.rewrite_manual_profile_id)
+        # Missing persisted IDs stay invalid and visible as an unselected combo.
+        self._rewrite_default_combo.setCurrentIndex(
+            _combo_index(self._rewrite_default_combo, cfg.rewrite_default_profile_id)
+        )
+        self._rewrite_manual_combo.setCurrentIndex(
+            _combo_index(self._rewrite_manual_combo, cfg.rewrite_manual_profile_id)
+        )
+        # A provenance mismatch must remain visible until an explicit edit/reset.
+        if cfg.rewrite_catalog is None or self._rewrite_profile_combo.currentIndex() < 0:
+            self._profile_editor_id = None
+            self._llm_prompt.setReadOnly(False)
+            self._show_profile_prompt(cfg.llm_system_prompt, cfg.llm_prompt_origin)
+        self._refresh_mapping_list()
+        self._update_catalog_damage_ui()
+
+    def _refresh_profile_choices(
+        self, selected: str | None = None, *, show_prompt: bool = True
+    ) -> None:
+        self._profile_loading = True
+        combos = (
+            self._rewrite_default_combo,
+            self._rewrite_manual_combo,
+            self._rewrite_profile_combo,
+            self._rewrite_mapping_profile_combo,
+        )
+        for combo in combos:
+            old = selected if combo is self._rewrite_profile_combo else combo.currentData()
+            combo.clear()
+            for profile in self._all_rewrite_profiles():
+                combo.addItem(f"{profile.name} [{profile.id}]", profile.id)
+            if old is not None:
+                combo.setCurrentIndex(_combo_index(combo, old))
+            else:
+                combo.setCurrentIndex(
+                    -1
+                    if combo
+                    in (
+                        self._rewrite_default_combo,
+                        self._rewrite_manual_combo,
+                    )
+                    else 0
+                )
+        self._profile_loading = False
+        if show_prompt:
+            self._on_profile_selected()
+        else:
+            self._profile_editor_id = self._rewrite_profile_combo.currentData()
+
+    def _show_profile_prompt(self, prompt: str, origin: str) -> None:
+        self._profile_loading = True
+        self._llm_prompt.setPlainText(prompt)
+        self._llm_prompt_baseline = (prompt, origin, self._llm_prompt.toPlainText())
+        self._profile_loading = False
+
+    def _on_profile_selected(self, *_args) -> None:
+        if self._profile_loading:
+            return
+        profile_id = self._rewrite_profile_combo.currentData()
+        profile = next((p for p in self._all_rewrite_profiles() if p.id == profile_id), None)
+        self._profile_editor_id = profile_id
+        if profile is None:
+            return
+        self._rewrite_name_input.setText(profile.name)
+        self._llm_prompt.setReadOnly(profile.kind == "raw")
+        prompt = DEFAULT_LLM_SYSTEM_PROMPT if profile.kind == "clean" else (profile.prompt or "")
+        origin = "default_v2" if profile.kind == "clean" else "user_saved"
+        if prompt == self._working.llm_system_prompt:
+            origin = self._working.llm_prompt_origin
+        self._show_profile_prompt(prompt, origin)
+
+    def _on_edit_profile_prompt(self) -> None:
+        self._tabs.setCurrentIndex(2)
+        self._llm_group.setVisible(True)
+        self._llm_prompt.setFocus()
+
+    def _on_profile_prompt_changed(self) -> None:
+        if self._profile_loading or not hasattr(self, "_rewrite_profiles"):
+            return
+        if self._working._rewrite_catalog_corrupt_original is not None:
+            return
+        original, _origin, displayed = self._llm_prompt_baseline
+        prompt = self._llm_prompt.toPlainText()
+        if prompt == displayed:
+            prompt = original
+        profile_id = self._profile_editor_id
+        if profile_id == "raw":
+            return
+        if profile_id == "clean" or profile_id is None:
+            if prompt == original:
+                return
+            profile_id = uuid.uuid4().hex
+            profile = RewriteProfile(profile_id, "Custom cleanup", "custom", prompt)
+            if len(self._rewrite_profiles) >= 32:
+                QMessageBox.warning(
+                    self, "Profile Limit", "Choose no more than 32 custom rewrite profiles"
+                )
+                self._show_profile_prompt(original, _origin)
+                return
+            self._rewrite_profiles.append(profile)
+            self._working.llm_prompt_origin = "user_saved"
+            self._working.llm_system_prompt = prompt
+            self._working.rewrite_manual_profile_id = profile_id
+            self._working.rewrite_selection_mode = "manual"
+            self._rewrite_mode_combo.setCurrentIndex(0)
+            self._rewrite_manual_combo.addItem(profile.name, profile.id)
+            self._rewrite_manual_combo.setCurrentIndex(
+                _combo_index(self._rewrite_manual_combo, profile_id)
+            )
+            # Updating selectors must not replace the editor and discard its undo stack.
+            self._refresh_profile_choices(profile_id, show_prompt=False)
+        else:
+            self._rewrite_profiles = [
+                RewriteProfile(p.id, p.name, p.kind, prompt) if p.id == profile_id else p
+                for p in self._rewrite_profiles
+            ]
+            self._working.llm_system_prompt = prompt
+            self._working.llm_prompt_origin = _origin if prompt == original else "user_saved"
+        if self._working.rewrite_catalog is None:
+            # Editing is explicit provenance repair; collection validates this draft.
+            self._working.rewrite_catalog = encode_rewrite_catalog([], [])
+
+    def _check_catalog_draft(self, profiles, mappings) -> bool:
+        try:
+            encode_rewrite_catalog(profiles, mappings)
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid Rewrite Profiles", str(e))
+            return False
+        return True
+
+    def _on_profile_add(self) -> None:
+        profile = RewriteProfile(uuid.uuid4().hex, self._rewrite_name_input.text(), "custom", "")
+        profiles = [*self._rewrite_profiles, profile]
+        if not self._check_catalog_draft(profiles, self._rewrite_app_mappings):
+            return
+        self._rewrite_profiles = profiles
+        self._refresh_profile_choices(profile.id)
+        self._tabs.setCurrentIndex(2)
+        self._llm_group.setVisible(True)
+        self._llm_prompt.setFocus()
+
+    def _on_profile_rename(self) -> None:
+        profile_id = self._rewrite_profile_combo.currentData()
+        if profile_id in ("raw", "clean", None):
+            QMessageBox.warning(self, "Built-in Profile", "Built-in profiles cannot be renamed.")
+            return
+        profiles = [
+            RewriteProfile(p.id, self._rewrite_name_input.text(), p.kind, p.prompt)
+            if p.id == profile_id
+            else p
+            for p in self._rewrite_profiles
+        ]
+        if self._check_catalog_draft(profiles, self._rewrite_app_mappings):
+            self._rewrite_profiles = profiles
+            self._refresh_profile_choices(profile_id)
+            self._refresh_mapping_list()
+
+    def _on_profile_delete(self) -> None:
+        profile_id = self._rewrite_profile_combo.currentData()
+        if profile_id in ("raw", "clean", None):
+            QMessageBox.warning(self, "Built-in Profile", "Built-in profiles cannot be deleted.")
+            return
+        if profile_id in (
+            self._rewrite_default_combo.currentData(),
+            self._rewrite_manual_combo.currentData(),
+        ) or any(m.profile_id == profile_id for m in self._rewrite_app_mappings):
+            QMessageBox.warning(
+                self,
+                "Profile In Use",
+                "Explicitly reassign default/manual selections and all application "
+                "mappings before deleting this profile.",
+            )
+            return
+        self._rewrite_profiles = [p for p in self._rewrite_profiles if p.id != profile_id]
+        self._refresh_profile_choices("clean")
+
+    def _refresh_mapping_list(self) -> None:
+        self._rewrite_mappings.clear()
+        names = {p.id: p.name for p in self._all_rewrite_profiles()}
+        for mapping in self._rewrite_app_mappings:
+            self._rewrite_mappings.addItem(
+                f"{mapping.executable_path} → {names[mapping.profile_id]}"
+            )
+
+    def _on_mapping_selected(self) -> None:
+        row = self._rewrite_mappings.currentRow()
+        if row >= 0:
+            mapping = self._rewrite_app_mappings[row]
+            self._rewrite_path_input.setText(mapping.executable_path)
+            self._rewrite_mapping_profile_combo.setCurrentIndex(
+                _combo_index(self._rewrite_mapping_profile_combo, mapping.profile_id)
+            )
+
+    def _on_mapping_write(self, edit: bool) -> None:
+        row = self._rewrite_mappings.currentRow()
+        if edit and row < 0:
+            return
+        mapping = AppMapping(
+            self._rewrite_path_input.text(), self._rewrite_mapping_profile_combo.currentData()
+        )
+        mappings = list(self._rewrite_app_mappings)
+        if edit:
+            mappings[row] = mapping
+        else:
+            mappings.append(mapping)
+        if self._check_catalog_draft(self._rewrite_profiles, mappings):
+            _, self._rewrite_app_mappings = decode_rewrite_catalog(
+                encode_rewrite_catalog(self._rewrite_profiles, mappings)
+            )
+            self._refresh_mapping_list()
+
+    def _on_mapping_remove(self) -> None:
+        row = self._rewrite_mappings.currentRow()
+        if row >= 0:
+            del self._rewrite_app_mappings[row]
+            self._refresh_mapping_list()
+
+    def _update_catalog_damage_ui(self) -> None:
+        damaged = self._working._rewrite_catalog_corrupt_original is not None
+        for widget in (self._rewrite_warning, self._rewrite_reset_btn, self._rewrite_replace_btn):
+            widget.setVisible(damaged)
+        self._tabs.setTabText(5, "Profiles ⚠" if damaged else "Profiles")
+        for widget in (
+            self._rewrite_mode_combo,
+            self._rewrite_default_combo,
+            self._rewrite_manual_combo,
+            self._rewrite_profile_combo,
+            self._rewrite_name_input,
+            self._rewrite_add_btn,
+            self._rewrite_edit_prompt_btn,
+            self._rewrite_rename_btn,
+            self._rewrite_delete_btn,
+            self._rewrite_mappings,
+            self._rewrite_path_input,
+            self._rewrite_mapping_profile_combo,
+            self._rewrite_mapping_add_btn,
+            self._rewrite_mapping_edit_btn,
+            self._rewrite_mapping_remove_btn,
+            self._llm_prompt,
+        ):
+            widget.setEnabled(not damaged)
+
+    def _confirm_catalog_repair(self, action: str) -> bool:
+        return (
+            QMessageBox.question(
+                self,
+                f"{action} Damaged Rewrite Catalog",
+                f"{action} the damaged catalog? The retained original will be replaced only when "
+                "you Apply or OK, and cannot then be recovered by Screamer.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            == QMessageBox.StandardButton.Yes
+        )
+
+    def _repair_catalog(self) -> None:
+        cfg = self._working
+        cfg._rewrite_catalog_corrupt_original = None
+        cfg.rewrite_catalog = encode_rewrite_catalog([], [])
+        cfg.rewrite_default_profile_id = cfg.rewrite_manual_profile_id = "clean"
+        cfg.rewrite_selection_mode = "manual"
+        cfg.llm_system_prompt = DEFAULT_LLM_SYSTEM_PROMPT
+        cfg.llm_prompt_origin = "default_v2"
+        self._populate_profiles(cfg)
+
+    def _on_catalog_repair(self, action: str) -> None:
+        if not self._confirm_catalog_repair(action):
+            return
+        if action == "Replace":
+            value, accepted = QInputDialog.getMultiLineText(
+                self,
+                "Replace Rewrite Catalog",
+                "Version-1 profiles and mappings JSON:",
+                encode_rewrite_catalog([], []),
+            )
+            if not accepted:
+                return
+            try:
+                profiles, mappings = decode_rewrite_catalog(value)
+            except ValueError as e:
+                QMessageBox.warning(self, "Invalid Rewrite Catalog", str(e))
+                return
+            self._repair_catalog()
+            self._working.rewrite_catalog = encode_rewrite_catalog(profiles, mappings)
+            self._populate_profiles(self._working)
+        else:
+            self._repair_catalog()
 
     # --- Audio tab -----------------------------------------------------
 
@@ -551,6 +1043,133 @@ class SettingsDialog(QDialog):
 
         self._tabs.addTab(tab, "Audio")
 
+    # --- Vocabulary tab ------------------------------------------------
+
+    def _build_vocabulary_tab(self) -> None:
+        tab = QWidget()
+        form = QFormLayout(tab)
+        hint = QLabel(
+            "Preferred spellings for names, acronyms, identifiers, and project terms. "
+            "These guide AI cleanup, not exact replacements or permission to invent content. "
+            "STT receives them only for providers explicitly opted in on the STT tab. "
+            "Engineering limits: 128 terms, 128 characters per term, 8,000 characters of "
+            "rendered guidance. Blank terms are discarded; duplicate spellings keep the first."
+        )
+        hint.setWordWrap(True)
+        form.addRow(hint)
+        self._vocabulary_warning = QLabel(
+            "Saved vocabulary is damaged. No terms are being used. The original value is "
+            "preserved during unrelated saves. Explicitly Reset or Replace to repair it; "
+            "Apply/OK then replaces the original. Cancel discards the repair."
+        )
+        self._vocabulary_warning.setWordWrap(True)
+        form.addRow(self._vocabulary_warning)
+        self._vocabulary_reset_btn = QPushButton("Reset damaged vocabulary…")
+        self._vocabulary_reset_btn.clicked.connect(lambda: self._on_vocabulary_repair("Reset"))
+        self._vocabulary_replace_btn = QPushButton("Replace damaged vocabulary…")
+        self._vocabulary_replace_btn.clicked.connect(lambda: self._on_vocabulary_repair("Replace"))
+        repairs = QHBoxLayout()
+        repairs.addWidget(self._vocabulary_reset_btn)
+        repairs.addWidget(self._vocabulary_replace_btn)
+        form.addRow(repairs)
+        self._vocabulary_list = QListWidget()
+        self._vocabulary_list.setMaximumHeight(200)
+        self._vocabulary_list.itemSelectionChanged.connect(self._on_vocabulary_selected)
+        form.addRow("Preferred terms:", self._vocabulary_list)
+        self._vocabulary_input = QLineEdit()
+        self._vocabulary_input.setPlaceholderText("One preferred spelling, e.g. PySide6")
+        form.addRow("Term:", self._vocabulary_input)
+        self._vocabulary_add_btn = QPushButton("Add")
+        self._vocabulary_add_btn.clicked.connect(self._on_vocabulary_add)
+        self._vocabulary_edit_btn = QPushButton("Edit selected")
+        self._vocabulary_edit_btn.clicked.connect(self._on_vocabulary_edit)
+        self._vocabulary_remove_btn = QPushButton("Remove selected")
+        self._vocabulary_remove_btn.clicked.connect(self._on_vocabulary_remove)
+        buttons = QHBoxLayout()
+        for button in (
+            self._vocabulary_add_btn,
+            self._vocabulary_edit_btn,
+            self._vocabulary_remove_btn,
+        ):
+            buttons.addWidget(button)
+        form.addRow(buttons)
+        self._tabs.addTab(tab, "Vocabulary")
+
+    def _vocabulary_values(self) -> list[str]:
+        return [self._vocabulary_list.item(i).text() for i in range(self._vocabulary_list.count())]
+
+    def _update_vocabulary_damage_ui(self) -> None:
+        damaged = self._working._vocabulary_corrupt_original is not None
+        self._vocabulary_warning.setVisible(damaged)
+        self._vocabulary_reset_btn.setVisible(damaged)
+        self._vocabulary_replace_btn.setVisible(damaged)
+        self._tabs.setTabText(4, "Vocabulary ⚠" if damaged else "Vocabulary")
+        for widget in (
+            self._vocabulary_list,
+            self._vocabulary_input,
+            self._vocabulary_add_btn,
+            self._vocabulary_edit_btn,
+            self._vocabulary_remove_btn,
+        ):
+            widget.setEnabled(not damaged)
+
+    def _confirm_vocabulary_repair(self, action: str) -> bool:
+        return (
+            QMessageBox.question(
+                self,
+                f"{action} Damaged Vocabulary",
+                f"{action} the damaged vocabulary? The retained original will be replaced when "
+                "you Apply or OK. It cannot be recovered by Screamer after that save.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            == QMessageBox.StandardButton.Yes
+        )
+
+    def _on_vocabulary_repair(self, action: str) -> None:
+        if not self._confirm_vocabulary_repair(action):
+            return
+        self._working._vocabulary_corrupt_original = None
+        self._working.vocabulary_entries = []
+        self._vocabulary_list.clear()
+        self._vocabulary_input.clear()
+        self._update_vocabulary_damage_ui()
+        if action == "Replace":
+            self._vocabulary_input.setFocus()
+
+    def _on_vocabulary_selected(self) -> None:
+        item = self._vocabulary_list.currentItem()
+        if item is not None:
+            self._vocabulary_input.setText(item.text())
+
+    def _set_vocabulary_values(self, entries: list[str]) -> None:
+        try:
+            normalized = normalize_vocabulary_entries(entries)
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid Vocabulary", str(e))
+            self._vocabulary_input.setFocus()
+            return
+        self._vocabulary_list.clear()
+        self._vocabulary_list.addItems(normalized)
+        self._vocabulary_input.clear()
+
+    def _on_vocabulary_add(self) -> None:
+        self._set_vocabulary_values([*self._vocabulary_values(), self._vocabulary_input.text()])
+
+    def _on_vocabulary_edit(self) -> None:
+        row = self._vocabulary_list.currentRow()
+        if row < 0:
+            return
+        entries = self._vocabulary_values()
+        entries[row] = self._vocabulary_input.text()
+        self._set_vocabulary_values(entries)
+
+    def _on_vocabulary_remove(self) -> None:
+        row = self._vocabulary_list.currentRow()
+        if row >= 0:
+            self._vocabulary_list.takeItem(row)
+            self._vocabulary_input.clear()
+
     # ------------------------------------------------------------------
     # Populate / collect
     # ------------------------------------------------------------------
@@ -565,6 +1184,12 @@ class SettingsDialog(QDialog):
         idx = _combo_index(self._post_key_combo, cfg.post_type_key)
         self._post_key_combo.setCurrentIndex(max(idx, 0))
         self._startup_check.setChecked(cfg.start_with_windows)
+        self._output_mode_combo.setCurrentIndex(
+            _combo_index(self._output_mode_combo, cfg.output_mode)
+        )
+        self._recovery_hotkey_input.setText(cfg.recovery_hotkey)
+        self._history_check.setChecked(cfg.history_enabled)
+        self._history_limit_spin.setValue(cfg.history_limit)
 
         # STT
         self._stt_key.setText(cfg.stt_api_key)
@@ -578,6 +1203,8 @@ class SettingsDialog(QDialog):
         self._stt_favorite_input.clear()
         self._refresh_language_choices(cfg.stt_language)
         self._stt_headers.setText(cfg.stt_custom_headers)
+        self._stt_prompt_primary_check.setChecked(cfg.stt_prompt_primary_enabled)
+        self._stt_prompt_fallback_check.setChecked(cfg.stt_prompt_fallback_enabled)
         self._stt_fb_check.setChecked(cfg.stt_fallback_enabled)
         self._stt_fb_key.setText(cfg.stt_fallback_api_key)
         self._stt_fb_url.setText(cfg.stt_fallback_base_url)
@@ -590,12 +1217,7 @@ class SettingsDialog(QDialog):
         self._llm_url.setText(cfg.llm_base_url)
         self._llm_model.setText(cfg.llm_model)
         self._llm_headers.setText(cfg.llm_custom_headers)
-        self._llm_prompt.setPlainText(cfg.llm_system_prompt)
-        self._llm_prompt_baseline = (
-            cfg.llm_system_prompt,
-            cfg.llm_prompt_origin,
-            self._llm_prompt.toPlainText(),
-        )
+        self._populate_profiles(cfg)
         self._llm_fb_check.setChecked(cfg.llm_fallback_enabled)
         self._llm_fb_key.setText(cfg.llm_fallback_api_key)
         self._llm_fb_url.setText(cfg.llm_fallback_base_url)
@@ -606,6 +1228,10 @@ class SettingsDialog(QDialog):
         self._select_device(cfg.audio_device_id, cfg.audio_device_name)
         self._rms_spin.setValue(cfg.rms_threshold)
         self._rms_label.setText(f"Threshold: {cfg.rms_threshold:.1f}")
+        self._vocabulary_list.clear()
+        self._vocabulary_list.addItems(cfg.vocabulary_entries)
+        self._vocabulary_input.clear()
+        self._update_vocabulary_damage_ui()
 
     def _collect(self) -> None:
         """Write widget values back into self._working."""
@@ -617,6 +1243,12 @@ class SettingsDialog(QDialog):
         cfg.recording_mode = "toggle" if self._mode_toggle.isChecked() else "hold"
         cfg.post_type_key = self._post_key_combo.currentData()
         cfg.start_with_windows = self._startup_check.isChecked()
+        cfg.output_mode = self._output_mode_combo.currentData()
+        cfg.recovery_hotkey = self._recovery_hotkey_input.text().strip()
+        cfg.history_enabled = self._history_check.isChecked()
+        cfg.history_limit = self._history_limit_spin.value()
+        if cfg._vocabulary_corrupt_original is None:
+            cfg.vocabulary_entries = self._vocabulary_values()
 
         # STT
         cfg.stt_api_key = self._stt_key.text().strip()
@@ -628,6 +1260,8 @@ class SettingsDialog(QDialog):
             for i in range(self._stt_favorites.count())
         ]
         cfg.stt_custom_headers = self._stt_headers.text().strip()
+        cfg.stt_prompt_primary_enabled = self._stt_prompt_primary_check.isChecked()
+        cfg.stt_prompt_fallback_enabled = self._stt_prompt_fallback_check.isChecked()
         cfg.stt_fallback_enabled = self._stt_fb_check.isChecked()
         cfg.stt_fallback_api_key = self._stt_fb_key.text().strip()
         cfg.stt_fallback_base_url = self._stt_fb_url.text().strip()
@@ -640,15 +1274,18 @@ class SettingsDialog(QDialog):
         cfg.llm_base_url = self._llm_url.text().strip()
         cfg.llm_model = self._llm_model.text().strip()
         cfg.llm_custom_headers = self._llm_headers.text().strip()
-        prompt = self._llm_prompt.toPlainText()
-        original_prompt, origin, displayed_prompt = self._llm_prompt_baseline
-        # Qt normalizes line endings; unrelated Apply/OK must keep the original string.
-        if prompt != displayed_prompt:
-            cfg.llm_system_prompt = prompt
-            cfg.llm_prompt_origin = "user_saved"
-        else:
-            cfg.llm_system_prompt = original_prompt
-            cfg.llm_prompt_origin = origin
+        self._rewrite_error = None
+        if cfg._rewrite_catalog_corrupt_original is None:
+            if cfg.rewrite_catalog is not None:
+                try:
+                    cfg.rewrite_catalog = encode_rewrite_catalog(
+                        self._rewrite_profiles, self._rewrite_app_mappings
+                    )
+                except ValueError as e:
+                    self._rewrite_error = str(e)
+            cfg.rewrite_default_profile_id = self._rewrite_default_combo.currentData()
+            cfg.rewrite_manual_profile_id = self._rewrite_manual_combo.currentData()
+            cfg.rewrite_selection_mode = self._rewrite_mode_combo.currentData()
         cfg.llm_fallback_enabled = self._llm_fb_check.isChecked()
         cfg.llm_fallback_api_key = self._llm_fb_key.text().strip()
         cfg.llm_fallback_base_url = self._llm_fb_url.text().strip()
@@ -792,12 +1429,21 @@ class SettingsDialog(QDialog):
         """Import .env into the working copy (empty fields only)."""
         with log_duration(log, "Settings import from .env"):
             self._collect()
+            if self._rewrite_error is not None:
+                self._show_validation_issue()
+                return
             self._working = import_from_env(self._working)
             self._populate(self._working)
             log.info("Imported .env values into settings")
 
     def _on_reset(self) -> None:
         """Reset all fields to defaults."""
+        if self._working._rewrite_catalog_corrupt_original is not None:
+            if not self._confirm_catalog_repair("Reset"):
+                return
+        if self._working._vocabulary_corrupt_original is not None:
+            if not self._confirm_vocabulary_repair("Reset"):
+                return
         with log_duration(log, "Settings reset to defaults"):
             self._working = reset_config()
             self._populate(self._working)
@@ -855,7 +1501,23 @@ class SettingsDialog(QDialog):
         return self._hotkey_capture.is_recording()
 
     def _show_validation_issue(self) -> bool:
-        issue = next(iter(validate_config(self._working)), None)
+        if self._rewrite_error is not None:
+            QMessageBox.warning(self, "Invalid Rewrite Profiles", self._rewrite_error)
+            self._tabs.setCurrentIndex(5)
+            return False
+        # A retained damaged catalog is still a validation issue at the public boundary,
+        # but must not prevent an unrelated settings save from preserving its source.
+        issue = next(
+            (
+                issue
+                for issue in validate_config(self._working)
+                if not (
+                    issue.tab_index == 5
+                    and self._working._rewrite_catalog_corrupt_original is not None
+                )
+            ),
+            None,
+        )
         if issue is None:
             return True
 
@@ -869,15 +1531,19 @@ class SettingsDialog(QDialog):
         from src.utils import ScreamerError
 
         try:
+            self._working.vocabulary_entries = normalize_vocabulary_entries(
+                self._working.vocabulary_entries
+            )
+            recovery = Hotkey.parse(self._working.recovery_hotkey)
+            if recovery is not None:
+                self._working.recovery_hotkey = recovery.to_canonical()
             save_config(self._working)
         except ScreamerError as e:
             QMessageBox.warning(self, "Settings Save Failed", e.code.value)
             return False
-        self._llm_prompt_baseline = (
-            self._working.llm_system_prompt,
-            self._working.llm_prompt_origin,
-            self._llm_prompt.toPlainText(),
-        )
+        except ValueError as e:
+            QMessageBox.warning(self, "Settings Save Failed", str(e))
+            return False
         self.applied.emit()
         return self._sync_startup_or_warn()
 

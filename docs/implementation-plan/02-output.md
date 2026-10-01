@@ -1,6 +1,6 @@
 # 2. Reliable Insertion and Clipboard Output
 
-> **Status:** planned, not shipped. Expands [feature 2](../FEATURES.md#2-reliable-insertion-and-clipboard-output-p1). Requires the small in-memory recovery slice of [feature 3](03-recovery.md) before automatic output can be withheld.
+> **Status (2026-09-30):** code implemented; Windows acceptance remains open. Current APIs and runtime behavior are canonical in [IMPLEMENTATION.md](../IMPLEMENTATION.md). Expands [feature 2](../FEATURES.md#2-reliable-insertion-and-clipboard-output-p1); recovery is implemented in [feature 3](03-recovery.md). Do not interpret implementation as a published release or certified Windows behavior.
 
 ## Review and gate
 

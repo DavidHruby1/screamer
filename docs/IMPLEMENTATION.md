@@ -3,8 +3,10 @@
 This is the current architecture and public API reference. The original build plan is
 historical context in [PLAN.md](PLAN.md); release operations are in [RELEASES.md](RELEASES.md).
 
-`main.py` owns the tray UI, recording state machine and worker lifecycle. Network work
-runs in a QThread; final text injection runs on the Qt main thread.
+`main.py` owns the tray UI, recording state machine, session snapshot, result ownership,
+delivery decision and worker lifecycle. Network work runs in one `QThread`; clipboard
+and final text injection run on the Qt main thread. See the current data flow and the
+implemented-but-not-yet-manually-verified gates below.
 
 ---
 
@@ -24,6 +26,8 @@ src/
 ├── rewrite.py
 ├── http_client.py
 ├── injector.py
+├── results.py
+├── recovery_dialog.py
 ├── icons.py
 ├── snackbar.py
 ├── utils.py
@@ -56,6 +60,11 @@ class AppError(Enum):
     UNSUPPORTED_PLATFORM = "This feature is only available on Windows."
     KEY_STORAGE_FAILED = "Could not save or load API keys securely."
     STARTUP_REGISTRATION_FAILED = "Could not update Windows startup setting."
+    OUTPUT_WITHHELD = "Typing withheld because the target changed. Open Recovery to copy or arm insertion."
+    CLIPBOARD_FAILED = "Could not copy text. Open Recovery to try explicitly."
+    HISTORY_STORAGE_FAILED = "Could not read or save encrypted history. RAM recovery remains available; explicitly Clear to remove an unreadable file."
+    HISTORY_DISABLED = "Enable history to delete a saved entry, or explicitly Clear all."
+    CONFIG_INVALID = "Invalid settings. Open Settings and repair the rewrite profile configuration."
 
 class ScreamerError(Exception):
     def __init__(self, code: AppError, detail: str | None = None): ...
@@ -63,6 +72,8 @@ class ScreamerError(Exception):
 class SignalBridge(QObject):
     hotkey_pressed = Signal()
     hotkey_released = Signal()
+    recovery_requested = Signal()
+    recovery_cancelled = Signal()
     error_occurred = Signal(AppError)
 
 @dataclass
@@ -72,6 +83,71 @@ class PipelineResult:
 
 APP_NAME: str           # "Screamer"
 APP_DIR: str            # resolved %LOCALAPPDATA%/Screamer/
+```
+
+### injector.py
+
+```python
+@dataclass(frozen=True)
+class WindowIdentity:
+    hwnd: int
+    process_id: int
+    executable_path: str | None
+
+def get_foreground_target() -> WindowIdentity | None: ...
+
+@dataclass(frozen=True)
+class InjectionReport:
+    text_events_submitted: int
+    post_key_events_submitted: int
+    post_key_skipped: bool
+
+class InjectionError(ScreamerError):
+    text_events_submitted: int
+    post_key_events_submitted: int
+
+def type_text(text: str, post_key: str | None = None, *,
+              expected_target: WindowIdentity | None = None) -> InjectionReport: ...
+    """Submitted-event counts are not proof of visible insertion; no retry on partial send."""
+```
+
+### results.py
+
+```python
+@dataclass(frozen=True)
+class DeliveryAttempt:
+    attempted_at: str
+    mode: str                 # type | copy | copy_and_type | manual
+    copied: bool = False
+    text_state: str = "not_attempted"
+    text_events_submitted: int | None = None
+    post_key_state: str = "not_requested"
+    reason: str | None = None
+
+@dataclass(frozen=True)
+class DictationRecord:
+    id: str
+    created_at: str
+    raw_text: str
+    rewritten_text: str | None = None
+    rewrite_status: str = "not_requested"
+    warnings: tuple[AppError, ...] = ()
+    language: str = ""
+    target_executable: str | None = None
+    profile_id: str | None = None
+    last_delivery: DeliveryAttempt | None = None
+
+    @property
+    def final_text(self) -> str: ...
+
+class HistoryStore:
+    def load(self) -> list[DictationRecord]: ...
+    def upsert(self, record: DictationRecord, limit: int) -> list[DictationRecord]: ...
+    def delete(self, record_id: str, limit: int = 100) -> list[DictationRecord]: ...
+    def trim(self, limit: int) -> list[DictationRecord]: ...
+    def commit_retention(self, limit: int) -> list[DictationRecord]: ...
+    def clear(self) -> None: ...
+
 ```
 
 ### config.py
@@ -123,6 +199,11 @@ class AppConfig:
     hotkey: str = "ctrl+alt+key:0x20"     # canonical Hotkey string (see Hotkey.parse)
     recording_mode: str = "hold"          # "hold" | "toggle"
     post_type_key: str = "none"           # "none" | "enter" | "tab" | "space" | "backspace"
+    output_mode: str = "type"              # "type" | "copy" | "copy_and_type"
+    history_enabled: bool = False          # opt-in encrypted text history
+    history_limit: int = 100               # 1..100
+    recovery_hotkey: str = "ctrl+alt+shift+key:0x56"
+    vocabulary_entries: list[str] = field(default_factory=list)
     start_with_windows: bool = False
     audio_device_id: int | None = None
     audio_device_name: str = ""
@@ -134,12 +215,14 @@ class AppConfig:
     stt_language: str = ""
     stt_language_favorites: list[str] = field(default_factory=list)
     stt_custom_headers: str = ""
+    stt_prompt_primary_enabled: bool = False
     # STT fallback
     stt_fallback_enabled: bool = False
     stt_fallback_api_key: str = ""
     stt_fallback_base_url: str = ""
     stt_fallback_model: str = ""
     stt_fallback_custom_headers: str = ""
+    stt_prompt_fallback_enabled: bool = False
     # LLM
     llm_enabled: bool = False
     llm_api_key: str = ""
@@ -154,6 +237,10 @@ class AppConfig:
     llm_fallback_base_url: str = ""
     llm_fallback_model: str = ""
     llm_fallback_custom_headers: str = ""
+    rewrite_catalog: str | None = None
+    rewrite_default_profile_id: str = "clean"
+    rewrite_selection_mode: str = "manual"
+    rewrite_manual_profile_id: str = "clean"
 
     def stt_provider(self) -> ProviderConfig: ...
     def stt_fallback_provider(self) -> FallbackProviderConfig: ...
@@ -183,7 +270,8 @@ def reset_config() -> AppConfig: ...
     """Fresh AppConfig with all defaults. Does not write disk."""
 
 def import_from_env(cfg: AppConfig) -> AppConfig: ...
-    """Read .env at cwd (next to the exe when frozen); backfill ONLY empty str fields."""
+    """Read .env at cwd (next to the exe when frozen); backfill empty str fields,
+    except an explicitly persisted empty stt_language (Auto)."""
 
 def setup_logging(debug: bool = False) -> None: ...
     """Rotating file at APP_DIR/screamer.log. Never log api_key values.
@@ -194,6 +282,38 @@ def parse_custom_headers(custom_headers: str) -> dict[str, str]: ...
 
 def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]: ...
     """Return all startup/settings validation issues for the current config."""
+
+def stt_provider_is_configured(provider: ProviderConfig) -> bool: ...
+    """STT requires URL + model; key is optional. LLM still requires key + URL + model."""
+
+def normalize_vocabulary_entries(entries: list[str]) -> list[str]: ...
+    """Trim and casefold-deduplicate; cap 128 terms, 128 chars/term and 8,000 rendered chars."""
+
+def encode_vocabulary_entries(entries: list[str]) -> str: ...
+def decode_vocabulary_entries(value: object) -> list[str]: ...
+def protect_bytes(data: bytes) -> bytes: ...
+def unprotect_bytes(data: bytes) -> bytes: ...
+    """Share the existing Windows-user DPAPI primitive; unsupported off Windows."""
+
+@dataclass(frozen=True)
+class RewriteProfile:
+    id: str
+    name: str
+    kind: str                 # raw | clean | custom
+    prompt: str | None = None
+
+@dataclass(frozen=True)
+class AppMapping:
+    executable_path: str
+    profile_id: str
+
+def builtin_rewrite_profiles() -> tuple[RewriteProfile, RewriteProfile]: ...
+def normalize_executable_path(value: str) -> str: ...
+def decode_rewrite_catalog(value: object) -> tuple[list[RewriteProfile], list[AppMapping]]: ...
+def encode_rewrite_catalog(profiles: list[RewriteProfile], mappings: list[AppMapping]) -> str: ...
+def migrate_rewrite_catalog(cfg: AppConfig) -> None: ...
+def resolve_rewrite_profile(cfg: AppConfig, executable_path: str | None) -> RewriteProfile: ...
+    """Resolve raw when global rewrite is off; otherwise manual or Automatic mapping/default."""
 ```
 
 The version-2 default cleanup prompt treats dictated questions, commands and apparent
@@ -222,8 +342,13 @@ Failed validation/save does not advance the prompt baseline: undoing an edit bef
 a retry retains the exact original prompt and origin (or a deliberately selected
 reset default). An LLM validation issue exposes its repair controls without enabling
 rewriting.
-Cancel discards changes since the last successful Apply. No raw/final inspection
-or model-quality certification is supplied by this prompt-only increment.
+Cancel discards changes since the last successful Apply. Raw/final inspection is
+available in Recovery; prompt instructions do not establish model-quality certification.
+
+Language key presence is tracked privately across configuration drafts. An explicitly
+saved Auto selection remains Auto during `.env` backfill after restart; an absent
+language key can still import `STT_LANGUAGE`. This does not change empty credential,
+URL or model backfill, and the private marker is never serialized to the INI.
 
 ### audio.py
 
@@ -315,15 +440,6 @@ def rewrite(text: str, config: AppConfig) -> PipelineResult: ...
     Returns input text unchanged in PipelineResult.text if config.llm_enabled is False."""
 ```
 
-### injector.py
-
-```python
-def type_text(text: str, post_key: str | None = None) -> None: ...
-    """Win32 SendInput (KEYEVENTF_UNICODE). 0.05s delay then press post_key if not None.
-    Text is batched; post-key down/up form a separate single batch. Partial input has no rollback.
-    Raises ScreamerError(AppError.INJECTION_FAILED) on failure."""
-```
-
 ### icons.py
 
 ```python
@@ -373,7 +489,7 @@ class SettingsDialog(QDialog):
         calibrate_fn: Callable[[int | None], float] | None = None,
         refresh_devices_fn: Callable[[], list[tuple[int, str]]] | None = None,
     ): ...
-        """4-tab dialog (General, STT, LLM, Audio) prefilled from config.
+        """6-tab dialog (General, STT, LLM, Audio, Vocabulary, Rewrite Profiles) prefilled from config.
         Edits a copy; Apply and OK persist validated settings.
         *devices*: list of (device_id, display_name) for the Audio tab.
         *calibrate_fn*: fn(device_id) -> float for RMS calibration, after fresh identity validation.
@@ -495,8 +611,10 @@ ruff format --check src/ tests/ .github/scripts/
   Config-mutating tray controls are disabled during Settings, including after Apply;
   Enabled and Exit remain usable.
 - Recording start takes one config copy for audio setup, STT primary/fallback, optional
-  rewrite and post-type key. Tray setting changes during recording or processing do not
-  alter that session; the next recording uses the then-current configuration.
+  rewrite, output mode/post-type key, vocabulary and profile. It captures foreground
+  HWND/PID and optional executable path before recording UI changes focus, resolves the
+  profile then, and stores both in one session. Tray changes during recording or
+  processing do not alter that session; the next recording uses current configuration.
 - Binding/mode changes during recording are saved immediately but the listener restarts
   only after the current recording ends. The old HOLD release remains effective.
 - Apply and OK save before updating the Windows startup registration. A registry failure
@@ -515,10 +633,62 @@ ruff format --check src/ tests/ .github/scripts/
 - Exit cancels queued processing, stops audio, and waits for the active network call and
   calibration thread to finish before saving settings and quitting Qt. A stalled network
   request can delay exit; the worker is never force-terminated. A failed shutdown save is
-  logged but does not prevent quitting.
+  logged but does not prevent quitting. If Qt returns without tray Exit, final cleanup
+  stops capture/hooks and joins the actual worker and calibration threads without relying
+  on queued callbacks. The worker's retained immutable terminal payload lets main recover
+  the raw result after that join. Opt-in checkpoints and suppressed-attempt history are
+  still committed during orderly shutdown; automatic output remains blocked.
 - Disable discards an active recording and cancels processing before injection starts.
   Final text injection runs on the Qt thread so a Disable action cannot interleave with its
   final check; already-sent `SendInput` events cannot be undone.
+- Only one dictation worker may be active. Hotkey presses while `_worker` exists are
+  ignored; no queue is created. The busy gate is released only after both terminal
+  handling and `QThread.finished`. Cancellation is checked around blocking calls, not
+  inside them, so an in-flight HTTP request can delay completion.
+- After usable STT, `raw_ready(session_id, raw, warnings)` checkpoints raw text to the
+  main-thread owner before rewrite/cancellation. Terminal outcomes are session-ID matched
+  and can reconstruct raw if signal handling order differs. A rewrite rerun creates a
+  separate candidate rather than silently replacing its source record.
+- Automatic type/copy-and-type uses the captured session policy. Main checks current
+  foreground identity; `type_text` additionally checks expected HWND/PID before text
+  and after its 50 ms pause before post-key. Copy-only is focus-independent;
+  copy-and-type copies first. Result status describes clipboard writes and submitted
+  event counts, not visible text. No automatic resend or rollback occurs.
+- Windows copy success additionally requires Qt clipboard ownership after `setText()`;
+  native clipboard failures can return without a Python exception. Missing ownership
+  is reported as a copy failure without reading/restoring the clipboard or retrying.
+- Recovery exposes raw/final copy or Arm, explicit cleanup rerun, history deletion/clear,
+  and Retry/Discard for one in-memory WAV retained only after STT failure. Retry uses
+  its original config snapshot, is recovery-only (no automatic output), and holds the
+  WAV until STT succeeds. WAV is never persisted and is lost on exit/crash.
+- Latest usable text remains in RAM even with history disabled. Persistent history is
+  opt-in (default off) and stores validated version-1 JSON as DPAPI-protected ciphertext
+  at `APP_DIR/history.enc`; writes use ciphertext-only temporary files, fsync and atomic
+  replacement. Retention is 1..100 on commit. Read/decrypt/schema/write failures fail
+  closed while RAM recovery remains available. Turning history off stops ordinary
+  reads/writes but leaves prior saved entries until explicit Clear. Delete is not a
+  secure-erasure guarantee for backups or other copies.
+- `main()` acquires a `QLockFile` under resolved `APP_DIR` before config load or tray
+  construction. A second process exits with a notice. The lock spans Qt execution and
+  synchronous final thread/dialog cleanup, and is released only after HTTP client close.
+- Recovery shortcut defaults to `Ctrl+Alt+Shift+V`. `RegisterHotKey` reserves keyboard
+  chords; if reservation fails, recovery handling is disabled and a conflict is
+  surfaced. Other apps' low-level-hook bindings are not detectable. Mouse recovery
+  bindings are rejected; Escape is reserved for cancelling an armed insert and cannot
+  be a recovery trigger. Injected keyboard events pass through the hook without
+  changing physical trigger state, so Screamer's post-key cannot trigger dictation.
+- Vocabulary is JSON in ordinary settings. Terms are trimmed, blanks dropped,
+  casefold-deduplicated in order, and bounded to 128 entries, 128 characters per term
+  and 8,000 rendered characters. Malformed persisted data uses an empty effective list
+  but preserves the original on unrelated saves until explicit repair. `rewrite()` adds
+  quoted spelling guidance; STT adds multipart `prompt` only when that provider's own
+  opt-in is enabled and vocabulary is nonempty. These are hints, not guarantees.
+- Rewrite profiles are code-owned `raw`/`clean` plus up to 32 custom profiles in a
+  versioned JSON catalog. Manual selection persists until Automatic is selected;
+  Automatic matches the captured executable's normalized full path then falls back to
+  the configured default. Global AI Rewrite off resolves to raw while preserving the
+  selection. Legacy prompt migration uses persisted prompt-key presence/provenance;
+  damaged catalogs are preserved and require explicit repair, not silently emptied.
 
 ## Storage and Limits
 
@@ -544,3 +714,108 @@ ruff format --check src/ tests/ .github/scripts/
   Completed/discarded frame lists are released.
 - Source autostart inserts the absolute package root before loading `src.main`, so it
   does not depend on the working directory. The packaged executable command is unchanged.
+
+## Implemented Roadmap Slices and Open Gates
+
+Features 2, 3, 6, 7 and 8 have implementation in the current source tree. This means
+code and automated coverage exist; it does **not** mean the roadmap's separate manual
+Windows acceptance has passed, a release has been published, or all Windows behavior
+is certified. Features 1 and 5 remain code-implemented with their original manual gates
+open, as tracked in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md). Feature 2's
+Notepad root cause is unconfirmed and has not been fixed by diagnosis: no confirmed
+reproducer/evidence is asserted here. The integrated Linux run passed 287 tests with
+5 Windows-only skips, compileall, import, Ruff check/format and `git diff --check`.
+A packaged Windows build and its real-desktop acceptance checks have not been run.
+
+## Current Session and Recovery Flow
+
+```mermaid
+flowchart LR
+    HK[Win32 low-level hooks] -->|SignalBridge queued to Qt| M[main.py Qt session owner]
+    M -->|deepcopy config + target + profile + ID| S[session]
+    S --> A[audio recorder]
+    A -->|usable WAV| W[one QThread]
+    W --> STT[transcribe: STT primary / fallback]
+    STT -->|raw_ready| M
+    W --> RW[rewrite: optional primary / fallback]
+    W -->|terminal outcome| M
+    M --> R[latest immutable DictationRecord in RAM]
+    R -->|if opted in| HS[HistoryStore -> DPAPI ciphertext]
+    M -->|Qt delivery gate| OUT[copy / guarded SendInput]
+    OUT -->|attempt counts/status, not visibility| R
+    R --> UI[on-demand RecoveryDialog]
+    UI -->|explicit copy, arm, rerun, retry| M
+```
+
+Successful STT is retained before rewrite. Terminal outcomes update that record, and
+ordinary output follows retention. A session is not idle until terminal handling and
+thread completion both occur. STT failure may retain one WAV in memory; successful STT
+clears it. Persistent history has no audio, config system prompt or provider API-key
+fields. Settings and history are separate stores, not one transaction.
+
+## Current API and Persistence Notes
+
+`transcribe(audio_wav, config) -> PipelineResult` and `rewrite(text, config) ->
+PipelineResult` remain the public backend signatures. STT completeness is URL plus model,
+with optional API key; LLM completeness still requires key, URL and model. `rewrite()`
+returns its input when disabled; when enabled it adds vocabulary guidance and selected
+language to its system prompt. `stt.py` adds multipart `prompt` only for an individually
+opted-in provider with nonempty vocabulary. Keyless STT omits generated Bearer auth;
+configured custom headers remain provider-local.
+
+`SettingsDialog` has six tabs (General, STT, LLM, Audio, Vocabulary, Rewrite Profiles).
+It edits a draft; Apply/OK validate and save, Cancel discards unapplied edits. General
+contains output/history/recovery controls. `HistoryStore.load()` validates the complete
+file then returns sorted latest entries; `trim()` limits a view without rewriting the
+file. `upsert()` and `delete()` perform read-modify-write and retention, while mutations
+refuse corrupt input. The `main()` per-APP_DIR lock is required for this single-writer
+storage boundary. Delete uses the configured retention limit, and Settings Apply explicitly
+commits a reduced limit; opening or cancelling Settings does not rewrite history.
+
+After a manual attempt on an older entry, RAM latest retains the actual outcome even if
+the history write fails; the committed list still describes the earlier disk state. A
+rewrite candidate remains a RAM-only preview, including after Copy or Arm/insert, and
+never silently becomes an unlinked saved entry or replaces its source.
+
+Recovery presents text as plain text. A last-attempt label means only a recorded
+operation and its SendInput counts, never confirmed visible delivery. Clipboard copies
+can expose dictated text to other software and are not restored automatically. Damaged
+history can be removed only by explicit Clear; backups are outside deletion guarantees.
+
+## Known Limits of Implemented Behavior
+
+- `get_foreground_target()` returns `None` off Windows; executable path is optional.
+  Profile matching uses path, whereas output compares HWND/PID. Neither proves the same
+  control or caret, and no window title/content is collected.
+- `SendInput` counts and clipboard writes do not establish visible insertion/paste.
+  Focus can change between a check and OS submission; partial text cannot be rolled
+  back and is never automatically resent.
+- `RegisterHotKey` catches registered-chord conflicts but cannot discover another
+  application's low-level-hook binding. Packaged Windows hotkey, foreground and
+  target-application behavior remains a manual gate.
+- DPAPI-backed persistence cannot be fully verified off Windows. RAM results and
+  pending WAV do not survive a crash unless text has already been committed to opt-in
+  history; WAV never survives.
+- Local STT is a configured HTTP endpoint, not an egress restriction. Enabled cloud
+  fallback or LLM rewrite can still use the network; there is no local-only firewall.
+
+## Sources
+
+- [`src/main.py`](../src/main.py): composition root, startup lock, session/profile snapshot,
+  worker signals, output checks, retention and recovery actions.
+- [`src/results.py`](../src/results.py): immutable record/attempt schema, validation,
+  DPAPI history boundary and atomic ciphertext persistence.
+- [`src/recovery_dialog.py`](../src/recovery_dialog.py): on-demand recovery view and
+  busy/enabled action gating.
+- [`src/config.py`](../src/config.py): current `AppConfig`, collection codecs, migration,
+  validation, DPAPI primitives and profile resolution.
+- [`src/settings_dialog.py`](../src/settings_dialog.py): six-tab settings draft, validation,
+  Apply/Cancel and history/vocabulary/profile controls.
+- [`src/injector.py`](../src/injector.py): foreground identity and guarded Win32 event
+  submission/count reporting.
+- [`src/hotkey.py`](../src/hotkey.py): dictation and recovery chord event state, reservation
+  and release dispatch.
+- [`src/stt.py`](../src/stt.py), [`src/rewrite.py`](../src/rewrite.py): current provider
+  request and prompt behavior; their public signatures remain `PipelineResult` based.
+- [`docs/IMPLEMENTATION-PLAN.md`](IMPLEMENTATION-PLAN.md): roadmap status and outstanding
+  acceptance gates; it does not replace this current-contract reference.

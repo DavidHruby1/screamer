@@ -1,9 +1,8 @@
 # 7. Simple Rewrite Profiles and App Matching
 
-> **Status:** planned, not shipped. This plan expands P2 from
+> **Status (2026-09-30):** code implemented; final automated checks and Windows app-matching acceptance remain pending. Current config, migration and runtime contracts are canonical in [IMPLEMENTATION.md](../IMPLEMENTATION.md). This detailed design expands P2 from
 > [FEATURES.md](../FEATURES.md#7-simple-rewrite-profiles-and-app-matching-p2).
-> There are currently only global `llm_enabled` and `llm_system_prompt`
-> settings; no profile model or executable matching exists.
+> The source now includes profile settings, migration, resolution and captured-executable matching; Windows identity behavior is not certified here.
 
 ## Summary
 
@@ -118,13 +117,13 @@ flowchart LR
 
 ### Legacy settings migration
 
-The old config has `llm_enabled` (default false) and `llm_system_prompt` (the
-current editable prompt). Feature 4 revises the default prompt and adds
-`llm_prompt_origin`, because its own `save_config()` persists even an untouched
-new default. A text comparison cannot distinguish an untouched old prompt
-from a deliberately saved prompt equal to the old default. For installations
-which have not run feature 4, migration uses actual persisted-key presence;
-after feature 4, use its explicit provenance marker instead.
+The existing config has `llm_enabled` (default false), `llm_system_prompt` (the
+current editable prompt), and persisted `llm_prompt_origin`, as documented in
+[IMPLEMENTATION.md](../IMPLEMENTATION.md#configpy). `save_config()` persists even
+an untouched new default. A text comparison cannot distinguish an untouched old
+prompt from a deliberately saved prompt equal to the old default. For older INIs
+without provenance, migration uses actual persisted-key presence; otherwise use
+the explicit provenance marker.
 
 | Prior persisted state | Migration result |
 | --- | --- |
@@ -139,10 +138,10 @@ after feature 4, use its explicit provenance marker instead.
 Important coupling: current `save_config` persists dataclass fields but does not
 preserve a deleted unknown value if migration has not decoded it. Implement
 migration before ordinary save and write old prompt plus new profile state
-atomically. For INIs without feature-4 provenance, use
-`settings.contains("llm_system_prompt")` at the migration boundary. Feature 4
-may update `DEFAULT_LLM_SYSTEM_PROMPT` before profiles ship; its clean default
-must not implicitly set `llm_enabled=True` for new installs. Preserve the marker
+atomically. For INIs without provenance, use
+`settings.contains("llm_system_prompt")` at the migration boundary. The existing
+`DEFAULT_LLM_SYSTEM_PROMPT` supplies clean mode and must not implicitly set
+`llm_enabled=True` for new installs. Preserve the marker
 or a profile-schema version so repeat loads do not duplicate the legacy profile.
 
 ### App matching and capture
@@ -250,8 +249,9 @@ sequenceDiagram
   include `profile_id`; recovery rerun from raw must use the profile chosen by
   the explicit rerun action or clearly record the new profile, not silently
   overwrite the original dictation's identity.
-- Feature 4 revises the conservative clean prompt and preserves authored
-  prompts. Prompt fidelity is a best-effort contract, not semantic guarantee.
+- Reuse the existing conservative clean prompt and preserve authored prompts
+  according to [IMPLEMENTATION.md](../IMPLEMENTATION.md#configpy). Prompt fidelity
+  is a best-effort contract, not semantic guarantee.
 - Existing `llm_enabled` quick toggle stays a global off switch. Providers,
   credentials, language and output settings remain global.
 - Settings is modal but has a nested event loop. Disable config-mutating tray
@@ -295,7 +295,7 @@ sequenceDiagram
    kinds, duplicate IDs, dangling mappings, duplicate normalized paths,
    malformed JSON and atomic persistence.
 2. Test migration with key absent, key present with old prompt, key present
-   byte-identical to old default, `default_v2` after a feature-4 Settings save,
+   byte-identical to old default, `default_v2` after an ordinary Settings save,
    edited `user_saved`, LLM enabled/disabled and failure during first migrated
    save. Assert no install turns rewriting on implicitly, no existing prompt is
    lost, and repeat startup does not create a second legacy profile.
