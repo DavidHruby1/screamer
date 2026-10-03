@@ -77,7 +77,7 @@ jobs:
           "$hash  $zip" | Out-File -FilePath "$zip.sha256" -Encoding ascii
           "ASSET_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
           "ASSET_SHA=$zip.sha256" | Out-File -FilePath $env:GITHUB_ENV -Append
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-assets
           path: |
