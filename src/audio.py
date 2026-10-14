@@ -26,6 +26,8 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 DTYPE = "int16"
 MIN_DURATION = 0.3
+# Speech often ends a moment after the hotkey is released; keep capturing briefly.
+RELEASE_TAIL = 0.25
 
 
 @dataclass
@@ -116,6 +118,7 @@ class AudioRecorder:
         self._start_time: float = 0.0
         self._rms_threshold: float = DEFAULT_RMS_THRESHOLD
         self._accepting_frames = False
+        self._stop_requested = False
         self._level_rms = 0.0
         self._has_callback_data = False
         self._capture_error: str | None = None
@@ -147,7 +150,11 @@ class AudioRecorder:
             )
 
     def calibrate(self, duration: float = 2.0) -> float:
-        """Record ambient noise and return a usable silence-gate threshold."""
+        """Record ambient noise and return a usable silence-gate threshold.
+
+        Raise ``ScreamerError(AppError.MIC_UNAVAILABLE)`` if recording fails; the
+        current threshold is left unchanged.
+        """
         _require_sd()
         try:
             with log_duration(log, f"Calibration for {duration:.1f}s"):
@@ -169,9 +176,8 @@ class AudioRecorder:
                 )
                 return threshold
         except Exception as e:
-            log.warning("Calibration failed: %s; using fallback %.1f", e, DEFAULT_RMS_THRESHOLD)
-            self._rms_threshold = DEFAULT_RMS_THRESHOLD
-            return DEFAULT_RMS_THRESHOLD
+            log.warning("Calibration failed: %s", e)
+            raise ScreamerError(AppError.MIC_UNAVAILABLE, str(e)) from e
 
     def _callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:  # type: ignore[no-untyped-def]
         level_rms = float(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
@@ -185,7 +191,7 @@ class AudioRecorder:
 
     def _on_stream_finished(self) -> None:
         with self._lock:
-            if self._accepting_frames:
+            if self._accepting_frames and not self._stop_requested:
                 self._capture_error = "Input stream stopped unexpectedly."
                 self._accepting_frames = False
 
@@ -199,6 +205,7 @@ class AudioRecorder:
             self._capture_error = None
             self._device = None
             self._input_status = ""
+            self._stop_requested = False
             self._accepting_frames = True
         self._start_time = time.monotonic()
         try:
@@ -233,8 +240,11 @@ class AudioRecorder:
         self._stream = stream
         log.info("Recording started (device=%s)", self._device_id)
 
-    def stop(self) -> bytes:
+    def stop(self, tail: float = 0.0) -> bytes:
         """Stop recording and return 16kHz mono int16 WAV bytes.
+
+        ``tail`` keeps capturing for that many seconds first. Samples the backend
+        drains while stopping are kept, so the end of speech is not cut off.
 
         Raise ``ScreamerError(AppError.MIC_DISCONNECTED)`` on stream failure
         or a valid-length attempt without callback data.
@@ -245,13 +255,16 @@ class AudioRecorder:
 
         stream = self._stream
         self._stream = None
+        if tail > 0:
+            time.sleep(tail)
         with self._lock:
-            self._accepting_frames = False
-            capture_error = self._capture_error
+            self._stop_requested = True
         try:
             try:
                 stream.stop(ignore_errors=False)
             finally:
+                with self._lock:
+                    self._accepting_frames = False
                 stream.close(ignore_errors=False)
         except Exception as e:
             with self._lock:
@@ -261,6 +274,7 @@ class AudioRecorder:
         with self._lock:
             frames = self._frames
             self._frames = []
+            capture_error = self._capture_error
         if capture_error is not None:
             raise ScreamerError(AppError.MIC_DISCONNECTED, capture_error)
 
@@ -349,8 +363,11 @@ if __name__ == "__main__":
     recorder = AudioRecorder()
 
     print("Calibrating (2s ambient noise)...")
-    threshold = recorder.calibrate(2.0)
-    print(f"RMS threshold: {threshold:.1f}")
+    try:
+        threshold = recorder.calibrate(2.0)
+        print(f"RMS threshold: {threshold:.1f}")
+    except ScreamerError as e:
+        print(f"  Calibration failed: {e}; using {recorder.rms_threshold:.1f}")
 
     print()
     print("Recording 3 seconds... speak now!")

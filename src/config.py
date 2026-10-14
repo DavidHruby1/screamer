@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import ntpath
@@ -328,7 +329,7 @@ def normalize_language_code(value: str) -> str:
         raise ValueError("Language code must be text")
     code = value.strip().lower()
     if len(code) > _MAX_LANGUAGE_CODE_LENGTH or not _LANGUAGE_CODE.fullmatch(code):
-        raise ValueError("Use a language code such as cs, en, or pt-br (up to 32 characters)")
+        raise ValueError("Use a language code such as cs, en, or de (up to 32 characters)")
     return code
 
 
@@ -1199,6 +1200,35 @@ def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]:
             issues.append(ConfigValidationIssue(f"{label} base URL is invalid.", tab_index))
 
     return issues
+
+
+def insecure_base_urls(cfg: AppConfig) -> list[tuple[str, str]]:
+    """Return (label, url) for plain-http provider URLs that leave this machine.
+
+    Such URLs send API keys, custom headers and transcripts unencrypted. This is
+    a warning, not a validation issue: LAN-hosted servers may use http on purpose.
+    """
+    result: list[tuple[str, str]] = []
+    for url, label in (
+        (cfg.stt_base_url, "Primary STT"),
+        (cfg.stt_fallback_base_url, "Fallback STT"),
+        (cfg.llm_base_url, "Primary LLM"),
+        (cfg.llm_fallback_base_url, "Fallback LLM"),
+    ):
+        try:
+            parsed = urlsplit(url)
+            host = parsed.hostname
+        except ValueError:
+            continue  # Invalid URLs are reported by validate_config.
+        if parsed.scheme != "http" or not host or host == "localhost":
+            continue
+        try:
+            if ipaddress.ip_address(host).is_loopback:
+                continue
+        except ValueError:
+            pass  # A hostname other than localhost.
+        result.append((label, url))
+    return result
 
 
 def _env_path() -> str:

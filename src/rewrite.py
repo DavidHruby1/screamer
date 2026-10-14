@@ -163,8 +163,10 @@ def _call_llm(
 
 
 def _groq_completion_cap(user_text: str) -> int:
-    estimated_input_tokens = max(1, len(user_text) // 4)
-    cap = int(estimated_input_tokens * 1.5) + 32
+    # Assume ~2 chars/token: accented languages such as Czech tokenize far
+    # denser than English, and a too-tight cap discards the whole rewrite.
+    estimated_input_tokens = max(1, len(user_text) // 2)
+    cap = estimated_input_tokens * 2 + 64
     return max(128, min(4096, cap))
 
 
