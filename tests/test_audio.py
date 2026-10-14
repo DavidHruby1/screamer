@@ -69,13 +69,16 @@ class AudioCalibrationTests(unittest.TestCase):
 
         self.assertEqual(threshold, 20.0)
 
-    def test_calibration_failure_uses_low_default(self) -> None:
+    def test_calibration_failure_raises_and_keeps_threshold(self) -> None:
         fake_sd = FakeSoundDevice(error=RuntimeError("no mic"))
+        recorder = AudioRecorder()
+        recorder.rms_threshold = 42.0
 
-        with patch("src.audio.sd", fake_sd):
-            threshold = AudioRecorder().calibrate(1.0)
+        with patch("src.audio.sd", fake_sd), self.assertRaises(ScreamerError) as error:
+            recorder.calibrate(1.0)
 
-        self.assertEqual(threshold, DEFAULT_RMS_THRESHOLD)
+        self.assertEqual(error.exception.code, AppError.MIC_UNAVAILABLE)
+        self.assertEqual(recorder.rms_threshold, 42.0)
 
 
 class AudioDeviceDefaultTests(unittest.TestCase):
@@ -201,6 +204,7 @@ class FakeCaptureStream:
         self.stop_error = False
         self.close_error = False
         self.closed = False
+        self.drain: np.ndarray | None = None
 
     def feed(self, samples, status="") -> None:
         self.callback(samples, len(samples), None, status)
@@ -213,7 +217,8 @@ class FakeCaptureStream:
     def stop(self, *, ignore_errors) -> None:
         assert ignore_errors is False
         # Backends may finish an in-flight callback while stop is in progress.
-        self.feed(np.full((160, 1), 5000, dtype=np.int16))
+        if self.drain is not None:
+            self.feed(self.drain)
         self.finished_callback()
         if self.stop_error:
             raise OSError("stop failed")
@@ -290,6 +295,31 @@ class AudioCaptureTests(unittest.TestCase):
         self.backend.stream.feed(np.full((160, 1), 9000, dtype=np.int16))
         self.assertEqual(self.recorder.snapshot().level_rms, 600.0)
         self.assertEqual(self.recorder._frames, [])
+
+    def test_samples_drained_while_stopping_are_kept(self) -> None:
+        spoken = np.full((160, 1), 1200, dtype=np.int16)
+        drained = np.full((160, 1), 5000, dtype=np.int16)
+        self.backend.stream.feed(spoken)
+        self.backend.stream.drain = drained
+        self.now = 11.0
+        wav = self.recorder.stop()
+        with wave.open(io.BytesIO(wav), "rb") as audio:
+            self.assertEqual(audio.getnframes(), 320)
+            self.assertEqual(audio.readframes(320), spoken.tobytes() + drained.tobytes())
+
+    def test_tail_keeps_capturing_before_stopping(self) -> None:
+        tail_samples = np.full((160, 1), 2400, dtype=np.int16)
+        self.backend.stream.feed(np.full((160, 1), 1200, dtype=np.int16))
+        self.now = 11.0
+        with patch(
+            "src.audio.time.sleep", side_effect=lambda _s: self.backend.stream.feed(tail_samples)
+        ) as sleep:
+            wav = self.recorder.stop(tail=0.25)
+        sleep.assert_called_once_with(0.25)
+        with wave.open(io.BytesIO(wav), "rb") as audio:
+            self.assertEqual(audio.getnframes(), 320)
+            audio.readframes(160)
+            self.assertEqual(audio.readframes(160), tail_samples.tobytes())
 
     def test_captured_zero_and_quiet_input_are_not_missing_data(self) -> None:
         for value in (0, 2):

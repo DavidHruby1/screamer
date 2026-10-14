@@ -31,7 +31,13 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
-from src.audio import AudioRecorder, default_input_device_id, list_devices, resolve_device
+from src.audio import (
+    RELEASE_TAIL,
+    AudioRecorder,
+    default_input_device_id,
+    list_devices,
+    resolve_device,
+)
 from src.config import (
     DEFAULT_LLM_SYSTEM_PROMPT,
     HOTKEY_OPTIONS,
@@ -539,7 +545,7 @@ class _TrayApp(QObject):
             label, min(capture.level_rms / 32767.0, 1.0), capture.has_callback_data
         )
 
-    def _finalize_recording(self) -> None:
+    def _finalize_recording(self, tail: float = 0.0) -> None:
         """Stop recording and start the processing worker."""
         self._recording_timer.stop()
         self._level_timer.stop()
@@ -547,7 +553,7 @@ class _TrayApp(QObject):
         self._apply_state(TrayState.PROCESSING)
 
         try:
-            audio_wav = self._recorder.stop()
+            audio_wav = self._recorder.stop(tail=tail)
         except ScreamerError as e:
             self._session_config = None
             self._session = None
@@ -599,7 +605,7 @@ class _TrayApp(QObject):
 
         if self._recording:
             # Toggle mode: second press → finalize and process.
-            self._finalize_recording()
+            self._finalize_recording(tail=RELEASE_TAIL)
         else:
             self._start_recording()
 
@@ -608,7 +614,7 @@ class _TrayApp(QObject):
         if self._is_hotkey_capture_active() and not self._recording:
             return
         if self._recording:
-            self._finalize_recording()
+            self._finalize_recording(tail=RELEASE_TAIL)
 
     def _is_hotkey_capture_active(self) -> bool:
         return self._settings_dlg is not None and self._settings_dlg.is_hotkey_capture_active()

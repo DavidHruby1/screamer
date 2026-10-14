@@ -53,6 +53,27 @@ class HistoryStoreTests(unittest.TestCase):
         self.assertNotIn("audio", payload["entries"][0])
         self.assertNotIn("config", payload["entries"][0])
 
+    def test_records_from_before_a_field_was_added_still_load(self):
+        attempt = DeliveryAttempt("2026-09-30T12:01:00+00:00", "copy")
+        stored = asdict(record(last_delivery=attempt))
+        for key in ("profile_id", "language", "warnings"):
+            del stored[key]
+        del stored["last_delivery"]["reason"]
+        self.path.write_bytes(
+            base64.b64encode(json.dumps({"version": 1, "entries": [stored]}).encode())
+        )
+        self.assertEqual(self.store.load(), [record(last_delivery=attempt)])
+
+    def test_record_missing_required_field_fails_closed(self):
+        stored = asdict(record())
+        stored["warnings"] = []
+        del stored["raw_text"]
+        self.path.write_bytes(
+            base64.b64encode(json.dumps({"version": 1, "entries": [stored]}).encode())
+        )
+        with self.assertRaises(ScreamerError):
+            self.store.load()
+
     def test_upsert_checkpoint_updates_one_id_and_retention_evicts_oldest(self):
         self.store.upsert(record(), 2)
         final = record(rewrite_status="succeeded", rewritten_text="Final")

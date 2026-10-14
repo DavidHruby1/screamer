@@ -375,6 +375,32 @@ class SttRewriteFallbackTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.code, AppError.NO_SPEECH)
 
+    def test_groq_cap_fits_dense_czech_output(self) -> None:
+        from src.rewrite import _groq_completion_cap
+
+        # ~1 minute of Czech dictation; Llama tokenizers average ~2.5-3 chars/token.
+        text = "Příliš žluťoučký kůň úpěl ďábelské ódy. " * 25
+        self.assertGreaterEqual(_groq_completion_cap(text), int(len(text) / 2.5 * 1.5))
+
+    def test_stt_timeout_scales_with_audio_length(self) -> None:
+        from src.stt import _stt_timeout
+
+        short = _stt_timeout(b"\0" * (44 + 32000))
+        five_minutes = _stt_timeout(b"\0" * (44 + 300 * 32000))
+        self.assertEqual(short.connect, 10.0)
+        self.assertGreaterEqual(short.read, 60.0)
+        self.assertGreaterEqual(five_minutes.read, 900.0)
+
+    def test_stt_sends_primary_language_subtag(self) -> None:
+        cfg = AppConfig(
+            stt_base_url="https://stt.test/v1", stt_model="whisper", stt_language="pt-br"
+        )
+        with patch(
+            "src.http_client.post", return_value=FakeResponse({"text": "olá"})
+        ) as post:
+            transcribe(b"wav", cfg)
+        self.assertEqual(post.call_args.kwargs["data"]["language"], "pt")
+
     def test_rewrite_groq_sets_dynamic_completion_cap(self) -> None:
         cfg = AppConfig(
             llm_enabled=True,
@@ -415,10 +441,10 @@ class SttRewriteFallbackTests(unittest.TestCase):
             )
 
         with patch("src.http_client.post", side_effect=fake_post):
-            rewrite("a" * 10_000, cfg)
+            rewrite("a" * 3_000, cfg)
 
-        # 10_000 chars -> ~2500 estimated input tokens -> cap int(2500 * 1.5) + 32 = 3782
-        self.assertEqual(captured["max_completion_tokens"], 3782)
+        # 3_000 chars -> ~1500 estimated input tokens -> cap 1500 * 2 + 64 = 3064
+        self.assertEqual(captured["max_completion_tokens"], 3064)
 
     def test_rewrite_length_finish_keeps_original_text(self) -> None:
         cfg = AppConfig(

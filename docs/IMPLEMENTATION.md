@@ -283,6 +283,10 @@ def parse_custom_headers(custom_headers: str) -> dict[str, str]: ...
 def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]: ...
     """Return all startup/settings validation issues for the current config."""
 
+def insecure_base_urls(cfg: AppConfig) -> list[tuple[str, str]]: ...
+    """(label, url) for http:// provider URLs on a non-loopback host. Settings warns
+    once when such a URL is newly entered; it never blocks saving."""
+
 def stt_provider_is_configured(provider: ProviderConfig) -> bool: ...
     """STT requires URL + model; key is optional. LLM still requires key + URL + model."""
 
@@ -377,16 +381,19 @@ class AudioRecorder:
     @property
     def rms_threshold(self) -> float: ...
     def calibrate(self, duration: float = 2.0) -> float: ...
-        """Return max(noise_floor * 2.0, DEFAULT_RMS_THRESHOLD); measurement failure falls back to 5.0."""
+        """Return max(noise_floor * 2.0, DEFAULT_RMS_THRESHOLD); measurement failure raises
+        MIC_UNAVAILABLE and leaves the current threshold unchanged."""
     def start(self) -> None: ...
         """Open and start the microphone; on failure close the stream and raise MIC_UNAVAILABLE."""
     def snapshot(self) -> CaptureSnapshot: ...
         """Immutable evidence under the recorder lock; no enumeration or audio copy.
         Before callbacks: level 0, has_callback_data False. Captured zeros: True, level 0."""
-    def stop(self) -> bytes: ...
-        """Return mono int16 WAV; short/quiet capture returns b"". A valid-length
-        attempt without samples, unexpected stream finish, or stop/close failure
-        raises MIC_DISCONNECTED and discards frames. Late callbacks cannot append."""
+    def stop(self, tail: float = 0.0) -> bytes: ...
+        """Capture `tail` more seconds (hotkey stops pass RELEASE_TAIL = 0.25), then
+        return mono int16 WAV; short/quiet capture returns b"". Samples the backend
+        drains during stream.stop() are kept. A valid-length attempt without samples,
+        unexpected stream finish, or stop/close failure raises MIC_DISCONNECTED and
+        discards frames. Callbacks after stop() returns cannot append."""
 
 def resolve_device(
     preferred_id: int | None,
@@ -601,7 +608,8 @@ ruff format --check src/ tests/ .github/scripts/
 - The tray Language radio submenu switches the persisted active STT code immediately.
   Auto omits the STT language field and rewrite hint; a selected code is sent to both
   primary and fallback STT and added to the optional rewrite prompt. Provider support
-  for a language code is not guaranteed. Settings manages the ordered favorites;
+  for a language code is not guaranteed. STT receives only the primary subtag
+  (`pt-br` is sent as `pt`), since Whisper-compatible endpoints expect ISO 639-1. Settings manages the ordered favorites;
   removing an active additional favorite selects Auto. A failed tray save restores
   the previous visible and live selection.
 - Tray icon: grey (idle) → red (recording) → yellow (processing) → grey.
@@ -666,7 +674,9 @@ ruff format --check src/ tests/ .github/scripts/
 - Latest usable text remains in RAM even with history disabled. Persistent history is
   opt-in (default off) and stores validated version-1 JSON as DPAPI-protected ciphertext
   at `APP_DIR/history.enc`; writes use ciphertext-only temporary files, fsync and atomic
-  replacement. Retention is 1..100 on commit. Read/decrypt/schema/write failures fail
+  replacement. Records missing a defaulted field load with its default and unknown
+  fields are ignored, so adding a field does not invalidate older files.
+  Retention is 1..100 on commit. Read/decrypt/schema/write failures fail
   closed while RAM recovery remains available. Turning history off stops ordinary
   reads/writes but leaves prior saved entries until explicit Clear. Delete is not a
   secure-erasure guarantee for backups or other copies.

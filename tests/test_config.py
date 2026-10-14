@@ -4,6 +4,7 @@ import platform
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from src.config import (
     ProviderConfig,
     _env_path,
     import_from_env,
+    insecure_base_urls,
     language_choices,
     load_config,
     normalize_language_code,
@@ -120,6 +122,18 @@ class ConfigValidationTests(unittest.TestCase):
     def test_provider_config_detects_groq_by_host(self) -> None:
         self.assertTrue(ProviderConfig(base_url="https://api.groq.com/openai/v1").is_groq)
         self.assertFalse(ProviderConfig(base_url="https://api.openai.com/v1").is_groq)
+
+    def test_plain_http_is_flagged_only_off_loopback(self) -> None:
+        cfg = AppConfig(
+            stt_base_url="http://192.168.1.5:8000/v1",
+            stt_fallback_base_url="http://localhost:8000/v1",
+            llm_base_url="http://127.0.0.1:1234/v1",
+            llm_fallback_base_url="https://api.example.test/v1",
+        )
+        self.assertEqual(
+            insecure_base_urls(cfg), [("Primary STT", "http://192.168.1.5:8000/v1")]
+        )
+        self.assertEqual(insecure_base_urls(replace(cfg, stt_base_url="http://[::1]/v1")), [])
 
     def test_invalid_http_headers_and_urls_are_rejected(self) -> None:
         cfg = AppConfig(

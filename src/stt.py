@@ -115,6 +115,8 @@ def _call_stt(
 
     data: dict[str, str] = {"model": provider.model, "response_format": response_format}
     if language:
+        # Whisper-compatible endpoints accept ISO 639-1 codes only; "pt-br" -> "pt".
+        language = language.split("-", 1)[0]
         data["language"] = language
     if prompt:
         data["prompt"] = prompt
@@ -129,7 +131,9 @@ def _call_stt(
         len(audio_wav),
     )
     request_started = perf_counter()
-    resp = http_client.post(url, headers=headers, data=data, files=files, timeout=60.0)
+    resp = http_client.post(
+        url, headers=headers, data=data, files=files, timeout=_stt_timeout(audio_wav)
+    )
     request_elapsed = perf_counter() - request_started
 
     log.info(
@@ -161,6 +165,13 @@ def _call_stt(
 
     log.debug("STT result: %s", text[:80])
     return text
+
+
+def _stt_timeout(audio_wav: bytes) -> httpx.Timeout:
+    """Scale the read budget with audio length; local CPU models can be slower than real time."""
+    # 16 kHz mono int16 = 32000 bytes per second, after the 44-byte WAV header.
+    audio_seconds = max(0, len(audio_wav) - 44) / 32000
+    return httpx.Timeout(60.0 + 3.0 * audio_seconds, connect=10.0)
 
 
 # ---------------------------------------------------------------------------

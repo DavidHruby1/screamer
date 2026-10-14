@@ -63,6 +63,7 @@ from src.config import (
     normalize_vocabulary_entries,
     reset_config,
     save_config,
+    insecure_base_urls,
     validate_config,
 )
 from src.audio import resolve_device
@@ -168,6 +169,8 @@ class SettingsDialog(QDialog):
 
         # Edit a deep copy so the original is untouched until accept.
         self._working = copy.deepcopy(config)
+        # Warn about unencrypted provider URLs once, and only when newly entered.
+        self._acknowledged_insecure_urls = {url for _label, url in insecure_base_urls(config)}
         self._profile_loading = False
         self._rewrite_error: str | None = None
 
@@ -407,7 +410,7 @@ class SettingsDialog(QDialog):
         form.addRow("Favorite languages:", self._stt_favorites)
 
         self._stt_favorite_input = QLineEdit()
-        self._stt_favorite_input.setPlaceholderText("Language code, e.g. de or pt-br")
+        self._stt_favorite_input.setPlaceholderText("ISO 639-1 language code, e.g. de or pt")
         form.addRow("Favorite code:", self._stt_favorite_input)
 
         btn_add = QPushButton("Add")
@@ -1519,6 +1522,7 @@ class SettingsDialog(QDialog):
             None,
         )
         if issue is None:
+            self._warn_insecure_urls()
             return True
 
         QMessageBox.warning(self, "Missing Configuration", issue.message)
@@ -1526,6 +1530,24 @@ class SettingsDialog(QDialog):
         if issue.tab_index == 2:
             self._llm_group.setVisible(True)
         return False
+
+    def _warn_insecure_urls(self) -> None:
+        new = [
+            (label, url)
+            for label, url in insecure_base_urls(self._working)
+            if url not in self._acknowledged_insecure_urls
+        ]
+        if not new:
+            return
+        self._acknowledged_insecure_urls.update(url for _label, url in new)
+        lines = "\n".join(f"{label}: {url}" for label, url in new)
+        QMessageBox.warning(
+            self,
+            "Unencrypted Connection",
+            "These providers use http:// on a non-local host, so the API key, custom "
+            f"headers and transcripts are sent unencrypted:\n\n{lines}\n\n"
+            "Use https:// unless the server is on a network you trust.",
+        )
 
     def _save_or_warn(self) -> bool:
         from src.utils import ScreamerError

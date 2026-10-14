@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import MISSING, asdict, dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -77,10 +77,28 @@ def _timestamp(value: object) -> None:
         raise ValueError("Expected UTC timestamp")
 
 
-def _decode_record(value: object) -> DictationRecord:
-    if not isinstance(value, dict) or set(value) != set(DictationRecord.__dataclass_fields__):
+def _known_fields(cls: type, value: object) -> dict:
+    """Require fields without defaults and fill missing defaulted ones.
+
+    Records written before a defaulted field was added must still load instead of
+    invalidating the whole history file. Unknown fields (e.g. audio) stay rejected.
+    """
+    if not isinstance(value, dict) or not set(value) <= {f.name for f in fields(cls)}:
         raise ValueError("Invalid record fields")
-    data = dict(value)
+    data = {}
+    for f in fields(cls):
+        if f.name in value:
+            data[f.name] = value[f.name]
+        elif f.default is MISSING:
+            raise ValueError("Invalid record fields")
+        else:
+            # Defaults in their serialized form (tuples are stored as JSON lists).
+            data[f.name] = list(f.default) if isinstance(f.default, tuple) else f.default
+    return data
+
+
+def _decode_record(value: object) -> DictationRecord:
+    data = _known_fields(DictationRecord, value)
     _string(data["id"], nonempty=True)
     _timestamp(data["created_at"])
     _string(data["raw_text"], nonempty=True)
@@ -104,10 +122,7 @@ def _decode_record(value: object) -> DictationRecord:
     data["warnings"] = tuple(AppError[name] for name in warnings)
     attempt = data["last_delivery"]
     if attempt is not None:
-        if not isinstance(attempt, dict) or set(attempt) != set(
-            DeliveryAttempt.__dataclass_fields__
-        ):
-            raise ValueError("Invalid attempt fields")
+        attempt = _known_fields(DeliveryAttempt, attempt)
         _timestamp(attempt["attempted_at"])
         if attempt["mode"] not in {"type", "copy", "copy_and_type", "manual"}:
             raise ValueError("Invalid output mode")
