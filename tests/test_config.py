@@ -130,9 +130,7 @@ class ConfigValidationTests(unittest.TestCase):
             llm_base_url="http://127.0.0.1:1234/v1",
             llm_fallback_base_url="https://api.example.test/v1",
         )
-        self.assertEqual(
-            insecure_base_urls(cfg), [("Primary STT", "http://192.168.1.5:8000/v1")]
-        )
+        self.assertEqual(insecure_base_urls(cfg), [("Primary STT", "http://192.168.1.5:8000/v1")])
         self.assertEqual(insecure_base_urls(replace(cfg, stt_base_url="http://[::1]/v1")), [])
 
     def test_invalid_http_headers_and_urls_are_rejected(self) -> None:

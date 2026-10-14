@@ -395,9 +395,7 @@ class SttRewriteFallbackTests(unittest.TestCase):
         cfg = AppConfig(
             stt_base_url="https://stt.test/v1", stt_model="whisper", stt_language="pt-br"
         )
-        with patch(
-            "src.http_client.post", return_value=FakeResponse({"text": "olá"})
-        ) as post:
+        with patch("src.http_client.post", return_value=FakeResponse({"text": "olá"})) as post:
             transcribe(b"wav", cfg)
         self.assertEqual(post.call_args.kwargs["data"]["language"], "pt")
 
