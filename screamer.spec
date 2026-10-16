@@ -8,7 +8,7 @@ a = Analysis(
     ["src/main.py"],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[("src/assets", "src/assets")],
     hiddenimports=collect_submodules("PySide6") + ["sounddevice", "numpy", "httpx", "dotenv"],
     hookspath=[],
     hooksconfig={},

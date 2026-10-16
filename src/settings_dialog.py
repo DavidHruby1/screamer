@@ -11,8 +11,33 @@ import logging
 import uuid
 from typing import Callable
 
-from PySide6.QtCore import QCoreApplication, QEvent, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QIcon, QKeyEvent, QMouseEvent, QPainter, QPalette, QPixmap
+from PySide6.QtCore import (
+    QAbstractAnimation,
+    QCoreApplication,
+    QEvent,
+    QObject,
+    QPointF,
+    QRectF,
+    QSize,
+    Qt,
+    QThread,
+    QVariantAnimation,
+    Signal,
+)
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QFont,
+    QFontMetrics,
+    QGuiApplication,
+    QIcon,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -33,8 +58,13 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QDoubleSpinBox,
+    QFrame,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
-    QTabWidget,
+    QStackedWidget,
+    QStyle,
+    QStyleOptionFrame,
     QVBoxLayout,
     QWidget,
 )
@@ -66,6 +96,7 @@ from src.config import (
     insecure_base_urls,
     validate_config,
 )
+from src import theme
 from src.audio import resolve_device
 from src.utils import APP_NAME, AppError, ScreamerError, log_duration
 from src.startup import is_supported
@@ -105,15 +136,304 @@ class _CalibrateThread(QThread):
 
 
 def _eye_icon() -> QIcon:
-    """Small glyph for the show/hide toggle (the project ships no icon assets)."""
-    pixmap = QPixmap(16, 16)
+    """Painted eye glyph for the show/hide toggle (crisp at 2x device pixel ratio)."""
+    pixmap = QPixmap(32, 32)
+    pixmap.setDevicePixelRatio(2.0)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
-    # Default pen is black — invisible on dark themes; follow the palette.
-    painter.setPen(QApplication.palette().color(QPalette.ColorRole.Text))
-    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "\N{EYE}")
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor(theme.TEXT_2), 1.4)
+    painter.setPen(pen)
+    outline = QPainterPath(QPointF(1.5, 8.0))
+    outline.quadTo(8.0, 1.0, 14.5, 8.0)
+    outline.quadTo(8.0, 15.0, 1.5, 8.0)
+    painter.drawPath(outline)
+    painter.setBrush(QColor(theme.TEXT_2))
+    painter.drawEllipse(QPointF(8.0, 8.0), 2.0, 2.0)
     painter.end()
     return QIcon(pixmap)
+
+
+class ToggleSwitch(QCheckBox):
+    """A QCheckBox drawn as a settings row: label on the left, switch on the right.
+
+    Only painting differs from QCheckBox; checked state, signals and the whole
+    row being clickable keep standard checkbox behavior.
+    """
+
+    _TRACK_W = 34
+    _TRACK_H = 20
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._knob = 0.0
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(140)
+        self._anim.valueChanged.connect(self._on_anim_value)
+        self.toggled.connect(self._on_toggled)
+
+    def _on_anim_value(self, value) -> None:
+        self._knob = float(value)
+        self.update()
+
+    def _on_toggled(self, checked: bool) -> None:
+        self._anim.stop()
+        if not self.isVisible():
+            self._knob = 1.0 if checked else 0.0
+            return
+        self._anim.setStartValue(self._knob)
+        self._anim.setEndValue(1.0 if checked else 0.0)
+        self._anim.start()
+
+    def sizeHint(self) -> QSize:
+        fm = self.fontMetrics()
+        return QSize(
+            fm.horizontalAdvance(self.text()) + 24 + self._TRACK_W,
+            max(fm.height(), self._TRACK_H) + 10,
+        )
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
+
+    def hitButton(self, pos) -> bool:
+        return self.rect().contains(pos)
+
+    def paintEvent(self, event) -> None:
+        animating = self._anim.state() == QAbstractAnimation.State.Running
+        knob = self._knob if animating else (1.0 if self.isChecked() else 0.0)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if not self.isEnabled():
+            painter.setOpacity(0.4)
+        rect = self.rect()
+        track = QRectF(
+            rect.right() - self._TRACK_W - 1,
+            (rect.height() - self._TRACK_H) / 2,
+            self._TRACK_W,
+            self._TRACK_H,
+        )
+        painter.setPen(QColor(theme.TEXT))
+        painter.drawText(
+            rect.adjusted(0, 0, -(self._TRACK_W + 16), 0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            self.text(),
+        )
+        off, on = QColor(theme.LINE_STRONG), QColor(theme.EMBER)
+        track_color = QColor(
+            round(off.red() + (on.red() - off.red()) * knob),
+            round(off.green() + (on.green() - off.green()) * knob),
+            round(off.blue() + (on.blue() - off.blue()) * knob),
+        )
+        radius = self._TRACK_H / 2
+        if self.hasFocus():
+            painter.setPen(QPen(theme.qcolor(theme.EMBER, 0.55), 1.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(track.adjusted(-3, -3, 3, 3), radius + 3, radius + 3)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(track_color)
+        painter.drawRoundedRect(track, radius, radius)
+        knob_r = radius - 3
+        cx = track.left() + radius + (track.width() - 2 * radius) * knob
+        painter.setBrush(QColor("#FFF6F2") if knob > 0.5 else QColor(theme.TEXT_2))
+        painter.drawEllipse(QPointF(cx, track.center().y()), knob_r, knob_r)
+        painter.end()
+
+
+# Sidebar labels and page headers, keyed by the tab text passed to addTab().
+_PAGE_META = {
+    "General": ("General", "General", "How you trigger dictation and where the text goes."),
+    "STT": ("Speech", "Speech to text", "Transcription provider, language and fallback."),
+    "LLM": ("Rewrite", "AI rewrite", "Optional cleanup of the transcript by a language model."),
+    "Audio": ("Audio", "Audio", "Microphone input and silence detection."),
+    "Vocabulary": ("Vocabulary", "Vocabulary", "Preferred spellings for names and terms."),
+    "Profiles": ("Profiles", "Rewrite profiles", "Which prompt cleans up your text, and where."),
+}
+
+
+class _PageScroll(QScrollArea):
+    """Scrolls a settings page; its size hint follows the content up to the screen."""
+
+    def __init__(self, content: QWidget) -> None:
+        super().__init__()
+        self.setObjectName("hushScroll")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.viewport().setAutoFillBackground(False)
+        content.setObjectName("hushPageBody")
+        self.setWidget(content)
+        content.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.widget() and event.type() == QEvent.Type.LayoutRequest:
+            self.updateGeometry()
+        return super().eventFilter(watched, event)
+
+    def sizeHint(self) -> QSize:
+        content = self.widget()
+        hint = content.sizeHint()
+        width = hint.width()
+        height = content.heightForWidth(width) if content.hasHeightForWidth() else hint.height()
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        cap = screen.availableGeometry().height() - 240 if screen is not None else 720
+        bar = self.verticalScrollBar().sizeHint().width()
+        return QSize(width + bar + 4, max(320, min(max(height, hint.height()), cap)))
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
+
+
+class _SidebarTabs(QObject):
+    """Sidebar navigation + page stack exposing the QTabWidget calls the dialog uses.
+
+    Tab indexes, ``setCurrentIndex`` and ``setTabText`` keep their QTabWidget meaning.
+    """
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.nav = QListWidget()
+        self.nav.setObjectName("hushNav")
+        self.nav.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.nav.setFrameShape(QFrame.Shape.NoFrame)
+        self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.nav.setFont(theme.ui_font(13, QFont.Weight.Medium))
+        self.stack = QStackedWidget()
+        self._texts: list[str] = []
+        self.nav.currentRowChanged.connect(self._on_row_changed)
+
+    def _on_row_changed(self, row: int) -> None:
+        if row >= 0:
+            self.stack.setCurrentIndex(row)
+
+    def addTab(self, content: QWidget, text: str) -> int:
+        _nav, title, subtitle = _PAGE_META.get(text, (text, text, ""))
+        page = QWidget()
+        page.setObjectName("hushPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(40, 32, 28, 8)
+        layout.setSpacing(0)
+        heading = theme.set_role(QLabel(title), "title")
+        heading.setFont(theme.ui_font(22, QFont.Weight.DemiBold, -1.0))
+        layout.addWidget(heading)
+        if subtitle:
+            sub = theme.set_role(QLabel(subtitle), "subtitle")
+            sub.setFont(theme.ui_font(13))
+            layout.addSpacing(6)
+            layout.addWidget(sub)
+        layout.addSpacing(22)
+        content.setMinimumWidth(560)
+        content.setContentsMargins(0, 0, 12, 16)
+        layout.addWidget(_PageScroll(content), 1)
+        self.stack.addWidget(page)
+        self._texts.append(text)
+        self.nav.addItem(QListWidgetItem())
+        self.setTabText(len(self._texts) - 1, text)
+        if self.nav.currentRow() < 0:
+            self.nav.setCurrentRow(0)
+        return len(self._texts) - 1
+
+    def setTabText(self, index: int, text: str) -> None:
+        self._texts[index] = text
+        base = next((key for key in _PAGE_META if text.startswith(key)), None)
+        label = _PAGE_META[base][0] + text[len(base) :] if base else text
+        item = self.nav.item(index)
+        item.setText(label)
+        item.setSizeHint(QSize(0, 36))
+        if "⚠" in text:
+            item.setForeground(QColor(theme.AMBER))
+        else:
+            item.setData(Qt.ItemDataRole.ForegroundRole, None)
+
+    def tabText(self, index: int) -> str:
+        return self._texts[index]
+
+    def setCurrentIndex(self, index: int) -> None:
+        self.nav.setCurrentRow(index)
+
+    def currentIndex(self) -> int:
+        return self.stack.currentIndex()
+
+    def count(self) -> int:
+        return len(self._texts)
+
+
+class _MarkWidget(QWidget):
+    """The Screamer mark, painted in ember."""
+
+    def __init__(self, size: int = 18) -> None:
+        super().__init__()
+        self.setFixedSize(size, size)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        theme.draw_mark(painter, QRectF(self.rect()), QColor(theme.EMBER))
+        painter.end()
+
+
+def _style_form(form: QFormLayout) -> QFormLayout:
+    """Airy, left-aligned form rows; drops the old trailing colons from row labels."""
+    in_card = isinstance(form.parentWidget(), QGroupBox)
+    form.setContentsMargins(*((20, 22, 20, 18) if in_card else (0, 0, 0, 0)))
+    form.setHorizontalSpacing(28)
+    form.setVerticalSpacing(12)
+    form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+    form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+    for row in range(form.rowCount()):
+        item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+        label = item.widget() if item is not None else None
+        if isinstance(label, QLabel):
+            label.setText(label.text().removesuffix(":"))
+            # Centre the caption on a single-line field; taller fields keep it on top.
+            label.setMinimumHeight(34)
+            label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    return form
+
+
+def _section(form: QFormLayout, text: str, *, first: bool = False) -> QLabel:
+    """Small uppercase section heading spanning the form."""
+    label = theme.set_role(QLabel(text.upper()), "section")
+    label.setFont(theme.ui_font(11, QFont.Weight.DemiBold, 8.0))
+    label.setContentsMargins(0, 0 if first else 18, 0, 0)
+    form.addRow(label)
+    return label
+
+
+def _hint(label: QLabel, role: str = "hint") -> QLabel:
+    theme.set_role(label, role)
+    label.setFont(theme.ui_font(12))
+    return label
+
+
+def _button_row(*buttons: QPushButton) -> QHBoxLayout:
+    row = QHBoxLayout()
+    row.setSpacing(8)
+    for button in buttons:
+        row.addWidget(button)
+    row.addStretch()
+    return row
+
+
+def _card_form(group: QGroupBox) -> QFormLayout:
+    """Form inside a Hush card (QGroupBox); margins leave room for the card padding."""
+    return QFormLayout(group)
+
+
+def _leading(widget: QWidget) -> QHBoxLayout:
+    """Keep a compact field at its natural width instead of stretching it."""
+    row = QHBoxLayout()
+    row.addWidget(widget)
+    row.addStretch()
+    return row
+
+
+def _mono(*widgets: QWidget) -> None:
+    for widget in widgets:
+        widget.setFont(theme.mono_font(13))
 
 
 class PasswordField(QLineEdit):
@@ -191,10 +511,36 @@ class SettingsDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self._tabs = QTabWidget()
-        root.addWidget(self._tabs)
+        self._tabs = _SidebarTabs(self)
+
+        sidebar = QFrame()
+        sidebar.setObjectName("hushSidebar")
+        sidebar.setFixedWidth(204)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(14, 22, 14, 18)
+        side.setSpacing(0)
+        brand = QHBoxLayout()
+        brand.setContentsMargins(10, 0, 0, 0)
+        brand.setSpacing(10)
+        brand.addWidget(_MarkWidget(18))
+        brand_name = theme.set_role(QLabel(APP_NAME), "brand")
+        brand_name.setFont(theme.ui_font(15, QFont.Weight.DemiBold, -0.5))
+        brand.addWidget(brand_name)
+        brand.addStretch()
+        side.addLayout(brand)
+        side.addSpacing(26)
+        side.addWidget(self._tabs.nav, 1)
+        root.addWidget(sidebar)
+
+        main = QVBoxLayout()
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(0)
+        main.addWidget(self._tabs.stack, 1)
+        root.addLayout(main, 1)
 
         self._build_general_tab()
         self._build_stt_tab()
@@ -204,9 +550,9 @@ class SettingsDialog(QDialog):
         self._build_profiles_tab()
 
         # Bottom bar.
-        btn_import = QPushButton("Import from .env")
+        btn_import = theme.set_role(QPushButton("Import from .env"), "ghost")
         btn_import.clicked.connect(self._on_import_env)
-        btn_reset = QPushButton("Reset to Defaults")
+        btn_reset = theme.set_role(QPushButton("Reset to Defaults"), "ghost")
         btn_reset.clicked.connect(self._on_reset)
 
         self._button_box = QDialogButtonBox(
@@ -220,12 +566,16 @@ class SettingsDialog(QDialog):
             self._on_apply
         )
 
-        bottom = QHBoxLayout()
+        footer = QFrame()
+        footer.setObjectName("hushFooter")
+        bottom = QHBoxLayout(footer)
+        bottom.setContentsMargins(32, 14, 24, 14)
+        bottom.setSpacing(4)
         bottom.addWidget(btn_import)
         bottom.addWidget(btn_reset)
         bottom.addStretch()
         bottom.addWidget(self._button_box)
-        root.addLayout(bottom)
+        main.addWidget(footer)
 
     # --- General tab ---------------------------------------------------
 
@@ -235,6 +585,7 @@ class SettingsDialog(QDialog):
 
         self._captured_hotkey: Hotkey | None = None
 
+        _section(form, "Shortcut", first=True)
         self._hotkey_combo = QComboBox()
         for key, label in HOTKEY_OPTIONS:
             self._hotkey_combo.addItem(label, key)
@@ -249,22 +600,27 @@ class SettingsDialog(QDialog):
         self._hotkey_record_btn.setCheckable(True)
         self._hotkey_record_btn.clicked.connect(self._on_hotkey_record_clicked)
         capture_row = QHBoxLayout()
+        capture_row.setSpacing(8)
         capture_row.addWidget(self._hotkey_capture, 1)
         capture_row.addWidget(self._hotkey_record_btn)
         form.addRow("", capture_row)
 
-        self._hotkey_error = QLabel("")
-        self._hotkey_error.setStyleSheet("color: #c0392b;")
+        self._hotkey_error = _hint(QLabel(""), "error")
         self._hotkey_error.setVisible(False)
         form.addRow("", self._hotkey_error)
 
         self._mode_hold = QRadioButton("Hold to talk")
         self._mode_toggle = QRadioButton("Toggle")
+        for radio in (self._mode_hold, self._mode_toggle):
+            radio.setMinimumHeight(34)
         mode_row = QHBoxLayout()
+        mode_row.setSpacing(24)
         mode_row.addWidget(self._mode_hold)
         mode_row.addWidget(self._mode_toggle)
+        mode_row.addStretch()
         form.addRow("Recording mode:", mode_row)
 
+        _section(form, "Output")
         self._post_key_combo = QComboBox()
         for key, label in POST_KEY_OPTIONS:
             self._post_key_combo.addItem(label, key)
@@ -286,9 +642,11 @@ class SettingsDialog(QDialog):
             "Mouse bindings are not supported. Must differ from the dictation shortcut. "
             "The registered-shortcut conflict check cannot detect other low-level-hook apps."
         )
+        _mono(self._recovery_hotkey_input)
         form.addRow("Recovery shortcut:", self._recovery_hotkey_input)
 
-        self._history_check = QCheckBox("Save local text history (opt-in)")
+        _section(form, "History")
+        self._history_check = ToggleSwitch("Save local text history (opt-in)")
         form.addRow(self._history_check)
         disclosure = QLabel(
             "History may contain dictated text, AI prompts you dictate, and spoken secrets. "
@@ -298,20 +656,23 @@ class SettingsDialog(QDialog):
             "saved history until you use Clear History."
         )
         disclosure.setWordWrap(True)
-        form.addRow(disclosure)
+        form.addRow(_hint(disclosure))
         self._history_limit_spin = QSpinBox()
         self._history_limit_spin.setRange(1, 100)
-        form.addRow("Retain latest results:", self._history_limit_spin)
-        self._clear_history_btn = QPushButton("Clear History…")
+        self._history_limit_spin.setMinimumWidth(96)
+        form.addRow("Retain latest results:", _leading(self._history_limit_spin))
+        self._clear_history_btn = theme.set_role(QPushButton("Clear History…"), "danger")
         self._clear_history_btn.clicked.connect(self._on_clear_history)
-        form.addRow(self._clear_history_btn)
+        form.addRow(_button_row(self._clear_history_btn))
 
-        self._startup_check = QCheckBox("Start Screamer with Windows")
+        _section(form, "System")
+        self._startup_check = ToggleSwitch("Start Screamer with Windows")
         if not is_supported():
             self._startup_check.setEnabled(False)
             self._startup_check.setToolTip("Windows only")
         form.addRow(self._startup_check)
 
+        _style_form(form)
         self._tabs.addTab(tab, "General")
 
     def _on_clear_history(self) -> None:
@@ -390,17 +751,19 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         form = QFormLayout(tab)
 
+        _section(form, "Primary provider", first=True)
         self._stt_key, self._stt_url, self._stt_model, self._stt_headers = _add_provider_fields(
             form,
             base_url_placeholder="https://api.openai.com/v1",
         )
-        self._stt_prompt_primary_check = QCheckBox("Send vocabulary prompt to primary STT")
+        self._stt_prompt_primary_check = ToggleSwitch("Send vocabulary prompt to primary STT")
         self._stt_prompt_primary_check.setToolTip(
             "Enable only if this endpoint accepts the multipart prompt field. "
             "A rejected prompt follows the normal fallback path, without retrying it removed."
         )
         form.addRow(self._stt_prompt_primary_check)
 
+        _section(form, "Language")
         self._stt_lang = QComboBox()
         form.addRow("Active language:", self._stt_lang)
 
@@ -411,25 +774,24 @@ class SettingsDialog(QDialog):
 
         self._stt_favorite_input = QLineEdit()
         self._stt_favorite_input.setPlaceholderText("ISO 639-1 language code, e.g. de or pt")
+        _mono(self._stt_favorite_input)
         form.addRow("Favorite code:", self._stt_favorite_input)
 
         btn_add = QPushButton("Add")
         btn_add.clicked.connect(self._on_favorite_add)
         btn_edit = QPushButton("Edit selected")
         btn_edit.clicked.connect(self._on_favorite_edit)
-        btn_remove = QPushButton("Remove selected")
+        btn_remove = theme.set_role(QPushButton("Remove selected"), "danger")
         btn_remove.clicked.connect(self._on_favorite_remove)
-        favorites_buttons = QHBoxLayout()
-        for button in (btn_add, btn_edit, btn_remove):
-            favorites_buttons.addWidget(button)
-        form.addRow("", favorites_buttons)
+        form.addRow("", _button_row(btn_add, btn_edit, btn_remove))
 
         # --- Fallback ---
-        self._stt_fb_check = QCheckBox("Enable fallback STT provider")
+        _section(form, "Fallback")
+        self._stt_fb_check = ToggleSwitch("Enable fallback STT provider")
         form.addRow(self._stt_fb_check)
 
         self._stt_fb_group = QGroupBox("Fallback STT")
-        fb_form = QFormLayout(self._stt_fb_group)
+        fb_form = _card_form(self._stt_fb_group)
 
         self._stt_fb_key, self._stt_fb_url, self._stt_fb_model, self._stt_fb_headers = (
             _add_provider_fields(fb_form)
@@ -443,14 +805,16 @@ class SettingsDialog(QDialog):
                 "Enter the base URL, not the full transcription route. "
                 "Screamer appends /audio/transcriptions."
             )
-        self._stt_prompt_fallback_check = QCheckBox("Send vocabulary prompt to fallback STT")
+        self._stt_prompt_fallback_check = ToggleSwitch("Send vocabulary prompt to fallback STT")
         self._stt_prompt_fallback_check.setToolTip(self._stt_prompt_primary_check.toolTip())
         fb_form.addRow(self._stt_prompt_fallback_check)
+        _style_form(fb_form)
 
         self._stt_fb_group.setVisible(False)
         self._stt_fb_check.toggled.connect(self._stt_fb_group.setVisible)
         form.addRow(self._stt_fb_group)
 
+        _style_form(form)
         self._tabs.addTab(tab, "STT")
 
     def _refresh_language_choices(self, active: str | None = None) -> None:
@@ -535,11 +899,11 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         form = QFormLayout(tab)
 
-        self._llm_check = QCheckBox("Enable AI rewrite")
+        self._llm_check = ToggleSwitch("Enable AI rewrite")
         form.addRow(self._llm_check)
 
         self._llm_group = QGroupBox("LLM Settings")
-        llm_form = QFormLayout(self._llm_group)
+        llm_form = _card_form(self._llm_group)
 
         self._llm_key, self._llm_url, self._llm_model, self._llm_headers = _add_provider_fields(
             llm_form
@@ -547,39 +911,43 @@ class SettingsDialog(QDialog):
 
         self._llm_prompt = QPlainTextEdit()
         self._llm_prompt.setMaximumHeight(120)
+        self._llm_prompt.setFont(theme.mono_font(12))
         self._llm_prompt.setTabChangesFocus(True)
         self._llm_prompt.textChanged.connect(self._on_profile_prompt_changed)
         llm_form.addRow("System Prompt:", self._llm_prompt)
 
         self._llm_reset_prompt_btn = QPushButton("Reset to Current Default")
         self._llm_reset_prompt_btn.clicked.connect(self._on_reset_prompt)
-        llm_form.addRow(self._llm_reset_prompt_btn)
+        llm_form.addRow(_button_row(self._llm_reset_prompt_btn))
         prompt_hint = QLabel(
             "Saved prompts are kept unchanged on upgrade. Reset explicitly selects the current "
             "cleanup default. Models can still change meaning; review important dictation."
         )
         prompt_hint.setWordWrap(True)
-        llm_form.addRow(prompt_hint)
+        llm_form.addRow(_hint(prompt_hint))
 
         # --- LLM Fallback ---
-        self._llm_fb_check = QCheckBox("Enable fallback LLM provider")
+        self._llm_fb_check = ToggleSwitch("Enable fallback LLM provider")
         llm_form.addRow(self._llm_fb_check)
 
         self._llm_fb_group = QGroupBox("Fallback LLM")
-        fb_form = QFormLayout(self._llm_fb_group)
+        fb_form = _card_form(self._llm_fb_group)
 
         self._llm_fb_key, self._llm_fb_url, self._llm_fb_model, self._llm_fb_headers = (
             _add_provider_fields(fb_form)
         )
+        _style_form(fb_form)
 
         self._llm_fb_group.setVisible(False)
         self._llm_fb_check.toggled.connect(self._llm_fb_group.setVisible)
         llm_form.addRow(self._llm_fb_group)
+        _style_form(llm_form)
 
         self._llm_group.setVisible(False)
         self._llm_check.toggled.connect(self._llm_group.setVisible)
         form.addRow(self._llm_group)
 
+        _style_form(form)
         self._tabs.addTab(tab, "LLM")
 
     def _on_reset_prompt(self) -> None:
@@ -615,71 +983,73 @@ class SettingsDialog(QDialog):
             "100-character names, 32 KiB UTF-8 prompts."
         )
         hint.setWordWrap(True)
-        form.addRow(hint)
+        form.addRow(_hint(hint))
         self._rewrite_warning = QLabel(
             "Saved rewrite catalog is damaged. Its exact value is retained during unrelated "
             "saves. Explicitly Reset or Replace to repair; Apply/OK saves the repair, "
             "Cancel discards it. Rewrite resolution is unavailable until repaired."
         )
         self._rewrite_warning.setWordWrap(True)
-        form.addRow(self._rewrite_warning)
+        form.addRow(_hint(self._rewrite_warning, "warning"))
         self._rewrite_reset_btn = QPushButton("Reset damaged catalog…")
         self._rewrite_replace_btn = QPushButton("Replace damaged catalog…")
         self._rewrite_reset_btn.clicked.connect(lambda: self._on_catalog_repair("Reset"))
         self._rewrite_replace_btn.clicked.connect(lambda: self._on_catalog_repair("Replace"))
-        row = QHBoxLayout()
-        row.addWidget(self._rewrite_reset_btn)
-        row.addWidget(self._rewrite_replace_btn)
-        form.addRow(row)
+        form.addRow(_button_row(self._rewrite_reset_btn, self._rewrite_replace_btn))
         self._rewrite_mode_combo = QComboBox()
         self._rewrite_mode_combo.addItem("Manual", "manual")
         self._rewrite_mode_combo.addItem("Automatic (application mappings)", "automatic")
         self._rewrite_default_combo = QComboBox()
         self._rewrite_manual_combo = QComboBox()
+        _section(form, "Selection")
         form.addRow("Selection mode:", self._rewrite_mode_combo)
         form.addRow("Default profile:", self._rewrite_default_combo)
         form.addRow("Manual profile:", self._rewrite_manual_combo)
         self._rewrite_profile_combo = QComboBox()
         self._rewrite_profile_combo.currentIndexChanged.connect(self._on_profile_selected)
+        _section(form, "Profiles")
         form.addRow("Profile to edit:", self._rewrite_profile_combo)
         self._rewrite_edit_prompt_btn = QPushButton("Edit selected prompt on LLM tab")
         self._rewrite_edit_prompt_btn.clicked.connect(self._on_edit_profile_prompt)
-        form.addRow(self._rewrite_edit_prompt_btn)
+        form.addRow("", _button_row(self._rewrite_edit_prompt_btn))
         self._rewrite_name_input = QLineEdit()
         form.addRow("Custom profile name:", self._rewrite_name_input)
         self._rewrite_add_btn = QPushButton("Add custom")
         self._rewrite_rename_btn = QPushButton("Rename selected")
-        self._rewrite_delete_btn = QPushButton("Delete selected")
+        self._rewrite_delete_btn = theme.set_role(QPushButton("Delete selected"), "danger")
         self._rewrite_add_btn.clicked.connect(self._on_profile_add)
         self._rewrite_rename_btn.clicked.connect(self._on_profile_rename)
         self._rewrite_delete_btn.clicked.connect(self._on_profile_delete)
-        row = QHBoxLayout()
-        for button in (self._rewrite_add_btn, self._rewrite_rename_btn, self._rewrite_delete_btn):
-            row.addWidget(button)
-        form.addRow(row)
+        form.addRow(
+            "",
+            _button_row(self._rewrite_add_btn, self._rewrite_rename_btn, self._rewrite_delete_btn),
+        )
+        _section(form, "Application mappings")
         self._rewrite_mappings = QListWidget()
         self._rewrite_mappings.setMaximumHeight(140)
         self._rewrite_mappings.itemSelectionChanged.connect(self._on_mapping_selected)
         form.addRow("Application mappings:", self._rewrite_mappings)
         self._rewrite_path_input = QLineEdit()
         self._rewrite_path_input.setPlaceholderText(r"C:\Program Files\Application\app.exe")
+        _mono(self._rewrite_path_input)
         self._rewrite_mapping_profile_combo = QComboBox()
         form.addRow("Full executable path:", self._rewrite_path_input)
         form.addRow("Mapped profile:", self._rewrite_mapping_profile_combo)
         self._rewrite_mapping_add_btn = QPushButton("Add mapping")
         self._rewrite_mapping_edit_btn = QPushButton("Edit selected")
-        self._rewrite_mapping_remove_btn = QPushButton("Remove selected")
+        self._rewrite_mapping_remove_btn = theme.set_role(QPushButton("Remove selected"), "danger")
         self._rewrite_mapping_add_btn.clicked.connect(lambda: self._on_mapping_write(False))
         self._rewrite_mapping_edit_btn.clicked.connect(lambda: self._on_mapping_write(True))
         self._rewrite_mapping_remove_btn.clicked.connect(self._on_mapping_remove)
-        row = QHBoxLayout()
-        for button in (
-            self._rewrite_mapping_add_btn,
-            self._rewrite_mapping_edit_btn,
-            self._rewrite_mapping_remove_btn,
-        ):
-            row.addWidget(button)
-        form.addRow(row)
+        form.addRow(
+            "",
+            _button_row(
+                self._rewrite_mapping_add_btn,
+                self._rewrite_mapping_edit_btn,
+                self._rewrite_mapping_remove_btn,
+            ),
+        )
+        _style_form(form)
         self._tabs.addTab(tab, "Profiles")
 
     def _all_rewrite_profiles(self) -> list[RewriteProfile]:
@@ -1010,7 +1380,8 @@ class SettingsDialog(QDialog):
             "or Intel Smart Sound. Avoid Monitor, Stereo Mix, HDMI, and output devices."
         )
         hint.setWordWrap(True)
-        form.addRow(hint)
+        _section(form, "Input", first=True)
+        form.addRow(_hint(hint))
 
         self._device_combo = QComboBox()
         self._populate_devices()
@@ -1018,6 +1389,7 @@ class SettingsDialog(QDialog):
         self._refresh_devices_btn.setEnabled(self._refresh_devices_fn is not None)
         self._refresh_devices_btn.clicked.connect(self.refresh_devices)
         device_row = QHBoxLayout()
+        device_row.setSpacing(8)
         device_row.addWidget(self._device_combo, 1)
         device_row.addWidget(self._refresh_devices_btn)
         form.addRow("Input Device:", device_row)
@@ -1026,24 +1398,29 @@ class SettingsDialog(QDialog):
             "Refresh and reselect after device changes. Device IDs/names do not prove physical identity."
         )
         policy.setWordWrap(True)
-        form.addRow(policy)
+        form.addRow(_hint(policy))
 
+        _section(form, "Silence detection")
         self._calibrate_btn = QPushButton(_CALIBRATE_LABEL)
         self._calibrate_btn.clicked.connect(self._on_calibrate)
         if self._calibrate_fn is None:
             self._calibrate_btn.setEnabled(False)
-        form.addRow(self._calibrate_btn)
+        form.addRow(_button_row(self._calibrate_btn))
 
         self._rms_spin = QDoubleSpinBox()
         self._rms_spin.setRange(0.0, 32767.0)
         self._rms_spin.setDecimals(1)
         self._rms_spin.setSingleStep(1.0)
         self._rms_spin.setSpecialValueText("Disabled")
-        form.addRow("RMS Threshold:", self._rms_spin)
+        self._rms_spin.setMinimumWidth(140)
+        _mono(self._rms_spin)
+        form.addRow("RMS Threshold:", _leading(self._rms_spin))
 
-        self._rms_label = QLabel("Threshold: —")
+        self._rms_label = _hint(QLabel("Threshold: —"), "meta")
+        self._rms_label.setFont(theme.mono_font(12))
         form.addRow(self._rms_label)
 
+        _style_form(form)
         self._tabs.addTab(tab, "Audio")
 
     # --- Vocabulary tab ------------------------------------------------
@@ -1059,43 +1436,43 @@ class SettingsDialog(QDialog):
             "rendered guidance. Blank terms are discarded; duplicate spellings keep the first."
         )
         hint.setWordWrap(True)
-        form.addRow(hint)
+        form.addRow(_hint(hint))
         self._vocabulary_warning = QLabel(
             "Saved vocabulary is damaged. No terms are being used. The original value is "
             "preserved during unrelated saves. Explicitly Reset or Replace to repair it; "
             "Apply/OK then replaces the original. Cancel discards the repair."
         )
         self._vocabulary_warning.setWordWrap(True)
-        form.addRow(self._vocabulary_warning)
+        form.addRow(_hint(self._vocabulary_warning, "warning"))
         self._vocabulary_reset_btn = QPushButton("Reset damaged vocabulary…")
         self._vocabulary_reset_btn.clicked.connect(lambda: self._on_vocabulary_repair("Reset"))
         self._vocabulary_replace_btn = QPushButton("Replace damaged vocabulary…")
         self._vocabulary_replace_btn.clicked.connect(lambda: self._on_vocabulary_repair("Replace"))
-        repairs = QHBoxLayout()
-        repairs.addWidget(self._vocabulary_reset_btn)
-        repairs.addWidget(self._vocabulary_replace_btn)
-        form.addRow(repairs)
+        form.addRow(_button_row(self._vocabulary_reset_btn, self._vocabulary_replace_btn))
+        _section(form, "Terms")
         self._vocabulary_list = QListWidget()
         self._vocabulary_list.setMaximumHeight(200)
         self._vocabulary_list.itemSelectionChanged.connect(self._on_vocabulary_selected)
         form.addRow("Preferred terms:", self._vocabulary_list)
         self._vocabulary_input = QLineEdit()
         self._vocabulary_input.setPlaceholderText("One preferred spelling, e.g. PySide6")
+        _mono(self._vocabulary_list, self._vocabulary_input)
         form.addRow("Term:", self._vocabulary_input)
         self._vocabulary_add_btn = QPushButton("Add")
         self._vocabulary_add_btn.clicked.connect(self._on_vocabulary_add)
         self._vocabulary_edit_btn = QPushButton("Edit selected")
         self._vocabulary_edit_btn.clicked.connect(self._on_vocabulary_edit)
-        self._vocabulary_remove_btn = QPushButton("Remove selected")
+        self._vocabulary_remove_btn = theme.set_role(QPushButton("Remove selected"), "danger")
         self._vocabulary_remove_btn.clicked.connect(self._on_vocabulary_remove)
-        buttons = QHBoxLayout()
-        for button in (
-            self._vocabulary_add_btn,
-            self._vocabulary_edit_btn,
-            self._vocabulary_remove_btn,
-        ):
-            buttons.addWidget(button)
-        form.addRow(buttons)
+        form.addRow(
+            "",
+            _button_row(
+                self._vocabulary_add_btn,
+                self._vocabulary_edit_btn,
+                self._vocabulary_remove_btn,
+            ),
+        )
+        _style_form(form)
         self._tabs.addTab(tab, "Vocabulary")
 
     def _vocabulary_values(self) -> list[str]:
@@ -1612,6 +1989,7 @@ def _add_provider_fields(
     headers = QLineEdit()
     headers.setPlaceholderText('{"X-Custom": "value"}')
     form.addRow("Custom Headers:", headers)
+    _mono(key, url, model, headers)
 
     return key, url, model, headers
 
@@ -1661,6 +2039,7 @@ class HotkeyCaptureEdit(QLineEdit):
     def __init__(self) -> None:
         super().__init__()
         self.setReadOnly(True)
+        self.setFont(theme.mono_font(12, QFont.Weight.Medium))
         self._recording = False
 
     def is_recording(self) -> bool:
@@ -1670,6 +2049,7 @@ class HotkeyCaptureEdit(QLineEdit):
         if self._recording:
             return
         self._recording = True
+        _set_recording_look(self, True)
         self.setText("press the new hotkey…")
         self.setFocus(Qt.OtherFocusReason)
         app = QCoreApplication.instance()
@@ -1681,6 +2061,7 @@ class HotkeyCaptureEdit(QLineEdit):
         if not self._recording:
             return
         self._recording = False
+        _set_recording_look(self, False)
         app = QCoreApplication.instance()
         if app is not None:
             app.removeEventFilter(self)
@@ -1688,6 +2069,37 @@ class HotkeyCaptureEdit(QLineEdit):
 
     def show_hotkey(self, hotkey: Hotkey) -> None:
         self.setText(hotkey.to_label())
+
+    def paintEvent(self, event) -> None:
+        """Draw the stored chord as keycaps; recording uses the plain prompt text."""
+        if self._recording or not self.text():
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        option = QStyleOptionFrame()
+        self.initStyleOption(option)
+        self.style().drawPrimitive(QStyle.PrimitiveElement.PE_PanelLineEdit, option, painter, self)
+        font = self.font()
+        painter.setFont(font)
+        fm = QFontMetrics(font)
+        cap_h = min(self.height() - 10, fm.height() + 8)
+        x = 10.0
+        y = (self.height() - cap_h) / 2
+        for token in _keycap_tokens(self.text()):
+            width = fm.horizontalAdvance(token) + 16
+            if x + width > self.width() - 8:
+                break
+            cap = QRectF(x, y, width, cap_h)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(theme.LINE_STRONG))
+            painter.drawRoundedRect(cap, 5, 5)
+            painter.setBrush(QColor(theme.HOVER))
+            painter.drawRoundedRect(cap.adjusted(0, 0, 0, -2), 5, 5)
+            painter.setPen(QColor(theme.TEXT))
+            painter.drawText(cap.adjusted(0, 0, 0, -2), Qt.AlignmentFlag.AlignCenter, token)
+            x += width + 6
+        painter.end()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if not self._recording:
@@ -1726,6 +2138,28 @@ class HotkeyCaptureEdit(QLineEdit):
         return True
 
 
+def _keycap_tokens(label: str) -> list[str]:
+    """Split a ``Hotkey.to_label()`` string into keycap captions ("Ctrl++" -> Ctrl, +)."""
+    tokens: list[str] = []
+    current = ""
+    for char in label:
+        if char == "+" and current:
+            tokens.append(current)
+            current = ""
+        else:
+            current += char
+    if current:
+        tokens.append(current)
+    return tokens
+
+
+def _set_recording_look(edit: QLineEdit, recording: bool) -> None:
+    edit.setProperty("hushRecording", recording)
+    edit.style().unpolish(edit)
+    edit.style().polish(edit)
+    edit.update()
+
+
 def _combo_index(combo: QComboBox, data: str) -> int:
     for i in range(combo.count()):
         if combo.itemData(i) == data:
@@ -1748,6 +2182,7 @@ if __name__ == "__main__":
     from PySide6.QtWidgets import QApplication
 
     app = QApplication(sys.argv)
+    theme.apply_theme(app)
     cfg = load_config()
     cfg = import_from_env(cfg)
 

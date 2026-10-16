@@ -1,8 +1,10 @@
 """On-demand plain-text recovery UI; main owns actions and records."""
 
 from PySide6.QtCore import Signal, Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -11,7 +13,26 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from src import theme
 from src.results import DictationRecord
+
+# Visual emphasis only: the primary copy action and the destructive actions.
+_BUTTON_ROLES = {
+    "Copy final": "primary",
+    "Delete": "danger",
+    "Clear all": "danger",
+    "Discard audio": "danger",
+}
+
+
+def _styled(label: QLabel, role: str, font: QFont) -> QLabel:
+    theme.set_role(label, role)
+    label.setFont(font)
+    return label
+
+
+def _section(text: str) -> QLabel:
+    return _styled(QLabel(text.upper()), "section", theme.ui_font(11, QFont.Weight.DemiBold, 8.0))
 
 
 class RecoveryDialog(QDialog):
@@ -26,34 +47,66 @@ class RecoveryDialog(QDialog):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Screamer — Recovery")
-        self.resize(760, 620)
+        self.resize(940, 660)
         self._records = []
         self._candidate_id = None
         self._busy = False
         self._enabled = False
         self._pending = False
         layout = QVBoxLayout(self)
-        self._notice = QLabel()
+        layout.setContentsMargins(32, 28, 32, 22)
+        layout.setSpacing(0)
+        heading = theme.set_role(QLabel("Recovery"), "title")
+        heading.setFont(theme.ui_font(22, QFont.Weight.DemiBold, -1.0))
+        layout.addWidget(heading)
+        layout.addSpacing(6)
+        self._notice = _styled(QLabel(), "hint", theme.ui_font(12))
         self._notice.setTextFormat(Qt.TextFormat.PlainText)
         self._notice.setWordWrap(True)
         layout.addWidget(self._notice)
+        layout.addSpacing(22)
+
+        body = QHBoxLayout()
+        body.setSpacing(24)
+        layout.addLayout(body, 1)
+        side = QVBoxLayout()
+        side.setSpacing(8)
+        side.addWidget(_section("Dictations"))
         self._list = QListWidget()
+        self._list.setFixedWidth(272)
+        self._list.setFont(theme.mono_font(12))
         self._list.currentRowChanged.connect(self._select)
-        layout.addWidget(self._list)
-        self._metadata = QLabel()
+        side.addWidget(self._list, 1)
+        body.addLayout(side)
+
+        detail = QVBoxLayout()
+        detail.setSpacing(8)
+        body.addLayout(detail, 1)
+        self._metadata = _styled(QLabel(), "meta", theme.mono_font(12))
         self._metadata.setTextFormat(Qt.TextFormat.PlainText)
         self._metadata.setWordWrap(True)
-        layout.addWidget(self._metadata)
+        detail.addWidget(_section("Details"))
+        detail.addWidget(self._metadata)
         self._raw = QPlainTextEdit()
         self._final = QPlainTextEdit()
         for title, editor in (("Raw transcript", self._raw), ("Final / candidate", self._final)):
-            layout.addWidget(QLabel(title))
+            detail.addSpacing(10)
+            detail.addWidget(_section(title))
             editor.setReadOnly(True)
-            layout.addWidget(editor)
-        self._attempt = QLabel()
+            editor.setFont(theme.ui_font(14))
+            detail.addWidget(editor, 1)
+        detail.addSpacing(4)
+        self._attempt = _styled(QLabel(), "hint", theme.mono_font(11))
         self._attempt.setTextFormat(Qt.TextFormat.PlainText)
         self._attempt.setWordWrap(True)
-        layout.addWidget(self._attempt)
+        detail.addWidget(self._attempt)
+
+        layout.addSpacing(18)
+        divider = QFrame()
+        divider.setObjectName("hushDivider")
+        divider.setFixedHeight(1)
+        layout.addWidget(divider)
+        layout.addSpacing(14)
         self._buttons = {}
         for actions in (
             (
@@ -71,12 +124,17 @@ class RecoveryDialog(QDialog):
             ),
         ):
             row = QHBoxLayout()
+            row.setSpacing(8)
             layout.addLayout(row)
+            layout.addSpacing(8)
             for title, callback in actions:
                 button = QPushButton(title)
                 button.clicked.connect(callback)
+                if title in _BUTTON_ROLES:
+                    theme.set_role(button, _BUTTON_ROLES[title])
                 row.addWidget(button)
                 self._buttons[title] = button
+            row.addStretch()
         self._select(-1)
 
     def selected_record(self) -> DictationRecord | None:

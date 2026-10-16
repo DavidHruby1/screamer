@@ -54,7 +54,7 @@ from src.config import (
     save_config,
     validate_config,
 )
-from src import http_client
+from src import http_client, theme
 from src.hotkey import HotkeyListener, HotkeyMode
 from src.icons import TrayState, get_icon_pixmap
 from src.injector import WindowIdentity, get_foreground_target, type_text
@@ -288,7 +288,7 @@ class _TrayApp(QObject):
         self._tray = QSystemTrayIcon(self)
         self._tray.setIcon(QIcon(get_icon_pixmap(TrayState.IDLE)))
         self._tray.setToolTip("Screamer — Idle")
-        self._menu = QMenu()
+        self._menu = theme.polish_menu(QMenu())
         self._tray.setContextMenu(self._menu)
         self._rebuild_menu()
         self._tray.activated.connect(self._on_tray_activated)
@@ -301,7 +301,7 @@ class _TrayApp(QObject):
         current: str,
         on_select: Any,
     ) -> QMenu:
-        submenu = QMenu(title, self._menu)
+        submenu = theme.polish_menu(QMenu(title, self._menu))
         submenu.setEnabled(self._settings_dlg is None)
         self._menu.addMenu(submenu)
         group = QButtonGroup(submenu)
@@ -1386,6 +1386,7 @@ def main(argv: list[str] | None = None) -> None:
 
     app = QApplication([])
     app.setQuitOnLastWindowClosed(False)
+    theme.apply_theme(app)
 
     directory = Path(APP_DIR).resolve()
     tray_app: _TrayApp | None = None

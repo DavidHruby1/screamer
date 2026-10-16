@@ -635,3 +635,35 @@ class PasswordFieldTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SidebarNavigationTests(unittest.TestCase):
+    """The sidebar replaced QTabWidget visually; tab indexes must keep their meaning."""
+
+    def test_tab_indexes_text_and_validation_jump_are_preserved(self) -> None:
+        dlg = SettingsDialog(AppConfig(), devices=[], calibrate_fn=None)
+        self.addCleanup(dlg.deleteLater)
+        tabs = dlg._tabs
+        self.assertEqual(
+            [tabs.tabText(i) for i in range(tabs.count())],
+            ["General", "STT", "LLM", "Audio", "Vocabulary", "Profiles"],
+        )
+        tabs.setCurrentIndex(2)
+        self.assertEqual(tabs.currentIndex(), 2)
+        tabs.setTabText(4, "Vocabulary ⚠")
+        self.assertEqual(tabs.tabText(4), "Vocabulary ⚠")
+        self.assertIn("⚠", tabs.nav.item(4).text())
+        with patch("src.settings_dialog.QMessageBox"):
+            self.assertFalse(dlg._show_validation_issue())  # empty STT config
+        self.assertEqual(tabs.currentIndex(), 1)
+
+    def test_toggle_switch_keeps_checkbox_behavior(self) -> None:
+        from PySide6.QtWidgets import QCheckBox
+
+        dlg = SettingsDialog(AppConfig(), devices=[], calibrate_fn=None)
+        self.addCleanup(dlg.deleteLater)
+        self.assertIsInstance(dlg._llm_check, QCheckBox)
+        dlg._llm_check.setChecked(False)
+        dlg._llm_check.click()
+        self.assertTrue(dlg._llm_check.isChecked())
+        self.assertFalse(dlg._llm_group.isHidden())
