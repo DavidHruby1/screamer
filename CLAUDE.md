@@ -31,14 +31,14 @@ python -c "import src; print('OK')"
 The regression suite uses `python -m unittest discover -s tests -v`. Each backend module also has a `__main__` smoke test:
 
 ```powershell
-python -m src.icons              # writes 3 test PNGs (32x32)
+python -m src.icons              # writes 3 test PNGs (64x64)
 python -m src.config             # prints defaults, DPAPI roundtrip, creates APP_DIR
 python -m src.audio              # records 3s -> test.wav, prints duration + RMS
 python -m src.hotkey             # prints pressed/released (Windows only)
 python -m src.injector "hello"   # types into active window (Windows only)
 python -m src.stt test.wav       # transcribes (needs API config)
 python -m src.rewrite "test sentense"   # corrects text (needs API config)
-python -m src.settings_dialog    # launches the 4-tab dialog standalone
+python -m src.settings_dialog    # launches the settings dialog standalone (themed)
 ```
 
 CLI scripts resolve credentials in this order: `load_config()` (QSettings + DPAPI) → backfill empty fields from a `.env` at cwd via `import_from_env()` → if still empty, print a setup message to stderr and `exit(1)`. No hardcoded provider defaults.

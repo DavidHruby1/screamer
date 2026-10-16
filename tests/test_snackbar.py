@@ -7,23 +7,23 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 class SnackbarContentTests(unittest.TestCase):
-    def test_recording_maps_to_red_label(self):
+    def test_recording_maps_to_ember_label(self):
         from src.snackbar import snackbar_content_for
 
         content = snackbar_content_for("recording")
         self.assertIsNotNone(content)
         label, rgb = content
         self.assertEqual(label, "Recording")
-        self.assertEqual(rgb, (229, 57, 53))
+        self.assertEqual(rgb, (255, 122, 77))
 
-    def test_processing_maps_to_amber_label(self):
+    def test_processing_maps_to_tide_label(self):
         from src.snackbar import snackbar_content_for
 
         content = snackbar_content_for("processing")
         self.assertIsNotNone(content)
         label, rgb = content
         self.assertEqual(label, "Processing")
-        self.assertEqual(rgb, (255, 179, 0))
+        self.assertEqual(rgb, (124, 196, 232))
 
     def test_idle_and_unknown_map_to_none(self):
         from src.snackbar import snackbar_content_for

@@ -30,6 +30,10 @@ src/
 ├── recovery_dialog.py
 ├── icons.py
 ├── snackbar.py
+├── theme.py             (Hush design system: tokens, fonts, QSS, window polish)
+├── assets/
+│   ├── fonts/           (Geist + Geist Mono, SIL OFL — see OFL.txt)
+│   └── icons/           (SVG glyphs referenced by the stylesheet)
 ├── utils.py
 └── startup.py
 requirements.txt         (repo root)
@@ -454,7 +458,7 @@ class TrayState(Enum):
     IDLE = "idle"; RECORDING = "recording"; PROCESSING = "processing"
 
 def get_icon_pixmap(state: TrayState) -> QPixmap: ...
-    """32x32 QPixmap from embedded base64 PNG. Grey=idle, red=recording, yellow=processing."""
+    """64x64 QPixmap from embedded base64 PNG. Grey=idle, ember=recording, tide blue=processing."""
 
 def get_icon_bytes(state: TrayState) -> bytes: ...
     """Raw PNG bytes for testing without Qt."""
@@ -481,6 +485,27 @@ class RecordingSnackbar(QWidget):
         Processing/idle reset the meter. No gain, speech-quality, or device-health claim."""
 ```
 
+### theme.py
+
+```python
+CANVAS, SURFACE, RAISED, HOVER, LINE, LINE_STRONG, TEXT, TEXT_2, TEXT_3: str  # surface/text tokens
+EMBER, TIDE, MOSS, ROSE, AMBER: str  # signal colors: recording, processing, success, error, warning
+
+def apply_theme(app: QApplication) -> None: ...
+    """Fusion style + bundled fonts, dark palette, app stylesheet; on Windows also a
+    dark native title bar for every window/dialog on first show. Idempotent."""
+def set_role(widget: QWidget, role: str) -> QWidget: ...
+    """Tag a widget for `[hush="role"]` selectors (title, section, hint, error, warning,
+    primary, ghost, danger, ...)."""
+def polish_menu(menu: QMenu) -> QMenu: ...
+    """Rounded, shadow-free popup; call before the menu is first shown."""
+def draw_mark(painter: QPainter, rect: QRectF, color: QColor) -> None: ...
+    """Paint the three-bar Screamer mark (also baked into the tray PNGs)."""
+```
+
+Appearance only: theme functions never alter widget state, signals or text.
+`main.py` and the standalone `settings_dialog` entry point call `apply_theme()`.
+
 ### settings_dialog.py
 
 ```python
@@ -496,7 +521,8 @@ class SettingsDialog(QDialog):
         calibrate_fn: Callable[[int | None], float] | None = None,
         refresh_devices_fn: Callable[[], list[tuple[int, str]]] | None = None,
     ): ...
-        """6-tab dialog (General, STT, LLM, Audio, Vocabulary, Rewrite Profiles) prefilled from config.
+        """6-page dialog (General, STT, LLM, Audio, Vocabulary, Rewrite Profiles) prefilled from config.
+        Pages sit behind a sidebar whose `_tabs` object keeps QTabWidget index semantics.
         Edits a copy; Apply and OK persist validated settings.
         *devices*: list of (device_id, display_name) for the Audio tab.
         *calibrate_fn*: fn(device_id) -> float for RMS calibration, after fresh identity validation.
@@ -544,7 +570,8 @@ No public exports. Entry point only:
 | Rule | Detail |
 |------|--------|
 | Composition root | `main.py` imports all other modules. Nothing imports `main.py`. |
-| Settings dialog | `settings_dialog.py` imports `config.py`, `startup.py`, `utils.py`, and the shared `audio.py` device-resolution policy. |
+| Settings dialog | `settings_dialog.py` imports `config.py`, `startup.py`, `utils.py`, `theme.py`, and the shared `audio.py` device-resolution policy. |
+| Theme | UI modules (`settings_dialog.py`, `recovery_dialog.py`, `snackbar.py`, `main.py`) may import `theme.py`; `theme.py` imports only Qt. |
 | Shared utilities | `audio.py`, `hotkey.py`, `stt.py`, `rewrite.py`, `injector.py`, `startup.py` may import `utils.py`. |
 | Zero peer imports | The six backend modules must NOT import each other. |
 | Config consumer | `stt.py` and `rewrite.py` import config value types and receive `AppConfig` as a parameter; `audio.py` and `hotkey.py` use config constants and value objects. |

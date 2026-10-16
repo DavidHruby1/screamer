@@ -31,13 +31,13 @@ class SnackbarWiringTests(unittest.TestCase):
     def test_recording_state_shows_snackbar_with_content(self):
         app = _bare_app()
         app._apply_state(TrayState.RECORDING)
-        app._snackbar.show_state.assert_called_once_with("Recording", (229, 57, 53))
+        app._snackbar.show_state.assert_called_once_with("Recording", (255, 122, 77))
         app._snackbar.hide_state.assert_not_called()
 
     def test_processing_state_shows_amber(self):
         app = _bare_app()
         app._apply_state(TrayState.PROCESSING)
-        app._snackbar.show_state.assert_called_once_with("Processing", (255, 179, 0))
+        app._snackbar.show_state.assert_called_once_with("Processing", (124, 196, 232))
 
     def test_idle_state_hides_snackbar(self):
         app = _bare_app()

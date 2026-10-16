@@ -7,15 +7,19 @@ is the Qt overlay widget itself.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Property, QPoint, QPropertyAnimation, QRect, QSize, Qt
-from PySide6.QtGui import QColor, QFontMetrics, QGuiApplication, QPainter, QPainterPath
+from collections import deque
+
+from PySide6.QtCore import Property, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, QSize, Qt
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
+
+from src import theme
 
 # Keyed by ``TrayState.value`` so this stays decoupled from icons.py.
 # Value = (label, dot RGB). Absent key (e.g. "idle") -> hidden.
 _CONTENT: dict[str, tuple[str, tuple[int, int, int]]] = {
-    "recording": ("Recording", (229, 57, 53)),  # red
-    "processing": ("Processing", (255, 179, 0)),  # amber
+    "recording": ("Recording", theme.rgb(theme.EMBER)),
+    "processing": ("Processing", theme.rgb(theme.TIDE)),
 }
 
 
@@ -42,10 +46,13 @@ class RecordingSnackbar(QWidget):
 
     _MARGIN = 48  # px above the screen's available bottom edge
     _PAD_X = 18  # horizontal inner padding
-    _PAD_Y = 11  # vertical inner padding
-    _DOT_R = 6  # dot radius
-    _GAP = 11  # gap between dot and text
-    _RADIUS = 15  # pill corner radius
+    _PAD_Y = 12  # vertical inner padding
+    _DOT_R = 5  # dot radius
+    _GAP = 12  # gap between dot and text
+    _RADIUS = 16  # pill corner radius
+    _WAVE_H = 20  # waveform meter height
+    _BAR_W = 3  # waveform bar width
+    _BAR_GAP = 2  # gap between waveform bars
 
     def __init__(self) -> None:
         super().__init__(None)
@@ -60,8 +67,11 @@ class RecordingSnackbar(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
+        self.setFont(theme.ui_font(13, QFont.Weight.Medium))
         self._label = "Recording"
-        self._dot = QColor(229, 57, 53)
+        self._dot = QColor(theme.EMBER)
+        # Recent input levels drawn as a waveform; display only.
+        self._levels: deque[float] = deque(maxlen=96)
         self._pulse = 1.0  # 0.25..1.0, drives dot alpha
         self._input_label: str | None = None
         self._input_level = 0.0
@@ -107,6 +117,8 @@ class RecordingSnackbar(QWidget):
         self._input_label = device_label
         self._input_level = max(0.0, min(level, 1.0)) if has_callback_data else 0.0
         self._has_callback_data = has_callback_data
+        if has_callback_data:
+            self._levels.append(self._input_level)
         self._resize_to_content()
         self._reposition()
         self.update()
@@ -131,6 +143,7 @@ class RecordingSnackbar(QWidget):
         self._input_label = "Input device unknown" if label == "Recording" else None
         self._input_level = 0.0
         self._has_callback_data = False
+        self._levels.clear()
         self._resize_to_content()
         self._reposition()
         # Cancel any in-flight fade first so a pending fade-out (from a recent
@@ -189,7 +202,7 @@ class RecordingSnackbar(QWidget):
                 prefix_w + status_padding,
                 min(status_w, max_status_w),
             )
-            height += text_h + 14
+            height += text_h + 10 + self._WAVE_H
         self.setFixedSize(width, height)
 
     def _reposition(self) -> None:
@@ -203,49 +216,74 @@ class RecordingSnackbar(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        rect = self.rect()
+        # Dark glass card with a hairline edge.
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = QPainterPath()
-        path.addRoundedRect(
-            float(rect.x()),
-            float(rect.y()),
-            float(rect.width()),
-            float(rect.height()),
-            float(self._RADIUS),
-            float(self._RADIUS),
-        )
-        painter.fillPath(path, QColor(28, 28, 30, 220))  # dark translucent pill
+        path.addRoundedRect(rect, float(self._RADIUS), float(self._RADIUS))
+        painter.fillPath(path, theme.qcolor(theme.SURFACE, 0.95))
+        painter.setPen(QPen(QColor(255, 255, 255, 18), 1.0))
+        painter.drawPath(path)
 
-        # Pulsing dot.
-        dot = QColor(self._dot)
-        dot.setAlphaF(max(0.0, min(1.0, self._pulse)))
-        cx = rect.x() + self._PAD_X + self._DOT_R
+        # Pulsing dot with a soft breathing halo.
+        pulse = max(0.0, min(1.0, self._pulse))
         fm = QFontMetrics(self.font())
         title_height = max(fm.height(), 2 * self._DOT_R)
-        cy = self._PAD_Y + title_height // 2
+        center = QPointF(self._PAD_X + self._DOT_R, self._PAD_Y + title_height / 2)
+        halo = QColor(self._dot)
+        halo.setAlphaF(0.22 * pulse)
         painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(halo)
+        halo_r = self._DOT_R + 2.0 + 3.0 * (1.0 - pulse)
+        painter.drawEllipse(center, halo_r, halo_r)
+        dot = QColor(self._dot)
+        dot.setAlphaF(0.35 + 0.65 * pulse)
         painter.setBrush(dot)
-        painter.drawEllipse(QPoint(cx, cy), self._DOT_R, self._DOT_R)
+        painter.drawEllipse(center, float(self._DOT_R), float(self._DOT_R))
 
         # Label.
-        painter.setPen(QColor(245, 245, 247))
-        text_x = cx + self._DOT_R + self._GAP
+        painter.setPen(QColor(theme.TEXT))
+        text_x = self._PAD_X + 2 * self._DOT_R + self._GAP
         painter.drawText(
-            QRect(text_x, self._PAD_Y, rect.width() - text_x - self._PAD_X, title_height),
+            QRect(text_x, self._PAD_Y, self.width() - text_x - self._PAD_X, title_height),
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
             self._label,
         )
         if self._input_label is not None:
-            input_width = rect.width() - 2 * self._PAD_X
-            painter.setPen(QColor(190, 190, 195))
+            input_width = self.width() - 2 * self._PAD_X
+            status_y = self._PAD_Y + title_height + 4
+            painter.setPen(QColor(theme.TEXT_2))
             painter.drawText(
-                QRect(self._PAD_X, self._PAD_Y + title_height, input_width, fm.height()),
+                QRect(self._PAD_X, status_y, input_width, fm.height()),
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                 self.input_status_text(),
             )
-            meter_y = self._PAD_Y + title_height + fm.height() + 4
-            painter.fillRect(QRect(self._PAD_X, meter_y, input_width, 5), QColor(75, 75, 80))
-            painter.fillRect(
-                QRect(self._PAD_X, meter_y, round(input_width * self._input_level), 5),
-                QColor(90, 205, 150),
+            self._paint_waveform(
+                painter,
+                QRectF(self._PAD_X, status_y + fm.height() + 6, input_width, self._WAVE_H),
             )
         painter.end()
+
+    def _paint_waveform(self, painter: QPainter, area: QRectF) -> None:
+        """Recent fixed full-scale RMS levels as bars, newest on the right."""
+        step = self._BAR_W + self._BAR_GAP
+        count = max(1, int((area.width() + self._BAR_GAP) // step))
+        levels = list(self._levels)[-count:]
+        levels = [None] * (count - len(levels)) + levels
+        mid = area.center().y()
+        painter.setPen(Qt.PenStyle.NoPen)
+        for i, level in enumerate(levels):
+            x = area.left() + i * step
+            if level is None:
+                color = theme.qcolor(theme.LINE_STRONG)
+                height = 2.0
+            else:
+                age = (i + 1) / count  # fade older bars toward the left
+                color = QColor(self._dot)
+                color.setAlphaF(0.30 + 0.70 * age)
+                height = max(2.0, level * area.height())
+            painter.setBrush(color)
+            painter.drawRoundedRect(
+                QRectF(x, mid - height / 2, self._BAR_W, height),
+                self._BAR_W / 2,
+                self._BAR_W / 2,
+            )
