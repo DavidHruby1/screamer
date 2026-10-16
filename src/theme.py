@@ -18,11 +18,14 @@ from PySide6.QtGui import (
     QFont,
     QFontDatabase,
     QGuiApplication,
+    QIcon,
     QPainter,
     QPainterPath,
     QPalette,
 )
 from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QMenu, QWidget
+
+from src.icons import TrayState, get_icon_pixmap
 
 log = logging.getLogger(__name__)
 
@@ -337,7 +340,10 @@ QMenu::item { padding: 7px 30px 7px 12px; border-radius: 7px; background: transp
 QMenu::item:selected { background: $hover; }
 QMenu::item:disabled { color: $text_3; }
 QMenu::separator { height: 1px; background: $line; margin: 5px 8px; }
-QMenu::right-arrow { image: url("$chevron_right"); width: 12px; height: 12px; }
+/* Pull the chevron in so its tip ends where the separators end (8px inset). */
+QMenu::right-arrow {
+    image: url("$chevron_right"); width: 12px; height: 12px; position: relative; right: 4px;
+}
 QMenu QCheckBox, QMenu QRadioButton {
     padding: 7px 12px; border-radius: 7px; background: transparent;
 }
@@ -466,12 +472,14 @@ _polisher: _WindowPolisher | None = None
 
 
 def apply_theme(app: QApplication) -> None:
-    """Install fonts, palette, stylesheet and native polish on *app* (idempotent)."""
+    """Install fonts, palette, stylesheet, window icon and native polish on *app* (idempotent)."""
     global _polisher
     if not isinstance(app, QApplication):
         return  # e.g. a test double standing in for the application
     load_fonts()
     app.setStyle("Fusion")
+    # Title bars of every window (settings, recovery, message boxes) show the mark.
+    app.setWindowIcon(QIcon(get_icon_pixmap(TrayState.IDLE)))
     app.setFont(ui_font(13))
     app.setPalette(_palette())
     app.setStyleSheet(stylesheet())
