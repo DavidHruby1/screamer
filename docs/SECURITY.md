@@ -23,6 +23,9 @@ resolved conversations, an up-to-date branch and the following GitHub Actions ch
 Required checks are tied to the GitHub Actions app. CODEOWNERS assigns workflow,
 release and dependency changes to `@DavidHruby1`; applicable PRs require code owner
 review. Force pushes and branch deletion are disabled in the branch rule.
+A separate CodeQL ruleset rejects PRs with any new CodeQL alert, rather than merely
+requiring the analysis job to finish. CodeQL runs the `security-extended` query suite.
+That ruleset explicitly allows the administrator role to bypass it at any time.
 
 **Administrator bypass is intentional and must remain enabled.** The owner can merge
 their own PRs without another reviewer. Do not enable `enforce_admins`, remove this
