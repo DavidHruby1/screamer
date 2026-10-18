@@ -1,0 +1,6 @@
+# Security and release changes require the repository owner when protections apply.
+/.github/ @DavidHruby1
+/requirements*.txt @DavidHruby1
+/screamer.spec @DavidHruby1
+/SECURITY.md @DavidHruby1
+/docs/SECURITY.md @DavidHruby1
