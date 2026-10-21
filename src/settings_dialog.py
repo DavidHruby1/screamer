@@ -49,7 +49,6 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLayout,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -252,6 +251,9 @@ _PAGE_META = {
 }
 
 
+_SIZE_FACTOR = 0.8
+
+
 class _PageScroll(QScrollArea):
     """Scrolls a settings page; its size hint follows the content up to the screen."""
 
@@ -262,9 +264,16 @@ class _PageScroll(QScrollArea):
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.viewport().setAutoFillBackground(False)
-        content.setObjectName("hushPageBody")
-        self.setWidget(content)
-        content.installEventFilter(self)
+        # Pin the page to the top: a QFormLayout stretched to a taller viewport
+        # spreads the spare height between its rows instead of leaving it below.
+        body = QWidget()
+        body.setObjectName("hushPageBody")
+        column = QVBoxLayout(body)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.addWidget(content)
+        column.addStretch(1)
+        self.setWidget(body)
+        body.installEventFilter(self)
 
     def eventFilter(self, watched, event) -> bool:
         if watched is self.widget() and event.type() == QEvent.Type.LayoutRequest:
@@ -282,7 +291,8 @@ class _PageScroll(QScrollArea):
         return QSize(width + bar + 4, max(320, min(max(height, hint.height()), cap)))
 
     def minimumSizeHint(self) -> QSize:
-        return self.sizeHint()
+        bar = self.verticalScrollBar().sizeHint().width()
+        return QSize(self.widget().minimumSizeHint().width() + bar + 4, 200)
 
 
 class _SidebarTabs(QObject):
@@ -324,7 +334,7 @@ class _SidebarTabs(QObject):
             layout.addSpacing(6)
             layout.addWidget(sub)
         layout.addSpacing(22)
-        content.setMinimumWidth(560)
+        content.setMinimumWidth(420)
         content.setContentsMargins(0, 0, 12, 16)
         layout.addWidget(_PageScroll(content), 1)
         self.stack.addWidget(page)
@@ -495,7 +505,13 @@ class SettingsDialog(QDialog):
         self._rewrite_error: str | None = None
 
         self._build_ui()
-        self.layout().setSizeConstraint(QLayout.SetFixedSize)
+        # A fixed size a fifth below the tallest page's natural size; pages that
+        # do not fit scroll instead of growing the dialog.
+        natural = self.sizeHint()
+        self.setFixedSize(
+            max(self.minimumSizeHint().width(), round(natural.width() * _SIZE_FACTOR)),
+            round(natural.height() * _SIZE_FACTOR),
+        )
         self._populate(self._working)
 
     # ------------------------------------------------------------------
@@ -554,6 +570,9 @@ class SettingsDialog(QDialog):
         btn_import.clicked.connect(self._on_import_env)
         btn_reset = theme.set_role(QPushButton("Reset to Defaults"), "ghost")
         btn_reset.clicked.connect(self._on_reset)
+        for button in (btn_import, btn_reset):
+            button.setStyleSheet("text-align: left;")
+            side.addWidget(button)
 
         self._button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -570,9 +589,6 @@ class SettingsDialog(QDialog):
         footer.setObjectName("hushFooter")
         bottom = QHBoxLayout(footer)
         bottom.setContentsMargins(32, 14, 24, 14)
-        bottom.setSpacing(4)
-        bottom.addWidget(btn_import)
-        bottom.addWidget(btn_reset)
         bottom.addStretch()
         bottom.addWidget(self._button_box)
         main.addWidget(footer)
@@ -995,7 +1011,9 @@ class SettingsDialog(QDialog):
         self._rewrite_replace_btn = QPushButton("Replace damaged catalog…")
         self._rewrite_reset_btn.clicked.connect(lambda: self._on_catalog_repair("Reset"))
         self._rewrite_replace_btn.clicked.connect(lambda: self._on_catalog_repair("Replace"))
-        form.addRow(_button_row(self._rewrite_reset_btn, self._rewrite_replace_btn))
+        self._rewrite_repair_row = _button_row(self._rewrite_reset_btn, self._rewrite_replace_btn)
+        form.addRow(self._rewrite_repair_row)
+        self._rewrite_form = form
         self._rewrite_mode_combo = QComboBox()
         self._rewrite_mode_combo.addItem("Manual", "manual")
         self._rewrite_mode_combo.addItem("Automatic (application mappings)", "automatic")
@@ -1301,6 +1319,9 @@ class SettingsDialog(QDialog):
         damaged = self._working._rewrite_catalog_corrupt_original is not None
         for widget in (self._rewrite_warning, self._rewrite_reset_btn, self._rewrite_replace_btn):
             widget.setVisible(damaged)
+        # Collapse the rows too; hidden widgets alone still leave form spacing behind.
+        for row in (self._rewrite_warning, self._rewrite_repair_row):
+            self._rewrite_form.setRowVisible(row, damaged)
         self._tabs.setTabText(5, "Profiles ⚠" if damaged else "Profiles")
         for widget in (
             self._rewrite_mode_combo,
@@ -1448,7 +1469,11 @@ class SettingsDialog(QDialog):
         self._vocabulary_reset_btn.clicked.connect(lambda: self._on_vocabulary_repair("Reset"))
         self._vocabulary_replace_btn = QPushButton("Replace damaged vocabulary…")
         self._vocabulary_replace_btn.clicked.connect(lambda: self._on_vocabulary_repair("Replace"))
-        form.addRow(_button_row(self._vocabulary_reset_btn, self._vocabulary_replace_btn))
+        self._vocabulary_repair_row = _button_row(
+            self._vocabulary_reset_btn, self._vocabulary_replace_btn
+        )
+        form.addRow(self._vocabulary_repair_row)
+        self._vocabulary_form = form
         _section(form, "Terms")
         self._vocabulary_list = QListWidget()
         self._vocabulary_list.setMaximumHeight(200)
@@ -1483,6 +1508,8 @@ class SettingsDialog(QDialog):
         self._vocabulary_warning.setVisible(damaged)
         self._vocabulary_reset_btn.setVisible(damaged)
         self._vocabulary_replace_btn.setVisible(damaged)
+        for row in (self._vocabulary_warning, self._vocabulary_repair_row):
+            self._vocabulary_form.setRowVisible(row, damaged)
         self._tabs.setTabText(4, "Vocabulary ⚠" if damaged else "Vocabulary")
         for widget in (
             self._vocabulary_list,

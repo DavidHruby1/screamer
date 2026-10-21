@@ -31,3 +31,6 @@ Thumbs.db
 *.wav
 *.exe
 icon_*.png
+
+# Local user guide
+navod.html
