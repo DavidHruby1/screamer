@@ -11,7 +11,9 @@ file; GitHub generates the release notes.
 The Windows job runs unit tests, builds the onedir executable, and produces the versioned
 ZIP and `.sha256`. Only a separate publication job receives `contents: write`; it
 checks the tested SHA, checksum, executable in the ZIP and GitHub asset digests, then
-publishes the draft. It never runs dependency installation or the build with write
+publishes the draft. New releases become immutable at publication, protecting their
+assets and tags from later replacement. Older releases are not locked retroactively.
+It never runs dependency installation or the build with write
 permission. A tag may exist before publication if asset upload fails; this is not a
 public release. The workflow accepts a matching draft/tag on retry but refuses to
 overwrite an asset or tag with a mismatched SHA/digest.
@@ -36,8 +38,9 @@ planning inspects every paginated release page.
   release or reuse a version that users may already have downloaded.
 
 This is automation after **human review of the code PR**, not automated bypass of
-branch protection. There is no signing certificate or supply-chain attestation: a
-checksum detects transfer corruption but is not proof of provenance. CI checks the
+branch protection. There is no Windows code-signing certificate; the checksum detects transfer corruption
+and does not authenticate the desktop executable. GitHub release immutability protects
+newly published release assets and tags against later replacement. CI checks the
 build output exists; it does not run the packaged app with a real microphone. Windows
 DPAPI, Win32 input and the downloadable ZIP should be smoke-tested on Windows when
 shipping a significant desktop change.

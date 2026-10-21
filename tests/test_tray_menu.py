@@ -1,5 +1,7 @@
 import os
+import threading
 import unittest
+from copy import deepcopy
 from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
@@ -9,7 +11,9 @@ from PySide6.QtCore import QObject
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMenu
 
-from src.main import _TrayApp
+from src.config import AppConfig
+from src.injector import InjectionReport, WindowIdentity
+from src.main import _Session, _Terminal, _TrayApp
 
 
 def make_tray_app():
@@ -18,9 +22,34 @@ def make_tray_app():
     QObject.__init__(tray_app)
     tray_app._menu = QMenu()
     tray_app._settings_dlg = None
+    tray_app._session_config = None
+    tray_app._session = None
+    tray_app._config = AppConfig()
+    tray_app._cancel_event = threading.Event()
+    tray_app._worker = None
+    tray_app._recording = False
+    tray_app._enabled = True
+    tray_app._terminal_handled = False
+    tray_app._thread_finished = False
+    tray_app._recovery_only = False
+    tray_app._rewrite_only = False
+    tray_app._stt_only = False
+    tray_app._pending_audio = None
+    tray_app._latest = None
+    tray_app._candidate = None
+    tray_app._armed = None
+    tray_app._history = Mock()
+    tray_app._committed = []
+    tray_app._committed_ids = set()
+    tray_app._recovery_dlg = None
+    tray_app._last_settings_dlg = None
+    tray_app._event_loop_stopped = False
+    tray_app._exit_complete = False
+    tray_app._retired_worker = None
     tray_app._hotkey_restart_pending = False
     tray_app._exiting = False
     tray_app._recording_timer = QTimer(tray_app)
+    tray_app._level_timer = QTimer(tray_app)
     return tray_app
 
 
@@ -36,6 +65,8 @@ class TrayMenuTests(unittest.TestCase):
             tray._recorder.stop.return_value = b"recorded audio"
 
             self.assertTrue(tray._recording_timer.isActive())
+            self.assertTrue(tray._level_timer.isActive())
+            self.assertEqual(tray._level_timer.interval(), 100)
             self.assertEqual(tray._recording_timer.interval(), 300_000)
             self.assertTrue(tray._recording_timer.isSingleShot())
             tray._recording_timer.start(0)
@@ -43,10 +74,18 @@ class TrayMenuTests(unittest.TestCase):
 
             self.assertFalse(tray._recording)
             self.assertFalse(tray._recording_timer.isActive())
+            self.assertFalse(tray._level_timer.isActive())
             tray._recorder.stop.assert_called_once()
             worker.assert_called_once_with(
-                b"recorded audio", tray._config, tray._cancel_event, tray
+                b"recorded audio",
+                tray._session_config,
+                tray._cancel_event,
+                tray,
+                session_id=tray._session.id,
+                raw_text=None,
+                stt_only=False,
             )
+            self.assertIsNot(tray._session_config, tray._config)
             worker.return_value.start.assert_called_once()
             tray._on_hotkey_released()
             tray._recorder.stop.assert_called_once()
@@ -74,6 +113,7 @@ class TrayMenuTests(unittest.TestCase):
                 QApplication.processEvents()
 
                 self.assertFalse(tray._recording_timer.isActive())
+                self.assertFalse(tray._level_timer.isActive())
                 tray._recorder.stop.assert_called_once()
                 worker.assert_not_called()
 
@@ -160,7 +200,281 @@ class TrayMenuTests(unittest.TestCase):
         with patch("src.main.resolve_device", side_effect=OSError("busy")):
             tray._start_recording()
         self.assertFalse(tray._recording)
+        self.assertIsNone(tray._session_config)
+        self.assertFalse(tray._level_timer.isActive())
         tray._apply_state.assert_called_once_with(TrayState.IDLE)
+
+    def test_stream_start_failure_never_starts_meter_or_keeps_session(self):
+        from src.utils import AppError, ScreamerError
+
+        with ExitStack() as stack:
+            for patcher in self._startup_patches(lambda cfg: cfg):
+                stack.enter_context(patcher)
+            stack.enter_context(patch("src.main.resolve_device", return_value=None))
+            tray = _TrayApp(startup_mode=True)
+            tray._on_error = Mock()
+            tray._recorder.start.side_effect = ScreamerError(
+                AppError.MIC_UNAVAILABLE, "device busy"
+            )
+            tray._start_recording()
+            self.assertFalse(tray._level_timer.isActive())
+            self.assertFalse(tray._recording_timer.isActive())
+            self.assertFalse(tray._recording)
+            self.assertIsNone(tray._session_config)
+            tray._on_error.assert_called_once_with(AppError.MIC_UNAVAILABLE, "device busy")
+
+    def test_no_input_capture_error_never_starts_stt_and_stops_meter(self):
+        from src.utils import AppError, ScreamerError
+
+        with ExitStack() as stack:
+            for patcher in self._startup_patches(lambda cfg: cfg):
+                stack.enter_context(patcher)
+            stack.enter_context(patch("src.main.resolve_device", return_value=None))
+            worker = stack.enter_context(patch("src.main._WorkerThread"))
+            tray = _TrayApp(startup_mode=True)
+            tray._on_error = Mock()
+            tray._start_recording()
+            tray._recorder.stop.side_effect = ScreamerError(
+                AppError.MIC_DISCONNECTED, "No microphone samples were received."
+            )
+            tray._finalize_recording()
+            self.assertFalse(tray._recording)
+            self.assertFalse(tray._level_timer.isActive())
+            self.assertIsNone(tray._session_config)
+            worker.assert_not_called()
+            tray._on_error.assert_called_once_with(
+                AppError.MIC_DISCONNECTED, "No microphone samples were received."
+            )
+
+    def test_session_freezes_language_rewrite_and_post_key_at_recording_start(self):
+        from src.config import AppConfig
+
+        tray = make_tray_app()
+        tray._config = AppConfig(stt_language="cs", llm_enabled=True, post_type_key="enter")
+        tray._recorder = Mock()
+        tray._cancel_event = threading.Event()
+        tray._worker = None
+        tray._recording = False
+        tray._enabled = True
+        tray._apply_state = Mock()
+        tray._recorder.stop.return_value = b"wav"
+
+        with (
+            patch("src.main.resolve_device", return_value=None),
+            patch("src.main.AudioRecorder", return_value=tray._recorder),
+            patch("src.main._WorkerThread") as worker,
+            patch("src.main.type_text", return_value=InjectionReport(10, 2, False)) as type_text,
+            patch("src.main.get_foreground_target", return_value=WindowIdentity(100, 200)),
+        ):
+            tray._start_recording()
+            tray._config.stt_language = "en"
+            tray._config.llm_enabled = False
+            tray._config.post_type_key = "tab"
+            tray._finalize_recording()
+
+            session = worker.call_args.args[1]
+            self.assertIs(session, tray._session_config)
+            self.assertIsNot(session, tray._config)
+            self.assertEqual((session.stt_language, session.llm_enabled), ("cs", True))
+            self.assertEqual(session.post_type_key, "enter")
+
+            tray._config.stt_language = ""
+            tray._config.post_type_key = "space"
+            target = tray._session.target
+            tray._on_terminal(_Terminal(tray._session.id, "hello", None, "not_requested", ()))
+            self.assertIsNotNone(tray._session_config)
+            tray._on_worker_finished()
+
+        type_text.assert_called_once_with("hello", "enter", expected_target=target)
+        self.assertIsNone(tray._session_config)
+        self.assertEqual(tray._config.stt_language, "")
+
+    def test_worker_requests_use_frozen_language_for_fallback_and_rewrite(self):
+        import httpx
+
+        from src.config import AppConfig
+        from src.main import _WorkerThread
+
+        live = AppConfig(
+            stt_api_key="primary",
+            stt_base_url="https://primary.test/v1",
+            stt_model="model",
+            stt_fallback_enabled=True,
+            stt_fallback_api_key="fallback",
+            stt_fallback_base_url="https://fallback.test/v1",
+            stt_fallback_model="model",
+            stt_language="cs",
+            llm_enabled=True,
+            llm_api_key="llm",
+            llm_base_url="https://llm.test/v1",
+            llm_model="model",
+            llm_system_prompt="Clean dictation.",
+            llm_prompt_origin="user_saved",
+        )
+        session = deepcopy(live)
+        live.stt_language = "en"
+        live.llm_enabled = False
+        requests = []
+
+        def fake_post(url, **kwargs):
+            requests.append((url, kwargs))
+            if "primary.test" in url:
+                raise httpx.ConnectError("offline")
+            if "audio/transcriptions" in url:
+                return httpx.Response(200, json={"text": "raw text"})
+            return httpx.Response(200, json={"choices": [{"message": {"content": "clean text"}}]})
+
+        worker = _WorkerThread(b"wav", session, threading.Event(), session_id="first")
+        results = []
+        worker.terminal.connect(results.append)
+        with patch("src.http_client.post", side_effect=fake_post):
+            worker.run()
+
+        self.assertEqual([call[1]["data"]["language"] for call in requests[:2]], ["cs", "cs"])
+        self.assertEqual(
+            requests[2][1]["json"]["messages"][0]["content"],
+            "Clean dictation.\nThe speech language is cs.",
+        )
+        self.assertEqual(results[0].raw, "raw text")
+        self.assertEqual(results[0].rewritten, "clean text")
+
+        requests.clear()
+        live.stt_language = ""
+        live.llm_enabled = True
+        next_worker = _WorkerThread(b"wav", deepcopy(live), threading.Event(), session_id="next")
+        with patch("src.http_client.post", side_effect=fake_post):
+            next_worker.run()
+        self.assertNotIn("language", requests[0][1]["data"])
+        self.assertNotIn("language", requests[1][1]["data"])
+        self.assertEqual(requests[2][1]["json"]["messages"][0]["content"], "Clean dictation.")
+
+    def test_settings_keeps_tray_config_controls_disabled_through_apply(self):
+        from src.config import AppConfig
+
+        tray = make_tray_app()
+        tray._config = AppConfig()
+        tray._recording = False
+        tray._worker = None
+        tray._enabled = True
+        tray._get_device_list = lambda: []
+        tray._rebuild_menu()
+        seen = []
+
+        def inspect_menu():
+            actions = {}
+            for action in tray._menu.actions():
+                widget = action.defaultWidget() if hasattr(action, "defaultWidget") else None
+                label = widget.text() if widget is not None else action.text()
+                actions["AI Rewrite" if label.startswith("AI Rewrite") else label] = action
+            seen.append(
+                (
+                    actions["Record Mode"].isEnabled(),
+                    actions["Hotkey"].isEnabled(),
+                    actions["Language"].isEnabled(),
+                    actions["Post-type Key"].isEnabled(),
+                    actions["AI Rewrite"].defaultWidget().isEnabled(),
+                    actions["Enabled"].defaultWidget().isEnabled(),
+                    actions["Exit"].isEnabled(),
+                )
+            )
+
+        def during_dialog():
+            inspect_menu()
+            tray._sync_settings_from_disk()  # Settings Apply rebuilds the menu while exec runs.
+            inspect_menu()
+            return 0
+
+        with (
+            patch("src.main.SettingsDialog") as dialog,
+            patch("src.main.load_config", return_value=AppConfig(post_type_key="enter")),
+        ):
+            dialog.return_value.exec.side_effect = during_dialog
+            tray._open_settings()
+
+        inspect_menu()
+        self.assertEqual(seen[:2], [(False, False, False, False, False, True, True)] * 2)
+        self.assertEqual(seen[2], (True, True, True, True, True, True, True))
+        self.assertEqual(tray._config.post_type_key, "enter")
+
+    def test_language_submenu_shows_builtins_favorites_and_old_active_code(self):
+        from src.config import AppConfig
+
+        tray = make_tray_app()
+        tray._config = AppConfig(stt_language="zz", stt_language_favorites=["de", "cs"])
+        tray._enabled = True
+        tray._rebuild_menu()
+
+        submenu = next(a.menu() for a in tray._menu.actions() if a.text() == "Language")
+        radios = [action.defaultWidget() for action in submenu.actions()]
+        self.assertEqual(
+            [radio.text() for radio in radios], ["Auto", "Czech", "English", "de", "zz"]
+        )
+        self.assertEqual([radio.isChecked() for radio in radios], [False] * 4 + [True])
+
+    def test_language_tray_change_persists_and_next_session_uses_new_value(self):
+        from src.config import AppConfig
+
+        tray = make_tray_app()
+        tray._config = AppConfig(stt_language="cs")
+        tray._enabled = True
+        tray._recording = False
+        tray._recorder = Mock()
+        tray._recorder.stop.return_value = b"wav"
+        tray._cancel_event = threading.Event()
+        tray._apply_state = Mock()
+        tray._rebuild_menu()
+
+        def select(label):
+            menu = next(a.menu() for a in tray._menu.actions() if a.text() == "Language")
+            radio = next(
+                a.defaultWidget() for a in menu.actions() if a.defaultWidget().text() == label
+            )
+            radio.setChecked(True)
+            self.assertTrue(radio.isChecked())
+
+        with (
+            patch("src.main.save_config") as save,
+            patch("src.main.resolve_device", return_value=None),
+            patch("src.main.AudioRecorder", return_value=tray._recorder),
+            patch("src.main._WorkerThread") as worker,
+        ):
+            select("Auto")
+            self.assertEqual(save.call_args.args[0].stt_language, "")
+            select("Czech")
+            tray._start_recording()
+            select("English")
+            tray._finalize_recording()
+            self.assertEqual(worker.call_args.args[1].stt_language, "cs")
+            tray._on_terminal(_Terminal(tray._session.id, None, None, "cancelled", (), True))
+            tray._on_worker_finished()
+            tray._start_recording()
+            tray._finalize_recording()
+            self.assertEqual(worker.call_args.args[1].stt_language, "en")
+
+    def test_language_save_failure_restores_live_and_visible_selection(self):
+        from src.config import AppConfig
+        from src.utils import AppError, ScreamerError
+
+        tray = make_tray_app()
+        tray._config = AppConfig(stt_language="cs")
+        tray._enabled = True
+        tray._on_error = Mock()
+        tray._rebuild_menu()
+        menu = next(a.menu() for a in tray._menu.actions() if a.text() == "Language")
+        english = next(
+            a.defaultWidget() for a in menu.actions() if a.defaultWidget().text() == "English"
+        )
+
+        with patch("src.main.save_config", side_effect=ScreamerError(AppError.KEY_STORAGE_FAILED)):
+            english.setChecked(True)
+
+        restored = next(a.menu() for a in tray._menu.actions() if a.text() == "Language")
+        self.assertEqual(tray._config.stt_language, "cs")
+        self.assertEqual(
+            [a.defaultWidget().text() for a in restored.actions() if a.defaultWidget().isChecked()],
+            ["Czech"],
+        )
+        tray._on_error.assert_called_once_with(AppError.KEY_STORAGE_FAILED)
 
     def test_exit_still_quits_when_settings_save_fails(self):
         tray = make_tray_app()
@@ -180,7 +494,6 @@ class TrayMenuTests(unittest.TestCase):
     def test_result_does_not_type_into_own_settings_dialog(self):
         import threading
         from src.config import AppConfig
-        from src.utils import PipelineResult
 
         tray = make_tray_app()
         tray._settings_dlg = Mock()
@@ -189,9 +502,13 @@ class TrayMenuTests(unittest.TestCase):
         tray._enabled = True
         tray._exiting = False
         tray._apply_state = Mock()
+        tray._session = _Session(
+            tray._config, WindowIdentity(100, 200), "settings", "2026-09-30T12:00:00+00:00"
+        )
         with patch("src.main.type_text") as type_text:
-            tray._on_worker_succeeded(PipelineResult(text="secret"))
+            tray._on_terminal(_Terminal("settings", "secret", None, "not_requested", ()))
         type_text.assert_not_called()
+        self.assertEqual(tray._latest.raw_text, "secret")
 
     def test_hotkey_restart_waits_for_active_hold_recording_release(self):
         tray = make_tray_app()
@@ -331,7 +648,6 @@ class TrayMenuTests(unittest.TestCase):
         import threading
 
         from src.config import AppConfig
-        from src.utils import PipelineResult
 
         tray_app = make_tray_app()
         tray_app._recording = False
@@ -340,28 +656,39 @@ class TrayMenuTests(unittest.TestCase):
         tray_app._config = AppConfig()
         tray_app._exiting = False
         tray_app._apply_state = Mock()
+        tray_app._session = _Session(
+            tray_app._config, WindowIdentity(100, 200), "disabled", "2026-09-30T12:00:00+00:00"
+        )
 
         tray_app._toggle_enabled(False)
         with patch("src.main.type_text") as type_text:
-            tray_app._on_worker_succeeded(PipelineResult(text="must not type"))
+            tray_app._on_terminal(_Terminal("disabled", "must not type", None, "not_requested", ()))
         type_text.assert_not_called()
+        self.assertEqual(tray_app._latest.raw_text, "must not type")
 
     def test_successful_result_types_on_main_thread(self):
         import threading
 
         from src.config import AppConfig
-        from src.utils import PipelineResult
 
         tray_app = make_tray_app()
         tray_app._cancel_event = threading.Event()
         tray_app._config = AppConfig(post_type_key="enter")
+        tray_app._session_config = AppConfig(post_type_key="enter")
         tray_app._enabled = True
         tray_app._exiting = False
         tray_app._apply_state = Mock()
+        target = WindowIdentity(100, 200)
+        tray_app._session = _Session(
+            tray_app._session_config, target, "typed", "2026-09-30T12:00:00+00:00"
+        )
 
-        with patch("src.main.type_text") as type_text:
-            tray_app._on_worker_succeeded(PipelineResult(text="typed"))
-        type_text.assert_called_once_with("typed", "enter")
+        with (
+            patch("src.main.type_text", return_value=InjectionReport(10, 2, False)) as type_text,
+            patch("src.main.get_foreground_target", return_value=target),
+        ):
+            tray_app._on_terminal(_Terminal("typed", "typed", None, "not_requested", ()))
+        type_text.assert_called_once_with("typed", "enter", expected_target=target)
 
     def test_discard_reports_microphone_stop_error(self):
         from src.utils import AppError, ScreamerError

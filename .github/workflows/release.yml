@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   plan:
+    timeout-minutes: 20
     if: >-
       ${{ github.event.workflow_run.conclusion == 'success' &&
           github.event.workflow_run.event == 'push' &&
@@ -28,7 +29,7 @@ jobs:
       tag: ${{ steps.plan.outputs.tag }}
       sha: ${{ steps.plan.outputs.sha }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
@@ -41,17 +42,18 @@ jobs:
         run: python .github/scripts/release.py plan
 
   build:
+    timeout-minutes: 40
     needs: plan
     if: ${{ needs.plan.outputs.tag != '' }}
     runs-on: windows-latest
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
           cache: pip
@@ -77,7 +79,7 @@ jobs:
           "$hash  $zip" | Out-File -FilePath "$zip.sha256" -Encoding ascii
           "ASSET_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
           "ASSET_SHA=$zip.sha256" | Out-File -FilePath $env:GITHUB_ENV -Append
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets
           path: |
@@ -87,16 +89,17 @@ jobs:
           retention-days: 7
 
   publish:
+    timeout-minutes: 10
     needs: [plan, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-assets
           path: release-assets

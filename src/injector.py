@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import platform
 import time
+from dataclasses import dataclass, field
 
 from src.utils import AppError, ScreamerError, log_duration
 
@@ -19,21 +20,99 @@ _POST_KEY_VK: dict[str, int] = {
 }
 
 
+@dataclass(frozen=True)
+class WindowIdentity:
+    hwnd: int
+    process_id: int
+    executable_path: str | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
+class InjectionReport:
+    text_events_submitted: int
+    post_key_events_submitted: int
+    post_key_skipped: bool
+
+
+class InjectionError(ScreamerError):
+    def __init__(
+        self,
+        detail: str,
+        text_events_submitted: int = 0,
+        post_key_events_submitted: int = 0,
+    ) -> None:
+        self.text_events_submitted = text_events_submitted
+        self.post_key_events_submitted = post_key_events_submitted
+        super().__init__(AppError.INJECTION_FAILED, detail)
+
+
+def get_foreground_target() -> WindowIdentity | None:
+    """Read only foreground HWND/PID and optional executable metadata."""
+    if platform.system() != "Windows":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    user32.GetForegroundWindow.argtypes = []
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    hwnd = user32.GetForegroundWindow()
+    pid = wintypes.DWORD()
+    if not hwnd or not user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)) or not pid.value:
+        return None
+    path = None
+    process = kernel32.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED_INFORMATION
+    if process:
+        try:
+            size = wintypes.DWORD(32768)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if kernel32.QueryFullProcessImageNameW(process, 0, buffer, ctypes.byref(size)):
+                path = buffer.value
+        finally:
+            kernel32.CloseHandle(process)
+    return WindowIdentity(int(hwnd), pid.value, path)
+
+
 def _utf16_units(value: str) -> list[str]:
     """Split *value* into UTF-16 code units (surrogate pairs become two units)."""
     encoded = value.encode("utf-16-le", errors="surrogatepass")
     return [chr(int.from_bytes(encoded[i : i + 2], "little")) for i in range(0, len(encoded), 2)]
 
 
-def type_text(text: str, post_key: str | None = None) -> None:
+def type_text(
+    text: str,
+    post_key: str | None = None,
+    *,
+    expected_target: WindowIdentity | None = None,
+) -> InjectionReport:
     """Type *text* into the active window via Win32 SendInput.
 
     0.05s delay then press *post_key* if not ``None`` and not ``"none"``.
-    Raises ``ScreamerError(AppError.INJECTION_FAILED)`` on failure.
+    Reports submitted events, not visible insertion. Never retries a partial send.
+    Raises ``InjectionError`` with separate text/post-key counts on failure.
     On non-Windows, raises ``ScreamerError(AppError.UNSUPPORTED_PLATFORM)``.
     """
     if platform.system() != "Windows":
         raise ScreamerError(AppError.UNSUPPORTED_PLATFORM, "SendInput requires Windows")
+    normalized_key = post_key.lower() if post_key is not None else "none"
+    if normalized_key != "none" and normalized_key not in _POST_KEY_VK:
+        raise InjectionError("Unknown post-type key")
+    text_sent = 0
+    post_sent = 0
 
     import ctypes
     import ctypes.wintypes
@@ -91,20 +170,25 @@ def type_text(text: str, post_key: str | None = None) -> None:
     user32.SendInput.restype = ctypes.wintypes.UINT
 
     def _raise_sendinput_failed(detail: str) -> None:
-        err = ctypes.get_last_error()
+        err = ctypes.get_last_error()  # type: ignore[attr-defined]
         if err:
             detail = f"{detail} (WinError {err})"
-        raise ScreamerError(AppError.INJECTION_FAILED, detail)
+        raise InjectionError(detail, text_sent, post_sent)
 
     def _send_vk(vk: int) -> None:
+        nonlocal post_sent
         batch = (INPUT * 2)()
         batch[0].type = INPUT_KEYBOARD
         batch[0].ki.wVk = vk
         batch[1].type = INPUT_KEYBOARD
         batch[1].ki.wVk = vk
         batch[1].ki.dwFlags = KEYEVENTF_KEYUP
-        if user32.SendInput(2, batch, ctypes.sizeof(INPUT)) != 2:
-            _raise_sendinput_failed(f"SendInput failed for VK 0x{vk:02X}")
+        ctypes.set_last_error(0)  # type: ignore[attr-defined]
+        post_sent = user32.SendInput(2, batch, ctypes.sizeof(INPUT))
+        if post_sent != 2:
+            _raise_sendinput_failed(
+                f"SendInput submitted {post_sent}/2 post-key events for VK 0x{vk:02X}"
+            )
 
     try:
         with log_duration(log, f"Text injection ({len(text)} chars)"):
@@ -125,26 +209,27 @@ def type_text(text: str, post_key: str | None = None) -> None:
                     up.type = INPUT_KEYBOARD
                     up.ki.wScan = code
                     up.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
-                sent = user32.SendInput(count, batch, ctypes.sizeof(INPUT))
+                if expected_target is not None and get_foreground_target() != expected_target:
+                    raise InjectionError("Foreground target changed or unavailable")
+                ctypes.set_last_error(0)  # type: ignore[attr-defined]
+                text_sent = user32.SendInput(count, batch, ctypes.sizeof(INPUT))
                 # Partial injection (sent < count) means a prefix of the text
                 # was already typed; there is no rollback — surface the counts.
-                if sent != count:
-                    _raise_sendinput_failed(f"SendInput injected {sent}/{count} events")
+                if text_sent != count:
+                    _raise_sendinput_failed(f"SendInput submitted {text_sent}/{count} text events")
 
             # Post-type key with 0.05s delay.
-            if post_key and post_key != "none":
-                vk = _POST_KEY_VK.get(post_key.lower())
-                if vk is not None:
-                    time.sleep(0.05)
-                    _send_vk(vk)
-                    log.info("Post-type key pressed: %s", post_key)
-                else:
-                    log.warning("Unknown post-type key: %s", post_key)
+            if normalized_key != "none":
+                time.sleep(0.05)
+                if expected_target is not None and get_foreground_target() != expected_target:
+                    return InjectionReport(text_sent, 0, True)
+                _send_vk(_POST_KEY_VK[normalized_key])
+            return InjectionReport(text_sent, post_sent, False)
 
     except ScreamerError:
         raise
     except Exception as e:
-        raise ScreamerError(AppError.INJECTION_FAILED, str(e)) from e
+        raise InjectionError(str(e), text_sent, post_sent) from e
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ class Utf16UnitsTests(unittest.TestCase):
         with (
             patch("src.injector.platform.system", return_value="Windows"),
             patch.object(ctypes, "WinDLL", return_value=user32, create=True),
+            patch.object(ctypes, "set_last_error", create=True),
             patch("src.injector.time.sleep"),
         ):
             type_text("", "enter")
@@ -43,6 +44,7 @@ class Utf16UnitsTests(unittest.TestCase):
             patch("src.injector.platform.system", return_value="Windows"),
             patch.object(ctypes, "WinDLL", return_value=user32, create=True),
             patch.object(ctypes, "get_last_error", return_value=0, create=True),
+            patch.object(ctypes, "set_last_error", create=True),
             patch("src.injector.time.sleep"),
         ):
             with self.assertRaises(ScreamerError) as error:

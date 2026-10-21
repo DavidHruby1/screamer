@@ -3,15 +3,35 @@
 from __future__ import annotations
 
 import logging
+import json
 from time import perf_counter
 
 import httpx
 
 from src import http_client
-from src.config import AppConfig, ProviderConfig, parse_custom_headers
+from src.config import (
+    AppConfig,
+    ProviderConfig,
+    parse_custom_headers,
+    normalize_vocabulary_entries,
+    VOCABULARY_CONTEXT_PREFIX,
+    VOCABULARY_CONTEXT_SUFFIX,
+)
 from src.utils import AppError, PipelineResult, ScreamerError, log_duration
 
 log = logging.getLogger(__name__)
+
+
+def format_vocabulary_context(entries: list[str]) -> str:
+    """Render bounded, quoted spelling guidance without touching transcript data."""
+    terms = normalize_vocabulary_entries(entries)
+    if not terms:
+        return ""
+    return (
+        VOCABULARY_CONTEXT_PREFIX
+        + "\n".join("- " + json.dumps(term, ensure_ascii=False) for term in terms)
+        + VOCABULARY_CONTEXT_SUFFIX
+    )
 
 
 def rewrite(text: str, config: AppConfig) -> PipelineResult:
@@ -25,6 +45,9 @@ def rewrite(text: str, config: AppConfig) -> PipelineResult:
             return PipelineResult(text=text)
 
         system_prompt = config.llm_system_prompt or ""
+        vocabulary_context = format_vocabulary_context(config.vocabulary_entries)
+        if vocabulary_context:
+            system_prompt += "\n\n" + vocabulary_context
         language = config.stt_language
         if language:
             system_prompt += f"\nThe speech language is {language}."
@@ -140,8 +163,10 @@ def _call_llm(
 
 
 def _groq_completion_cap(user_text: str) -> int:
-    estimated_input_tokens = max(1, len(user_text) // 4)
-    cap = int(estimated_input_tokens * 1.5) + 32
+    # Assume ~2 chars/token: accented languages such as Czech tokenize far
+    # denser than English, and a too-tight cap discards the whole rewrite.
+    estimated_input_tokens = max(1, len(user_text) // 2)
+    cap = estimated_input_tokens * 2 + 64
     return max(128, min(4096, cap))
 
 
