@@ -32,6 +32,19 @@ class SnackbarContentTests(unittest.TestCase):
         self.assertIsNone(snackbar_content_for("nonsense"))
 
 
+class DisplayLevelTests(unittest.TestCase):
+    def test_maps_dbfs_onto_unit_range(self):
+        from src.snackbar import display_level
+
+        self.assertEqual(display_level(0.0), 0.0)
+        self.assertEqual(display_level(-0.5), 0.0)
+        self.assertEqual(display_level(10 ** (-60 / 20)), 0.0)  # below the floor
+        self.assertEqual(display_level(1.0), 1.0)
+        # Ordinary speech (~-30 dBFS) lands mid-scale, far above the old linear 0.03.
+        self.assertGreater(display_level(10 ** (-30 / 20)), 0.5)
+        self.assertLess(display_level(10 ** (-40 / 20)), display_level(10 ** (-30 / 20)))
+
+
 class SnackbarGeometryTests(unittest.TestCase):
     def test_centers_horizontally_and_sits_above_bottom_margin(self):
         from PySide6.QtCore import QPoint, QRect, QSize
@@ -122,6 +135,24 @@ class SnackbarWidgetTests(unittest.TestCase):
         self.assertIn("Waiting for samples", bar.input_status_text())
         bar.hide_state()
         self.assertEqual(bar.input_status_text(), "")
+
+    def test_wave_animates_only_while_recording_and_follows_level(self):
+        from src.snackbar import RecordingSnackbar
+
+        bar = RecordingSnackbar()
+        self.addCleanup(bar.close)
+        bar.show_state("Recording", (229, 57, 53))
+        self.assertTrue(bar.is_animating_wave())
+        bar.set_input_status("USB microphone", 0.1, True)
+        bar._last_tick_ms = bar._elapsed.elapsed() - 50
+        bar._advance_wave()
+        self.assertGreater(bar._wave_amp, 0.5)
+        self.assertFalse(bar.grab().isNull())
+        bar.show_state("Processing", (255, 179, 0))
+        self.assertFalse(bar.is_animating_wave())
+        bar.show_state("Recording", (229, 57, 53))
+        bar.hide_state()
+        self.assertFalse(bar.is_animating_wave())
 
     def test_long_device_label_cannot_hide_waiting_or_quiet_observation(self):
         from src.snackbar import RecordingSnackbar

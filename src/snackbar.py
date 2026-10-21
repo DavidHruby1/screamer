@@ -7,10 +7,30 @@ is the Qt overlay widget itself.
 
 from __future__ import annotations
 
-from collections import deque
+import math
 
-from PySide6.QtCore import Property, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath, QPen
+from PySide6.QtCore import (
+    Property,
+    QElapsedTimer,
+    QPoint,
+    QPointF,
+    QPropertyAnimation,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+)
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QGuiApplication,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PySide6.QtWidgets import QWidget
 
 from src import theme
@@ -37,11 +57,26 @@ def bottom_center_xy(available: QRect, size: QSize, margin: int = 48) -> QPoint:
     return QPoint(x, y)
 
 
+# Speech RMS lives far below full scale, so a linear meter barely moves. Map
+# dBFS onto 0..1 instead: room noise sits near the floor, close speech near 1.
+_DB_FLOOR = -54.0
+_DB_CEIL = -16.0
+
+
+def display_level(level: float) -> float:
+    """Map a full-scale RMS fraction (0..1) to a perceptual 0..1 wave amplitude."""
+    if level <= 0.0:
+        return 0.0
+    db = 20.0 * math.log10(level)
+    return max(0.0, min(1.0, (db - _DB_FLOOR) / (_DB_CEIL - _DB_FLOOR)))
+
+
 class RecordingSnackbar(QWidget):
     """Frameless, always-on-top, translucent, click-through status pill.
 
     Lives at the bottom-center of the primary screen. Shows a pulsing colored
-    dot plus a label. Never takes focus and never appears in the taskbar.
+    dot plus a label; while recording, also an elapsed timer and a live wave
+    driven by the microphone level. Never takes focus or appears in the taskbar.
     """
 
     _MARGIN = 48  # px above the screen's available bottom edge
@@ -50,9 +85,17 @@ class RecordingSnackbar(QWidget):
     _DOT_R = 5  # dot radius
     _GAP = 12  # gap between dot and text
     _RADIUS = 16  # pill corner radius
-    _WAVE_H = 20  # waveform meter height
-    _BAR_W = 3  # waveform bar width
-    _BAR_GAP = 2  # gap between waveform bars
+    _WAVE_H = 44  # wave area height
+    _WAVE_GAP = 8  # gap between title row / wave / status line
+    _MIN_REC_W = 300  # recording pill never narrower than this
+    _FRAME_MS = 16  # wave animation tick (~60 fps)
+    _WAVE_POINTS = 96  # samples per wave curve
+    # (cycles across the width, phase speed rad/s, relative amplitude, opacity, pen width)
+    _WAVE_LAYERS = (
+        (1.15, 2.1, 0.80, 0.30, 1.5),
+        (1.75, -3.2, 0.60, 0.45, 1.5),
+        (1.45, 4.0, 1.00, 1.00, 2.2),
+    )
 
     def __init__(self) -> None:
         super().__init__(None)
@@ -70,12 +113,20 @@ class RecordingSnackbar(QWidget):
         self.setFont(theme.ui_font(13, QFont.Weight.Medium))
         self._label = "Recording"
         self._dot = QColor(theme.EMBER)
-        # Recent input levels drawn as a waveform; display only.
-        self._levels: deque[float] = deque(maxlen=96)
         self._pulse = 1.0  # 0.25..1.0, drives dot alpha
         self._input_label: str | None = None
         self._input_level = 0.0
         self._has_callback_data = False
+
+        # Wave state: smoothed amplitude chases the latest level; phase scrolls.
+        self._wave_amp = 0.0
+        self._wave_phase = 0.0
+        self._elapsed = QElapsedTimer()
+        self._last_tick_ms = 0
+        self._tick = QTimer(self)
+        self._tick.setTimerType(Qt.TimerType.PreciseTimer)
+        self._tick.setInterval(self._FRAME_MS)
+        self._tick.timeout.connect(self._advance_wave)
 
         # Looping pulse on the custom "pulse" property (ping-pong via mid keyframe).
         self._pulse_anim = QPropertyAnimation(self, b"pulse", self)
@@ -96,7 +147,8 @@ class RecordingSnackbar(QWidget):
 
     def _set_pulse(self, value: float) -> None:
         self._pulse = value
-        self.update()
+        if not self._tick.isActive():  # the wave tick repaints anyway
+            self.update()
 
     pulse = Property(float, _get_pulse, _set_pulse)
 
@@ -109,18 +161,21 @@ class RecordingSnackbar(QWidget):
 
         return self._pulse_anim.state() == QAbstractAnimation.State.Running
 
+    def is_animating_wave(self) -> bool:
+        return self._tick.isActive()
+
     # --- show / hide ----------------------------------------------------
     def set_input_status(self, device_label: str, level: float, has_callback_data: bool) -> None:
         """Display fixed full-scale RMS (0..1), not gain or recognition confidence."""
         if self._label != "Recording":
             return
+        relayout = device_label != self._input_label
         self._input_label = device_label
         self._input_level = max(0.0, min(level, 1.0)) if has_callback_data else 0.0
         self._has_callback_data = has_callback_data
-        if has_callback_data:
-            self._levels.append(self._input_level)
-        self._resize_to_content()
-        self._reposition()
+        if relayout:
+            self._resize_to_content()
+            self._reposition()
         self.update()
 
     def input_status_text(self) -> str:
@@ -128,7 +183,7 @@ class RecordingSnackbar(QWidget):
             return ""
         observation = "Input level" if self._has_callback_data else "Waiting for samples"
         prefix = f"{observation} - "
-        fm = QFontMetrics(self.font())
+        fm = QFontMetrics(self._status_font())
         device_width = max(0, self.width() - 2 * self._PAD_X - fm.horizontalAdvance(prefix))
         device_label = fm.elidedText(self._input_label, Qt.TextElideMode.ElideRight, device_width)
         return prefix + device_label
@@ -140,10 +195,17 @@ class RecordingSnackbar(QWidget):
         """Show (or update) the pill with *label* and dot color *dot_rgb*."""
         self._label = label
         self._dot = QColor(*dot_rgb)
-        self._input_label = "Input device unknown" if label == "Recording" else None
+        recording = label == "Recording"
+        self._input_label = "Input device unknown" if recording else None
         self._input_level = 0.0
         self._has_callback_data = False
-        self._levels.clear()
+        self._wave_amp = 0.0
+        if recording:
+            self._elapsed.start()
+            self._last_tick_ms = 0
+            self._tick.start()
+        else:
+            self._tick.stop()
         self._resize_to_content()
         self._reposition()
         # Cancel any in-flight fade first so a pending fade-out (from a recent
@@ -164,6 +226,7 @@ class RecordingSnackbar(QWidget):
     def hide_state(self) -> None:
         """Fade out and hide. Safe to call when already hidden."""
         self._pulse_anim.stop()
+        self._tick.stop()
         self._input_label = None
         self._input_level = 0.0
         self._has_callback_data = False
@@ -179,19 +242,49 @@ class RecordingSnackbar(QWidget):
         if self.windowOpacity() <= 0.01:
             self.hide()
 
+    # --- wave animation -------------------------------------------------
+    def _advance_wave(self) -> None:
+        now = self._elapsed.elapsed() if self._elapsed.isValid() else 0
+        dt = max(0.0, min((now - self._last_tick_ms) / 1000.0, 0.1))
+        self._last_tick_ms = now
+        target = display_level(self._input_level) if self._has_callback_data else 0.0
+        # Fast attack, slower release: syllables pop, pauses settle gently.
+        rate = 22.0 if target > self._wave_amp else 5.0
+        self._wave_amp += (target - self._wave_amp) * (1.0 - math.exp(-rate * dt))
+        # Louder speech also scrolls the wave faster.
+        self._wave_phase = (self._wave_phase + dt * (1.0 + 1.6 * self._wave_amp)) % (2 * math.tau)
+        self.update()
+
     # --- layout ---------------------------------------------------------
+    def _status_font(self) -> QFont:
+        font = QFont(self.font())
+        font.setWeight(QFont.Weight.Normal)
+        if font.pixelSize() > 0:
+            font.setPixelSize(max(9, round(font.pixelSize() * 0.85)))
+        else:
+            font.setPointSizeF(max(7.0, font.pointSizeF() * 0.85))
+        return font
+
+    def _timer_font(self) -> QFont:
+        font = theme.mono_font()
+        font.setPixelSize(QFontMetrics(self._status_font()).ascent())
+        return font
+
+    def _title_height(self) -> int:
+        return max(QFontMetrics(self.font()).height(), 2 * self._DOT_R)
+
     def _resize_to_content(self) -> None:
         fm = QFontMetrics(self.font())
         text_w = fm.horizontalAdvance(self._label) + 4  # slack: avoid right side-bearing clip
-        text_h = fm.height()
         width = self._PAD_X + (2 * self._DOT_R) + self._GAP + text_w + self._PAD_X
-        height = self._PAD_Y + max(text_h, 2 * self._DOT_R) + self._PAD_Y
+        height = self._PAD_Y + self._title_height() + self._PAD_Y
         if self._input_label is not None:
-            prefix_w = fm.horizontalAdvance("Waiting for samples - ")
+            sfm = QFontMetrics(self._status_font())
+            prefix_w = sfm.horizontalAdvance("Waiting for samples - ")
             status_padding = 4 + 2 * self._PAD_X
             # Match the separate prefix/device advances used by input_status_text.
-            status_w = prefix_w + fm.horizontalAdvance(self._input_label) + status_padding
-            max_status_w = prefix_w + fm.horizontalAdvance("M" * 32) + status_padding
+            status_w = prefix_w + sfm.horizontalAdvance(self._input_label) + status_padding
+            max_status_w = prefix_w + sfm.horizontalAdvance("M" * 32) + status_padding
             screen = QGuiApplication.primaryScreen()
             if screen is not None:
                 max_status_w = min(
@@ -199,10 +292,11 @@ class RecordingSnackbar(QWidget):
                 )
             width = max(
                 width,
+                self._MIN_REC_W,
                 prefix_w + status_padding,
                 min(status_w, max_status_w),
             )
-            height += text_h + 10 + self._WAVE_H
+            height += 2 * self._WAVE_GAP + self._WAVE_H + sfm.height()
         self.setFixedSize(width, height)
 
     def _reposition(self) -> None:
@@ -226,8 +320,7 @@ class RecordingSnackbar(QWidget):
 
         # Pulsing dot with a soft breathing halo.
         pulse = max(0.0, min(1.0, self._pulse))
-        fm = QFontMetrics(self.font())
-        title_height = max(fm.height(), 2 * self._DOT_R)
+        title_height = self._title_height()
         center = QPointF(self._PAD_X + self._DOT_R, self._PAD_Y + title_height / 2)
         halo = QColor(self._dot)
         halo.setAlphaF(0.22 * pulse)
@@ -243,47 +336,88 @@ class RecordingSnackbar(QWidget):
         # Label.
         painter.setPen(QColor(theme.TEXT))
         text_x = self._PAD_X + 2 * self._DOT_R + self._GAP
+        title_rect = QRect(text_x, self._PAD_Y, self.width() - text_x - self._PAD_X, title_height)
         painter.drawText(
-            QRect(text_x, self._PAD_Y, self.width() - text_x - self._PAD_X, title_height),
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-            self._label,
+            title_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._label
         )
         if self._input_label is not None:
-            input_width = self.width() - 2 * self._PAD_X
-            status_y = self._PAD_Y + title_height + 4
-            painter.setPen(QColor(theme.TEXT_2))
+            if self._elapsed.isValid():
+                seconds = self._elapsed.elapsed() // 1000
+                painter.setFont(self._timer_font())
+                painter.setPen(QColor(theme.TEXT_2))
+                painter.drawText(
+                    title_rect,
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                    f"{seconds // 60}:{seconds % 60:02d}",
+                )
+            wave_y = self._PAD_Y + title_height + self._WAVE_GAP
+            inner_w = self.width() - 2 * self._PAD_X
+            self._paint_wave(painter, QRectF(self._PAD_X, wave_y, inner_w, self._WAVE_H))
+            status_font = self._status_font()
+            painter.setFont(status_font)
+            painter.setPen(QColor(theme.TEXT_3))
             painter.drawText(
-                QRect(self._PAD_X, status_y, input_width, fm.height()),
+                QRect(
+                    self._PAD_X,
+                    wave_y + self._WAVE_H + self._WAVE_GAP,
+                    inner_w,
+                    QFontMetrics(status_font).height(),
+                ),
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                 self.input_status_text(),
             )
-            self._paint_waveform(
-                painter,
-                QRectF(self._PAD_X, status_y + fm.height() + 6, input_width, self._WAVE_H),
-            )
         painter.end()
 
-    def _paint_waveform(self, painter: QPainter, area: QRectF) -> None:
-        """Recent fixed full-scale RMS levels as bars, newest on the right."""
-        step = self._BAR_W + self._BAR_GAP
-        count = max(1, int((area.width() + self._BAR_GAP) // step))
-        levels = list(self._levels)[-count:]
-        levels = [None] * (count - len(levels)) + levels
+    def _paint_wave(self, painter: QPainter, area: QRectF) -> None:
+        """Layered sine waves under a bell envelope, scaled by the smoothed level."""
         mid = area.center().y()
-        painter.setPen(Qt.PenStyle.NoPen)
-        for i, level in enumerate(levels):
-            x = area.left() + i * step
-            if level is None:
-                color = theme.qcolor(theme.LINE_STRONG)
-                height = 2.0
-            else:
-                age = (i + 1) / count  # fade older bars toward the left
-                color = QColor(self._dot)
-                color.setAlphaF(0.30 + 0.70 * age)
-                height = max(2.0, level * area.height())
-            painter.setBrush(color)
-            painter.drawRoundedRect(
-                QRectF(x, mid - height / 2, self._BAR_W, height),
-                self._BAR_W / 2,
-                self._BAR_W / 2,
-            )
+        half_h = area.height() / 2 - 2.0
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        if not self._has_callback_data:
+            # No samples yet: a dim resting line rather than a fake wave.
+            pen = QPen(theme.qcolor(theme.LINE_STRONG), 1.5)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(area.left(), mid), QPointF(area.right(), mid))
+            return
+
+        # A small idle ripple keeps the wave alive between words.
+        amp = half_h * (0.06 + 0.94 * self._wave_amp)
+        n = self._WAVE_POINTS
+        for cycles, speed, rel_amp, opacity, pen_w in self._WAVE_LAYERS:
+            phase = self._wave_phase * speed
+            curve = QPainterPath()
+            fill = QPainterPath()
+            fill.moveTo(area.left(), mid)
+            for i in range(n + 1):
+                t = i / n
+                envelope = math.sin(math.pi * t) ** 2  # pin both ends to the midline
+                y = mid - amp * rel_amp * envelope * math.sin(math.tau * cycles * t + phase)
+                point = QPointF(area.left() + t * area.width(), y)
+                if i == 0:
+                    curve.moveTo(point)
+                else:
+                    curve.lineTo(point)
+                fill.lineTo(point)
+            fill.closeSubpath()
+
+            # Fade both ends so the wave dissolves into the card.
+            grad = QLinearGradient(area.left(), 0.0, area.right(), 0.0)
+            edge = QColor(self._dot)
+            edge.setAlphaF(0.0)
+            core = QColor(self._dot)
+            core.setAlphaF(opacity)
+            grad.setColorAt(0.0, edge)
+            grad.setColorAt(0.5, core)
+            grad.setColorAt(1.0, edge)
+
+            glow = QLinearGradient(grad)
+            core.setAlphaF(opacity * 0.18)
+            glow.setColorAt(0.5, core)
+            painter.fillPath(fill, glow)
+
+            pen = QPen(grad, pen_w)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.strokePath(curve, pen)

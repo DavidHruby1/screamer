@@ -66,7 +66,7 @@ class TrayMenuTests(unittest.TestCase):
 
             self.assertTrue(tray._recording_timer.isActive())
             self.assertTrue(tray._level_timer.isActive())
-            self.assertEqual(tray._level_timer.interval(), 100)
+            self.assertEqual(tray._level_timer.interval(), 33)
             self.assertEqual(tray._recording_timer.interval(), 300_000)
             self.assertTrue(tray._recording_timer.isSingleShot())
             tray._recording_timer.start(0)
