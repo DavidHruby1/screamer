@@ -475,13 +475,14 @@ def bottom_center_xy(available: QRect, size: QSize, margin: int = 48) -> QPoint:
 
 class RecordingSnackbar(QWidget):
     """Frameless, always-on-top, translucent, click-through status pill at the
-    bottom-center of the primary screen. Pulsing dot + label.
+    bottom-center of the primary screen. Pulsing dot + label; while recording also
+    an elapsed timer and a live wave (dBFS-scaled, smoothed level, ~60 fps).
     Never takes focus or appears in the taskbar."""
     def show_state(self, label: str, dot_rgb: tuple[int, int, int]) -> None: ...
     def hide_state(self) -> None: ...
     def set_input_status(self, device_label: str, level: float, has_callback_data: bool) -> None: ...
         """Recording-only label and clamped 0..1 meter; no samples differs from measured quiet.
-        Main polls every 100 ms during recording and supplies min(block_RMS / 32767, 1).
+        Main polls every 33 ms during recording and supplies min(block_RMS / 32767, 1).
         Processing/idle reset the meter. No gain, speech-quality, or device-health claim."""
 ```
 

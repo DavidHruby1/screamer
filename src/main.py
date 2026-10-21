@@ -241,7 +241,7 @@ class _TrayApp(QObject):
         self._recording_timer.timeout.connect(self._finalize_recording)
 
         self._level_timer = QTimer(self)
-        self._level_timer.setInterval(100)
+        self._level_timer.setInterval(33)  # feeds the ~60 fps recording wave
         self._level_timer.timeout.connect(self._poll_recording_level)
 
         self._snackbar = RecordingSnackbar()
