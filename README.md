@@ -1,210 +1,191 @@
-
 # Screamer
 
 Fast Windows dictation that types wherever your cursor is.
 
-Press a hotkey, speak, release - Screamer records your voice, sends it to a speech-to-text provider, optionally cleans up the result with an LLM, and types the final text into the window captured at recording start, copies it, or does both.
+Hold a hotkey, speak, release. Screamer records your voice, sends it to a speech-to-text provider, optionally cleans up the result with an LLM, and types the text into the window you were in when you started recording. It can also copy the text, or do both.
 
-No browser tab or mandatory copy-paste. Just talk and keep moving.
+```text
+Hotkey -> Record -> Transcribe (STT) -> AI cleanup (optional) -> Type / copy
+```
+
+Works with OpenAI, Groq, or any OpenAI-compatible `/audio/transcriptions` endpoint, including local servers. API keys are stored locally with Windows DPAPI.
 
 ## Install
 
-Download the latest release from the **Releases** page.
-
-Grab the versioned Windows zip:
-
-```text
-Screamer-vX.Y.Z-windows-x64.zip
-```
-
-Then:
-
-1. Extract the zip.
-2. Open the `Screamer` folder.
+1. Download `Screamer-vX.Y.Z-windows-x64.zip` from the **Releases** page.
+2. Extract the zip and open the `Screamer` folder.
 3. Run `Screamer.exe`.
-4. Configure your provider in Settings.
 
-That's it.
+## Quick start
 
-## What Screamer does
+1. A tray icon (three bars) appears in the notification area, bottom right. Right-click it and choose **Settings...**
+2. On the **Speech** page, fill in your transcription provider (**Base URL**, **Model**, **API Key**) and click **OK**.
+3. Click into any text field, hold `Ctrl+Alt+Space`, say something, and release.
 
-- **Global hotkey dictation** - speak from anywhere on Windows.
-- **Hold-to-talk or toggle mode** - choose how recording should behave.
-- **Guarded output** - type, copy, or copy plus type. If the captured window or process changed, typing is withheld and the result stays available for recovery.
-- **OpenAI-compatible speech-to-text** - use OpenAI, Groq, or another compatible `/audio/transcriptions` endpoint.
-- **Optional AI cleanup** - fix punctuation, grammar, spelling, and capitalization after transcription.
-- **Rewrite profiles** - Raw, conservative Clean, or custom prompts, with persistent manual selection or optional full executable-path matching.
-- **Personal vocabulary** - preferred spelling guidance for cleanup, with independent STT prompt opt-ins for endpoints that accept that field.
-- **Recoverable results** - inspect and copy raw/final text, explicitly retry failed STT from one temporary recording, or rerun cleanup without dictating again.
-- **Opt-in encrypted history** - keep 1 to 100 text entries under your Windows account; persistence is off by default and audio never goes to disk.
-- **Keyless STT endpoints** - configure local compatible servers without an API key; see the [pinned Speaches setup and verification limits](docs/LOCAL-STT.md).
-- **Fallback providers** - configure backup STT and LLM providers if the primary one fails.
-- **On-screen recording indicator** - a click-through pill shows the opened microphone and live input level while recording, then processing status.
-- **System tray app** - enable/disable, switch STT language, change hotkey, toggle rewrite, open settings, or exit from the tray.
-- **Session-safe settings** - tray changes during dictation apply to the next recording; Settings temporarily locks other tray configuration controls.
-- **Microphone selection and recovery** - pick your input device, refresh the list after device changes, and calibrate silence detection. An unavailable explicit selection never silently switches to another microphone.
-- **Post-type key** - optionally press `Enter`, `Tab`, `Space`, or `Backspace` after typing.
-- **Windows startup support** - launch Screamer automatically when you log in.
-- **Secure API key storage** - API keys are stored locally with Windows DPAPI.
-
-## How it works
-
-```text
-Hotkey -> Freeze settings and target -> Record -> Retain raw -> Optional cleanup -> Guarded output
-```
-
-Screamer records 16 kHz mono WAV audio, sends it to your configured STT provider, optionally runs the text through an LLM cleanup step, then injects the final text with Windows `SendInput`.
-
-Submitted input events do not prove visible text or the same field/caret. Partial
-insertion is never automatically retried. The reported Notepad issue has not yet
-been reproduced or certified fixed on Windows. Copy output replaces your clipboard
-without automatic restoration and may leave sensitive text there. Only one Screamer
-instance can use the same user data directory.
-
-## Setup
-
-On first launch, open **Settings** from the tray icon.
-
-You need at least one speech-to-text provider.
-
-Example OpenAI-compatible STT config:
+Example: OpenAI
 
 ```text
 Base URL: https://api.openai.com/v1
-Model: whisper-1
-API key: your_api_key
+Model:    whisper-1
+API Key:  your key
 ```
 
-For Groq, prefer:
+Example: Groq (fast)
 
 ```text
 Base URL: https://api.groq.com/openai/v1
-Model: whisper-large-v3-turbo
-Active language: English (en)
+Model:    whisper-large-v3-turbo     (more accurate: whisper-large-v3)
 ```
 
-If accuracy matters more than speed, use `whisper-large-v3` instead.
+Any server compatible with OpenAI `/audio/transcriptions` works; Screamer appends that path to the base URL. For a local server, the API key may be left blank. See the [local STT setup](docs/LOCAL-STT.md).
 
-For another OpenAI-compatible provider, use its base URL and model name.
+## Dictating
 
-An STT API key may be blank if that endpoint does not require one. Screamer appends
-`/audio/transcriptions` to the base URL. LLM credentials remain independently
-required. A local STT endpoint does not make enabled cloud cleanup or fallback local;
-disable both for offline dictation. The actual pinned server smoke is Linux-only,
-not a verified Windows offline installation.
+- **Hold to talk** (default): records while you hold the hotkey.
+- **Toggle**: first press starts recording, second press stops it.
 
-The LLM rewrite step is optional. Leave it off if you want raw transcription.
+While recording, a small pill appears near the bottom of the screen:
+
+- **Orange**: recording. The wave shows your microphone level, and the microphone name is shown.
+- **Blue**: processing (transcription and optional AI cleanup).
+
+Text is typed into the window that was active when recording started. If the window or application changed in the meantime, Screamer holds the text back instead of typing it somewhere else. You'll find it in **Recovery**.
+
+## Tray menu
+
+Right-click the tray icon for quick toggles without opening Settings.
+
+| Item | What it does |
+| --- | --- |
+| Enabled | Turns hotkey handling on/off. |
+| Record Mode | Hold to talk or Toggle. |
+| Hotkey | Pick a hotkey preset. |
+| Language | Transcription language (Auto, Czech, English, favorites). |
+| Post-type Key | Key pressed after typing (Enter, Tab, ...). |
+| AI Rewrite | Turns AI cleanup on/off. Off = always raw transcript. |
+| Rewrite Profile | Cleanup profile (Raw, Clean, custom, Automatic). |
+| Settings... | Opens Settings. |
+| Recovery... | Latest results: copy, retry, delete. |
+| Exit | Quits the app. |
+
+Changes made during dictation apply to the next recording.
 
 ## Settings
 
+**Apply** saves, **OK** saves and closes, **Cancel** discards unsaved changes. **Import from .env** loads keys and URLs from a `.env` file; **Reset to Defaults** restores default values.
+
 ### General
 
-- Recording mode: `Hold to talk` or `Toggle`
-- Hotkey selection
-- Post-type key
-- Output mode: Type (default), Copy, or Copy and Type. Copy-only never sends a post-key.
-- Keyboard recovery shortcut, default `Ctrl+Alt+Shift+V`
-- Encrypted text history opt-in, retention from 1 to 100, and a separate Clear action. Turning persistence off leaves already saved entries until explicitly cleared.
-- Start with Windows
+How dictation starts and where the text goes.
 
-### STT
+**Shortcut**
 
-- Primary speech-to-text provider
-- Optional fallback STT provider
-- Active language (Auto, Czech, English, or an added favorite)
-- Ordered favorite language codes: add, edit, or remove them here, then switch from the tray Language menu. Language hints depend on provider support and do not translate or automatically handle mixed-language speech.
-- Custom headers
-- Independent primary/fallback vocabulary prompt opt-ins. Enable one only after confirming that endpoint accepts multipart `prompt`.
+- **Hotkey**: a preset (`Ctrl+Alt+Space`, `Ctrl+Shift+Space`, `Ctrl+Alt+D`, `Ctrl+Alt+S`, `Ctrl+Alt+V`, `Scroll Lock`, `Pause`) or a custom one: click **Register Hotkey** and press any combination, a function key, or a side/middle mouse button. Ordinary keys need a modifier (Ctrl/Alt/Shift). The hotkey press is not passed through to the app underneath.
+- **Recording mode**: Hold to talk / Toggle.
 
-### LLM
+**Output**
 
-- Optional AI rewrite
-- Primary LLM provider
-- Optional fallback LLM provider
-- Editable custom-profile system prompt
-- Reset to Current Default explicitly selects the conservative cleanup prompt. Upgrades preserve every saved prompt, including an old default; unrelated Apply/OK preserves its whitespace and line endings. Rewriting remains off by default. Prompt rules guide the model, not guarantee unchanged meaning, so review important dictation.
-- Custom headers
+- **Post-type key**: presses `Enter`, `Tab`, `Space`, or `Backspace` after typing (e.g. to send a chat message right away).
+- **Output mode**: type into the app (default), copy to clipboard only, or both. Copying replaces your clipboard and does not restore it. Copy-only never sends a post-type key.
+- **Recovery shortcut**: shortcut for inserting text from Recovery (default `Ctrl+Alt+Shift+V`).
 
-### Profiles
+**History**
 
-- Choose Raw, Clean, or a custom prompt, independently of STT language and provider credentials.
-- Manual selection overrides app matching and survives restart until you select Automatic.
-- Automatic uses one normalized full executable-path mapping or your default profile. Moving an application requires remapping; titles, screen contents, and clipboard are not inspected.
-- The AI Rewrite checkbox is a global off switch. Re-enabling restores the selected profile; Raw still performs no LLM call.
+- **Save local text history**: optionally keeps the last 1–100 texts, encrypted under your Windows account. Off by default. Audio is never written to disk.
+- **Retain latest results**: how many entries to keep.
+- **Clear History...**: deletes saved history. Turning history off does not delete anything by itself.
 
-### Vocabulary
+**System**
 
-- Add, edit, or remove preferred spellings. Terms are trimmed and deduplicated without changing display spelling.
-- Limits are 128 terms, 128 characters per term, and 8,000 characters of rendered guidance. Guidance is not guaranteed recognition or a replacement table.
-- Damaged vocabulary/catalog data is preserved during unrelated saves until an explicit confirmed Reset or Replace.
+- **Start Screamer with Windows**: launch on login.
+
+### Speech
+
+Speech-to-text.
+
+**Primary provider**
+
+- **API Key**, **Base URL**, **Model**: provider connection. Keys are stored encrypted (Windows DPAPI). The eye icon reveals the key.
+- **Custom Headers**: optional HTTP headers as JSON, e.g. `{"X-Custom": "value"}`.
+- **Send vocabulary prompt to primary STT**: also sends your vocabulary to transcription. Enable only if your server supports the `prompt` field.
+
+**Language**
+
+- **Active language**: Auto, or a specific language (often more accurate than Auto). Language hints don't translate and don't handle mixed-language speech.
+- **Favorite languages**: your own list of codes (ISO 639-1, e.g. `de`) that then show up in the tray **Language** menu. Add / edit / remove with the buttons below the field.
+
+**Fallback**
+
+- **Enable fallback STT provider**: a backup provider used when the primary one fails.
+
+### Rewrite
+
+Optional AI cleanup of the transcript: punctuation, grammar, capitalization.
+
+- **Enable AI rewrite**: main switch. Off = raw transcript.
+- **API Key**, **Base URL**, **Model**, **Custom Headers**: LLM connection (OpenAI-compatible).
+- **System Prompt**: instructions for the model for the selected profile. **Reset to Current Default** restores the current default cleanup prompt.
+- **Enable fallback LLM provider**: a backup model.
+
+> AI can occasionally change the meaning, so double-check important dictation. If cleanup fails, the raw transcript is typed.
 
 ### Audio
 
-- Input device selection
-- Refresh the input-device list without closing Settings. Unavailable selections stay saved until you choose another input; System Default deliberately follows the current default on the next recording.
-- Silence threshold calibration
+Microphone and silence detection.
 
-The recording meter measures the latest captured block's RMS on a fixed full-scale
-range; low-level microphones can show a small bar. "Waiting for samples" differs
-from captured quiet input. Neither a moving meter nor a quiet signal establishes
-recognition quality or a hardware fault. Capture errors let you refresh/reselect
-in **Settings > Audio** and try the next hotkey without restarting Screamer.
-Device IDs are enumeration indexes, not permanent hardware identities: a missing
-ID can remap only by a unique exact name, while conflicts or duplicate names require
-reselection (or an intentional System Default choice).
+- **Input Device**: your microphone. **System Default** follows the current Windows default device. Avoid devices like Stereo Mix, Monitor, or HDMI.
+- **Refresh**: reloads the list after plugging/unplugging a microphone. An unavailable microphone is never silently swapped for another one.
+- **Recalibrate RMS Threshold**: measures background noise and sets the silence threshold. **RMS Threshold** can also be set manually; recordings below it count as silence and are not sent.
 
-## Hotkeys
+### Vocabulary
 
-Quick-pick presets:
+Preferred spellings of names and terms.
 
-```text
-Ctrl+Alt+Space
-Ctrl+Shift+Space
-Ctrl+Alt+D
-Ctrl+Alt+S
-Ctrl+Alt+V
-Scroll Lock
-Pause
-```
+- Add words that should be written exactly that way (e.g. `PySide6`, colleagues' names, project names).
+- Vocabulary guides AI cleanup; it goes to transcription only for providers where you explicitly enable it on the **Speech** page.
+- Limits: 128 terms, 128 characters per term. It is not a replacement table and does not guarantee recognition.
 
-Default: `Ctrl+Alt+Space`
+### Profiles
 
-Or set a **custom hotkey**: in Settings, click **Record** and press any key
-combination, a function key, or a mouse side/middle button. Bare everyday keys
-need a modifier (Ctrl/Alt/Shift); function keys, lock/pause keys, and mouse
-side/middle buttons may be bound on their own. The matched trigger is swallowed
-so it won't reach the app underneath.
+Which prompt cleans up the text, and where.
+
+- **Raw**: no AI, plain transcript. **Clean**: conservative cleanup. You can add your own profiles (**Add custom** / **Rename** / **Delete**) and edit their prompt with **Edit selected prompt on LLM tab**.
+- **Selection mode: Manual**: always uses the chosen **Manual profile**.
+- **Selection mode: Automatic**: picks a profile based on the app you're dictating into. In **Application mappings**, map a full `.exe` path (e.g. `C:\Program Files\Slack\slack.exe`) to a profile; other apps get the **Default profile**. Moving an app to another path requires remapping.
+
+Example: Clean for Slack, Raw for the terminal, a custom "formal" profile for email.
 
 ## Recovery
 
-Open **Recovery...** from the tray to inspect the latest raw/final result even with
-history disabled. Copy is an explicit clipboard action. For direct recovery insertion,
-choose **Arm raw** or **Arm final**, focus an external application after the recovery
-window hides, then press and fully release the separate recovery shortcut. Screamer
-rejects its own windows and never automatically resends a failed or partial attempt.
-Registered keyboard shortcut conflicts are reported; another app's low-level-hook
-binding cannot be detected reliably. Mouse bindings remain available for dictation,
-not for the recovery shortcut. Escape is reserved for cancelling an armed insertion.
+**Tray → Recovery...** shows the latest results, even with history turned off.
 
-After an STT failure, **Retry STT** uses the one retained WAV and original session
-settings; its result is shown without automatic copy/type. **Discard audio**, a new
-successfully started recording, successful STT, or exit releases that WAV. **Rerun
-cleanup** uses current rewrite settings and previews a separate candidate, preserving
-the original. Automatic profile selection on rerun uses the current default because
-no external target is captured by that action.
+| Button | What it does |
+| --- | --- |
+| Copy raw / Copy final | Copies the raw / cleaned-up text to the clipboard. |
+| Arm raw / Arm final | The window hides; click into the target app and press the recovery shortcut to insert the text. `Esc` cancels. |
+| Rerun cleanup | Runs AI cleanup again with current settings (the original is kept). |
+| Retry STT | After a failed transcription, sends the same recording again. |
+| Discard audio | Drops the pending recording from memory. |
+| Delete / Clear all | Deletes the selected entry / all entries. |
 
-History stores dictated text, including spoken prompts or secrets, not configuration
-system prompts, API credentials, or audio. DPAPI protects it at rest under the Windows
-account, not against that account, backups, clipboard readers, or external apps.
-Deleting entries or clearing history does not guarantee secure erasure from backups
-or clear the clipboard. A crash can lose RAM text and pending audio; only committed
-opt-in text records can survive restart. See [the storage and delivery contracts](docs/IMPLEMENTATION.md).
+## Tips and troubleshooting
+
+- **Nothing was typed**: check **Recovery**, the text will be there. Most often the active window changed in the meantime.
+- **Inaccurate transcription**: set a specific language instead of Auto, try a more accurate model, add terms to **Vocabulary**.
+- **Recording wasn't sent**: it may have been below the silence threshold; run **Recalibrate RMS Threshold**.
+- **Microphone doesn't work**: **Settings → Audio → Refresh** and select the device again. No restart needed.
+- **Offline dictation**: use a local STT server and turn off AI rewrite and both fallbacks.
+- Logs are in `%LOCALAPPDATA%\Screamer\screamer.log`. Only one instance can run at a time.
+
+### Privacy notes
+
+History stores dictated text (including anything sensitive you say), never audio, API keys, or system prompts. DPAPI protects it at rest under your Windows account, not against that account itself, backups, clipboard readers, or other apps. Clearing history doesn't guarantee secure erasure from backups and doesn't clear the clipboard. See [the storage and delivery contracts](docs/IMPLEMENTATION.md).
 
 ## For developers
 
 See [implementation and API contracts](docs/IMPLEMENTATION.md),
 [planned features](docs/FEATURES.md), [their implementation plan](docs/IMPLEMENTATION-PLAN.md),
-and [release operations](docs/RELEASES.md) for maintained technical documentation.
+and [release operations](docs/RELEASES.md).
 
 Run from source:
 
@@ -219,47 +200,29 @@ Run tests:
 python -m unittest discover -s tests -v
 ```
 
-Build dependencies:
-
-```bash
-pip install -r requirements-build.txt
-```
-
 Build the Windows executable:
 
 ```bash
+pip install -r requirements-build.txt
 python -m PyInstaller --noconfirm --clean screamer.spec
 ```
 
-CI also builds the Windows executable on pull requests to catch packaging failures before merge.
+CI builds the Windows executable on pull requests to catch packaging failures before merge.
 
-## Releases
+### Releases
 
-After a reviewed merge to `main`, successful CI and CodeQL, the release workflow
-chooses a version relative to the latest published stable release. It builds and tests
-on Windows, then publishes a GitHub Release only once both assets are attached:
+After a reviewed merge to `main` with successful CI and CodeQL, the release workflow picks a version relative to the latest stable release, builds and tests on Windows, and publishes a GitHub Release with:
 
 ```text
 Screamer-vX.Y.Z-windows-x64.zip
 Screamer-vX.Y.Z-windows-x64.zip.sha256
 ```
 
-Version bumps follow the commits since that release: breaking changes cause a major
-bump, `feat:` a minor bump, and other changes a patch bump. No second release PR,
-personal token or manual tag is needed. For permissions, recovery and limitations,
-see [release operations](docs/RELEASES.md).
+Breaking changes cause a major bump, `feat:` a minor bump, anything else a patch bump. See [release operations](docs/RELEASES.md).
 
 ## Platform
 
-Screamer is built for Windows.
-
-It depends on Windows-specific features including:
-
-- global hotkeys (keyboard or mouse) via low-level hooks (`WH_KEYBOARD_LL`/`WH_MOUSE_LL`)
-- text injection via `SendInput`
-- tray integration
-- DPAPI key storage
-- startup registration through the current user Run key
+Windows only. Screamer relies on low-level keyboard/mouse hooks, `SendInput` text injection, the system tray, DPAPI key storage, and the current-user Run key for startup.
 
 ## License
 
