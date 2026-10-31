@@ -1,6 +1,6 @@
 # 2. Reliable Insertion and Clipboard Output
 
-> **Status (2026-09-30):** code implemented; Windows acceptance remains open. Current APIs and runtime behavior are canonical in [IMPLEMENTATION.md](../IMPLEMENTATION.md). Expands [feature 2](../FEATURES.md#2-reliable-insertion-and-clipboard-output-p1); recovery is implemented in [feature 3](03-recovery.md). Do not interpret implementation as a published release or certified Windows behavior.
+> **Status (2026-09-30):** code implemented; Windows acceptance remains open. Current APIs and runtime behavior are canonical in [IMPLEMENTATION.md](../IMPLEMENTATION.md). Expands [feature 2](../IMPLEMENTATION-PLAN.md#product-requirements-and-acceptance-criteria); recovery is implemented in [feature 3](03-recovery.md). Do not interpret implementation as a published release or certified Windows behavior.
 
 ## Review and gate
 

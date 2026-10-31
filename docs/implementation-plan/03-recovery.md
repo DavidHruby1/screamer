@@ -1,6 +1,6 @@
 # 3. Recoverable Dictation and Local History
 
-> **Status (2026-09-30):** code implemented; final automated checks and Windows/DPAPI manual acceptance remain open. Current schema and persistence behavior are canonical in [IMPLEMENTATION.md](../IMPLEMENTATION.md). Expands [feature 3](../FEATURES.md#3-recoverable-dictation-and-local-history-p1); this detailed page retains the design rationale and acceptance record, not the current API reference.
+> **Status (2026-09-30):** code implemented; final automated checks and Windows/DPAPI manual acceptance remain open. Current schema and persistence behavior are canonical in [IMPLEMENTATION.md](../IMPLEMENTATION.md). Expands [feature 3](../IMPLEMENTATION-PLAN.md#product-requirements-and-acceptance-criteria); this detailed page retains the design rationale and acceptance record, not the current API reference.
 
 ## Current-source review and decisions
 

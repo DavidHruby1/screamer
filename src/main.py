@@ -367,15 +367,6 @@ class _TrayApp(QObject):
         )
 
         self._menu.addSeparator()
-        rewrite_checkbox = self._add_persistent_checkbox(
-            "AI Rewrite" if c.llm_enabled else "AI Rewrite (off — Raw)",
-            c.llm_enabled,
-            self._toggle_rewrite,
-        )
-        rewrite_checkbox.setEnabled(self._settings_dlg is None)
-        rewrite_checkbox.setToolTip(
-            "Off always uses Raw without changing the selected profile. Raw never calls an LLM."
-        )
         try:
             custom, _mappings = (
                 decode_rewrite_catalog(c.rewrite_catalog)
@@ -392,7 +383,7 @@ class _TrayApp(QObject):
             )
             submenu.setEnabled(False)
         else:
-            options = [("__automatic__", "Automatic")]
+            options = [("__automatic__", "Auto")]
             options.extend(
                 (profile.id, profile.name) for profile in (*builtin_rewrite_profiles(), *custom)
             )
@@ -406,12 +397,24 @@ class _TrayApp(QObject):
         # Settings / Exit.
         self._menu.addSeparator()
         self._menu.addAction("Settings...", self._open_settings)
-        self._menu.addAction("Recovery...", self._open_recovery)
+        self._menu.addAction("Copy last", self._copy_last)
+        self._menu.addAction("History...", self._open_recovery)
         self._menu.addAction("Exit", self._exit)
 
     # ------------------------------------------------------------------
     # Hotkey
     # ------------------------------------------------------------------
+
+    @property
+    def _recording(self) -> bool:
+        return self._recording_flag
+
+    @_recording.setter
+    def _recording(self, value: bool) -> None:
+        self._recording_flag = value
+        listener = getattr(self, "_hotkey", None)
+        if listener is not None:
+            listener.set_recording(value)
 
     def _make_listener(self) -> None:
         """Create and start a HotkeyListener from current config, storing it on self."""
@@ -425,14 +428,15 @@ class _TrayApp(QObject):
             self._bridge,
             recovery_hotkey=Hotkey.parse(self._config.recovery_hotkey),
         )
+        self._hotkey.set_recording(self._recording)
         self._hotkey.start()
 
     def _build_hotkey(self) -> None:
         self._bridge.hotkey_pressed.connect(self._on_hotkey_pressed)
         self._bridge.hotkey_released.connect(self._on_hotkey_released)
         self._bridge.error_occurred.connect(self._on_error)
-        self._bridge.recovery_requested.connect(self._insert_armed)
-        self._bridge.recovery_cancelled.connect(self._disarm)
+        self._bridge.recovery_requested.connect(self._insert_last)
+        self._bridge.recovery_cancelled.connect(self._on_escape)
         self._make_listener()
 
     def _restart_hotkey(self) -> None:
@@ -473,11 +477,10 @@ class _TrayApp(QObject):
     def _apply_rewrite_profile(config: AppConfig, executable_path: str | None) -> str:
         """Resolve once and apply effective fields only to the supplied session snapshot."""
         profile = resolve_rewrite_profile(config, executable_path)
-        if profile.kind == "raw":
-            config.llm_enabled = False
-        elif profile.kind == "clean":
+        config.llm_enabled = profile.kind != "raw"
+        if profile.kind == "clean":
             config.llm_system_prompt = DEFAULT_LLM_SYSTEM_PROMPT
-        else:
+        elif profile.kind == "custom":
             assert profile.prompt is not None  # Validated custom prompts may be empty.
             config.llm_system_prompt = profile.prompt
         return profile.id
@@ -512,6 +515,7 @@ class _TrayApp(QObject):
             self._pending_audio = None
             self._disarm()
             self._recording = True
+            self._play_sound("start")
             self._recording_timer.start()
             self._apply_state(TrayState.RECORDING)
             self._level_timer.start()
@@ -570,6 +574,7 @@ class _TrayApp(QObject):
             self._apply_state(TrayState.IDLE)
             return
 
+        self._play_sound("stop")
         assert self._session is not None
         self._start_worker(audio_wav, self._session)
 
@@ -584,6 +589,8 @@ class _TrayApp(QObject):
             self._recorder.stop()
         except ScreamerError as e:
             self._on_error(e.code, e.detail)
+        else:
+            self._play_sound("cancel")
         if self._hotkey_restart_pending:
             self._restart_hotkey()
         self._apply_state(TrayState.IDLE)
@@ -898,21 +905,26 @@ class _TrayApp(QObject):
             self._persist(record)
         self._refresh_recovery()
 
-    def _refresh_recovery(self) -> None:
-        if self._recovery_dlg is None or self._event_loop_stopped:
-            return
+    def _recovery_records(self) -> list[DictationRecord]:
         records = {record.id: record for record in self._committed}
         for record in (self._latest, self._candidate):
             if record is not None:
                 records[record.id] = record
+        return sorted(records.values(), key=lambda item: item.created_at, reverse=True)
+
+    def _refresh_recovery(self) -> None:
+        if self._recovery_dlg is None or self._event_loop_stopped:
+            return
+        hotkey = Hotkey.parse(self._config.recovery_hotkey)
         self._recovery_dlg.refresh(
-            sorted(records.values(), key=lambda item: item.created_at, reverse=True),
+            self._recovery_records(),
             history_enabled=self._config.history_enabled,
             pending=self._pending_audio is not None,
             busy=self._worker is not None or self._recording or self._settings_dlg is not None,
             enabled=self._enabled and not self._exiting,
-            shortcut=self._config.recovery_hotkey,
+            shortcut=hotkey.to_label() if hotkey else "",
             candidate_id=self._candidate.id if self._candidate else None,
+            insertion_selection=self._armed,
         )
 
     def _open_recovery(self) -> None:
@@ -921,7 +933,7 @@ class _TrayApp(QObject):
         if self._recovery_dlg is None:
             dialog = self._recovery_dlg = RecoveryDialog()
             dialog.copy_requested.connect(self._copy_recovery)
-            dialog.arm_requested.connect(self._arm_recovery)
+            dialog.select_requested.connect(self._select_history)
             dialog.rewrite_requested.connect(self._rerun_rewrite)
             dialog.retry_requested.connect(self._retry_stt)
             dialog.discard_requested.connect(self._discard_audio)
@@ -951,23 +963,33 @@ class _TrayApp(QObject):
                 copy_only=True,
             )
 
-    def _arm_recovery(self, record: DictationRecord, variant: str) -> None:
-        if not self._recovery_allowed():
-            return
-        self._armed = (record, record.raw_text if variant == "raw" else record.final_text)
-        if self._recovery_dlg is not None:
-            self._recovery_dlg.hide()
+    def _select_history(self, record: DictationRecord, variant: str) -> None:
+        if self._recovery_allowed():
+            self._armed = (record, record.raw_text if variant == "raw" else record.final_text)
+            self._refresh_recovery()
 
     def _disarm(self) -> None:
         self._armed = None
 
-    def _insert_armed(self) -> None:
-        armed = self._armed
-        self._disarm()
-        if armed is None or not self._recovery_allowed():
-            return
-        target = get_foreground_target()
-        self._deliver(armed[0], armed[1], "manual", target)
+    def _on_escape(self) -> None:
+        if self._recording:
+            self._cancel_recording()
+
+    def _last_result(self) -> tuple[DictationRecord, str] | None:
+        if self._armed is not None:
+            return self._armed
+        records = self._recovery_records()
+        return (records[0], records[0].final_text) if records else None
+
+    def _insert_last(self) -> None:
+        result = self._last_result()
+        if result is not None and self._recovery_allowed():
+            self._deliver(result[0], result[1], "manual", get_foreground_target())
+
+    def _copy_last(self) -> None:
+        result = self._last_result()
+        if result is not None:
+            self._copy_recovery(result[0], "raw" if result[1] == result[0].raw_text else "final")
 
     def _retry_stt(self) -> None:
         if not self._recovery_allowed() or self._pending_audio is None:
@@ -1051,6 +1073,7 @@ class _TrayApp(QObject):
     # ------------------------------------------------------------------
 
     def _on_error(self, code: AppError, detail: str | None = None) -> None:
+        self._play_sound("error")
         msg = code.value
         if detail:
             msg = f"{msg}\n{detail}"
@@ -1131,6 +1154,7 @@ class _TrayApp(QObject):
         log.info("STT language set to %s", code or "auto")
 
     def _set_rewrite_profile(self, selection: str, rebuild_menu: bool = True) -> None:
+        self._config.llm_enabled = True
         previous = (self._config.rewrite_selection_mode, self._config.rewrite_manual_profile_id)
         if selection == "__automatic__":
             self._config.rewrite_selection_mode = "automatic"
@@ -1152,22 +1176,17 @@ class _TrayApp(QObject):
         if rebuild_menu:
             self._rebuild_menu()
 
-    def _toggle_rewrite(self, checked: bool) -> None:
-        previous = self._config.llm_enabled
-        self._config.llm_enabled = checked
-        try:
-            save_config(self._config)
-        except Exception as error:
-            self._config.llm_enabled = previous
-            self._rebuild_menu()
-            self._on_error(
-                AppError.CONFIG_INVALID
-                if isinstance(error, (TypeError, ValueError))
-                else AppError.KEY_STORAGE_FAILED
-            )
-            return
-        self._rebuild_menu()
-        log.info("AI rewrite %s", "enabled" if checked else "disabled")
+    def _play_sound(self, cue: str) -> None:
+        if self._config.sound_enabled and platform.system() == "Windows":
+            import winsound
+
+            try:
+                winsound.PlaySound(
+                    str(theme.ASSETS_DIR / f"{cue}.wav"),
+                    winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
+                )
+            except RuntimeError:
+                log.warning("Could not play dictation sound")
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:

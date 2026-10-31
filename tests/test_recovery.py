@@ -243,7 +243,8 @@ class RecoveryDeliveryTests(unittest.TestCase):
         ):
             self.tray._deliver(self.entry, "final", "copy_and_type", self.target)
         clipboard.setText.assert_called_once_with("final")
-        inject.assert_called_once_with("final", None, expected_target=self.target)
+        self.assertEqual(inject.call_count, 1)
+        inject.assert_called_with("final", None, expected_target=self.target)
         self.assertTrue(self.tray._latest.last_delivery.copied)
         self.assertEqual(self.tray._latest.last_delivery.text_state, "events_submitted")
 
@@ -270,30 +271,31 @@ class RecoveryDeliveryTests(unittest.TestCase):
         self.assertEqual(attempt.text_state, "events_submitted")
         self.assertEqual(attempt.post_key_state, "reported_failed")
 
-    def test_manual_arm_is_consumed_once_and_never_targets_screamer(self):
-        self.tray._arm_recovery(self.entry, "raw")
+    def test_manual_selection_can_be_reinserted_and_never_targets_screamer(self):
+        self.tray._select_history(self.entry, "raw")
         with (
             patch("src.main.get_foreground_target", return_value=WindowIdentity(100, os.getpid())),
             patch("src.main.type_text") as inject,
         ):
-            self.tray._insert_armed()
+            self.tray._insert_last()
         inject.assert_not_called()
-        self.assertIsNone(self.tray._armed)
+        self.assertIsNotNone(self.tray._armed)
         self.assertEqual(self.tray._latest.raw_text, "raw")
-        self.tray._arm_recovery(self.tray._latest, "final")
+        self.tray._select_history(self.tray._latest, "final")
         with (
             patch("src.main.get_foreground_target", return_value=self.target),
             patch("src.main.type_text", return_value=InjectionReport(10, 0, False)) as inject,
         ):
-            self.tray._insert_armed()
-            self.tray._insert_armed()
-        inject.assert_called_once_with("final", None, expected_target=self.target)
+            self.tray._insert_last()
+            self.tray._insert_last()
+        self.assertEqual(inject.call_count, 2)
+        inject.assert_called_with("final", None, expected_target=self.target)
 
     def test_failed_delete_or_clear_preserves_latest_and_armed_choice(self):
         self.tray._config.history_enabled = True
         self.tray._committed = [self.entry]
         self.tray._committed_ids = {self.entry.id}
-        self.tray._arm_recovery(self.entry, "raw")
+        self.tray._select_history(self.entry, "raw")
         self.tray._history.delete.side_effect = ScreamerError(AppError.HISTORY_STORAGE_FAILED)
         self.tray._delete_record(self.entry)
         self.assertIs(self.tray._latest, self.entry)
@@ -309,7 +311,7 @@ class RecoveryDeliveryTests(unittest.TestCase):
         self.tray._config.history_enabled = True
         self.tray._committed_ids = {self.entry.id}
         self.tray._history.delete.return_value = []
-        self.tray._arm_recovery(self.entry, "raw")
+        self.tray._select_history(self.entry, "raw")
         self.tray._delete_record(self.entry)
         self.assertIsNone(self.tray._latest)
         self.assertIsNone(self.tray._armed)
@@ -364,7 +366,7 @@ class RecoveryDialogTests(unittest.TestCase):
         self.addCleanup(dialog.deleteLater)
         tray._recovery_dlg = dialog
         dialog.copy_requested.connect(tray._copy_recovery)
-        dialog.arm_requested.connect(tray._arm_recovery)
+        dialog.select_requested.connect(tray._select_history)
         clipboard = QApplication.clipboard()
         original = clipboard.text()
         self.addCleanup(clipboard.setText, original)
@@ -375,7 +377,7 @@ class RecoveryDialogTests(unittest.TestCase):
         self.assertEqual(clipboard.text(), "unchanged until explicit Copy")
         dialog._buttons["Copy final"].click()
         self.assertEqual(clipboard.text(), "<a>literal final</a>")
-        dialog._buttons["Arm raw"].click()
+        dialog._buttons["Use raw for insertion"].click()
         self.assertEqual(tray._armed[1], "<b>literal raw</b>")
         self.assertFalse(dialog.isVisible())
         dialog._list.setCurrentRow(-1)

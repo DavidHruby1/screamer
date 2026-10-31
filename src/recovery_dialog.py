@@ -37,7 +37,7 @@ def _section(text: str) -> QLabel:
 
 class RecoveryDialog(QDialog):
     copy_requested = Signal(object, str)
-    arm_requested = Signal(object, str)
+    select_requested = Signal(object, str)
     rewrite_requested = Signal(object)
     delete_requested = Signal(object)
     clear_requested = Signal()
@@ -46,7 +46,7 @@ class RecoveryDialog(QDialog):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Screamer — Recovery")
+        self.setWindowTitle("Screamer — History")
         self.resize(940, 660)
         self._records = []
         self._candidate_id = None
@@ -56,7 +56,7 @@ class RecoveryDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 28, 32, 22)
         layout.setSpacing(0)
-        heading = theme.set_role(QLabel("Recovery"), "title")
+        heading = theme.set_role(QLabel("History"), "title")
         heading.setFont(theme.ui_font(22, QFont.Weight.DemiBold, -1.0))
         layout.addWidget(heading)
         layout.addSpacing(6)
@@ -89,17 +89,13 @@ class RecoveryDialog(QDialog):
         detail.addWidget(self._metadata)
         self._raw = QPlainTextEdit()
         self._final = QPlainTextEdit()
-        for title, editor in (("Raw transcript", self._raw), ("Final / candidate", self._final)):
+        for title, editor in (("Raw transcript", self._raw), ("Result", self._final)):
             detail.addSpacing(10)
             detail.addWidget(_section(title))
             editor.setReadOnly(True)
             editor.setFont(theme.ui_font(14))
             detail.addWidget(editor, 1)
         detail.addSpacing(4)
-        self._attempt = _styled(QLabel(), "hint", theme.mono_font(11))
-        self._attempt.setTextFormat(Qt.TextFormat.PlainText)
-        self._attempt.setWordWrap(True)
-        detail.addWidget(self._attempt)
 
         layout.addSpacing(18)
         divider = QFrame()
@@ -112,8 +108,11 @@ class RecoveryDialog(QDialog):
             (
                 ("Copy raw", lambda: self._emit_text(self.copy_requested, "raw")),
                 ("Copy final", lambda: self._emit_text(self.copy_requested, "final")),
-                ("Arm raw", lambda: self._emit_text(self.arm_requested, "raw")),
-                ("Arm final", lambda: self._emit_text(self.arm_requested, "final")),
+                ("Use raw for insertion", lambda: self._emit_text(self.select_requested, "raw")),
+                (
+                    "Use result for insertion",
+                    lambda: self._emit_text(self.select_requested, "final"),
+                ),
             ),
             (
                 ("Rerun cleanup", lambda: self._emit_record(self.rewrite_requested)),
@@ -158,34 +157,15 @@ class RecoveryDialog(QDialog):
         if record is None:
             self._metadata.setText("")
         else:
-            candidate = (
-                "Cleanup candidate preview (persistence not verified)\n"
-                if record.id == self._candidate_id
-                else ""
-            )
-            warnings = (
-                "; ".join(f"{warning.name}: {warning.value}" for warning in record.warnings)
-                or "None"
-            )
             self._metadata.setText(
-                candidate
-                + f"Language: {record.language or 'Auto'}\n"
-                + f"Application: {record.target_executable or 'Unavailable'}\n"
-                + f"Profile ID: {record.profile_id or 'None'}\n"
-                + f"Rewrite status: {record.rewrite_status}\n"
-                + f"Pipeline warnings: {warnings}"
+                f"Language: {record.language or 'Auto'}\n"
+                f"Application: {record.target_executable or 'Unavailable'}\n"
+                + (
+                    "Cleanup failed — raw text is available."
+                    if record.rewrite_status == "failed"
+                    else ""
+                )
             )
-        attempt = record.last_delivery if record else None
-        self._attempt.setText(
-            (
-                f"Last recorded attempt at {attempt.attempted_at} (not verified delivery): "
-                + f"{attempt.mode}; copied={attempt.copied}; text={attempt.text_state}; "
-                f"events={attempt.text_events_submitted}; post-key={attempt.post_key_state}; "
-                f"reason={attempt.reason or 'none'}"
-                if attempt
-                else "No attempt recorded"
-            )
-        )
         self._update_button_eligibility()
 
     def _update_button_eligibility(self) -> None:
@@ -195,6 +175,8 @@ class RecoveryDialog(QDialog):
         self._buttons["Clear all"].setEnabled(not self._busy)
         self._buttons["Retry STT"].setEnabled(self._pending and not self._busy and self._enabled)
         self._buttons["Discard audio"].setEnabled(self._pending and not self._busy)
+        self._buttons["Retry STT"].setVisible(self._pending)
+        self._buttons["Discard audio"].setVisible(self._pending)
 
     def refresh(
         self,
@@ -206,6 +188,7 @@ class RecoveryDialog(QDialog):
         enabled: bool,
         shortcut: str,
         candidate_id: str | None = None,
+        insertion_selection: tuple[DictationRecord, str] | None = None,
     ) -> None:
         selected = self.selected_record()
         self._candidate_id = candidate_id
@@ -215,11 +198,7 @@ class RecoveryDialog(QDialog):
         self._records = records
         self._list.clear()
         for record in records:
-            suffix = (
-                " — cleanup candidate preview (persistence not verified)"
-                if record.id == candidate_id
-                else ""
-            )
+            suffix = " — cleaned result" if record.id == candidate_id else ""
             self._list.addItem(record.created_at + suffix)
         index = next(
             (i for i, item in enumerate(records) if selected and item.id == selected.id), 0
@@ -228,13 +207,21 @@ class RecoveryDialog(QDialog):
             self._list.setCurrentRow(index)
         else:
             self._select(-1)
-        self._notice.setText(
-            (
-                "Encrypted history enabled. "
-                if history_enabled
-                else "History disabled: only RAM recovery is shown. Existing saved records remain until Clear. "
-            )
-            + f"Arm hides this window; focus an external app and press {shortcut}. "
-            "Clipboard copies can expose text to other apps. Deletion does not securely erase backups."
+        notice = (
+            "Encrypted history enabled. "
+            if history_enabled
+            else "Disk history off: text stays in memory. "
         )
+        if insertion_selection is not None:
+            record, text = insertion_selection
+            variant = "Raw text" if text == record.raw_text else "Result"
+            notice += f"{variant} selected for insertion from {record.created_at}. "
+        else:
+            notice += "Choose Use result (or raw). Without a selection, insertion uses the latest result. "
+        notice += (
+            f"Switch to the target app and press {shortcut}."
+            if shortcut
+            else "Set the Insert last shortcut in Settings, then switch to the target app to use it."
+        )
+        self._notice.setText(notice)
         self._update_button_eligibility()

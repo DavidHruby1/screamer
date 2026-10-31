@@ -1,7 +1,6 @@
 # Screamer Implementation
 
-This is the current architecture and public API reference. The original build plan is
-historical context in [PLAN.md](PLAN.md); release operations are in [RELEASES.md](RELEASES.md).
+This is the current architecture and public API reference. Roadmap status and acceptance criteria are in [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md); release operations are in [RELEASES.md](RELEASES.md).
 
 `main.py` owns the tray UI, recording state machine, session snapshot, result ownership,
 delivery decision and worker lifecycle. Network work runs in one `QThread`; clipboard
@@ -64,8 +63,8 @@ class AppError(Enum):
     UNSUPPORTED_PLATFORM = "This feature is only available on Windows."
     KEY_STORAGE_FAILED = "Could not save or load API keys securely."
     STARTUP_REGISTRATION_FAILED = "Could not update Windows startup setting."
-    OUTPUT_WITHHELD = "Typing withheld because the target changed. Open Recovery to copy or arm insertion."
-    CLIPBOARD_FAILED = "Could not copy text. Open Recovery to try explicitly."
+    OUTPUT_WITHHELD = "Typing withheld because the target changed. Open History or use Insert last."
+    CLIPBOARD_FAILED = "Could not copy text. Open History to try again."
     HISTORY_STORAGE_FAILED = "Could not read or save encrypted history. RAM recovery remains available; explicitly Clear to remove an unreadable file."
     HISTORY_DISABLED = "Enable history to delete a saved entry, or explicitly Clear all."
     CONFIG_INVALID = "Invalid settings. Open Settings and repair the rewrite profile configuration."
@@ -206,6 +205,7 @@ class AppConfig:
     output_mode: str = "type"              # "type" | "copy" | "copy_and_type"
     history_enabled: bool = False          # opt-in encrypted text history
     history_limit: int = 100               # 1..100
+    sound_enabled: bool = True
     recovery_hotkey: str = "ctrl+alt+shift+key:0x56"
     vocabulary_entries: list[str] = field(default_factory=list)
     start_with_windows: bool = False
@@ -351,7 +351,7 @@ a retry retains the exact original prompt and origin (or a deliberately selected
 reset default). An LLM validation issue exposes its repair controls without enabling
 rewriting.
 Cancel discards changes since the last successful Apply. Raw/final inspection is
-available in Recovery; prompt instructions do not establish model-quality certification.
+available in History; prompt instructions do not establish model-quality certification.
 
 Language key presence is tracked privately across configuration drafts. An explicitly
 saved Auto selection remains Auto during `.env` backfill after restart; an absent
@@ -695,7 +695,7 @@ ruff format --check src/ tests/ .github/scripts/
 - Windows copy success additionally requires Qt clipboard ownership after `setText()`;
   native clipboard failures can return without a Python exception. Missing ownership
   is reported as a copy failure without reading/restoring the clipboard or retrying.
-- Recovery exposes raw/final copy or Arm, explicit cleanup rerun, history deletion/clear,
+- History exposes raw/final copy or selection for Insert last, explicit cleanup rerun, history deletion/clear,
   and Retry/Discard for one in-memory WAV retained only after STT failure. Retry uses
   its original config snapshot, is recovery-only (no automatic output), and holds the
   WAV until STT succeeds. WAV is never persisted and is lost on exit/crash.
@@ -711,10 +711,10 @@ ruff format --check src/ tests/ .github/scripts/
 - `main()` acquires a `QLockFile` under resolved `APP_DIR` before config load or tray
   construction. A second process exits with a notice. The lock spans Qt execution and
   synchronous final thread/dialog cleanup, and is released only after HTTP client close.
-- Recovery shortcut defaults to `Ctrl+Alt+Shift+V`. `RegisterHotKey` reserves keyboard
+- Insert last shortcut (persisted as `recovery_hotkey`) defaults to `Ctrl+Alt+Shift+V`. `RegisterHotKey` reserves keyboard
   chords; if reservation fails, recovery handling is disabled and a conflict is
   surfaced. Other apps' low-level-hook bindings are not detectable. Mouse recovery
-  bindings are rejected; Escape is reserved for cancelling an armed insert and cannot
+  bindings are rejected; Escape cancels recording without changing a History selection, and cannot
   be a recovery trigger. Injected keyboard events pass through the hook without
   changing physical trigger state, so Screamer's post-key cannot trigger dictation.
 - Vocabulary is JSON in ordinary settings. Terms are trimmed, blanks dropped,
@@ -725,9 +725,14 @@ ruff format --check src/ tests/ .github/scripts/
   opt-in is enabled and vocabulary is nonempty. These are hints, not guarantees.
 - Rewrite profiles are code-owned `raw`/`clean` plus up to 32 custom profiles in a
   versioned JSON catalog. Manual selection persists until Automatic is selected;
-  Automatic matches the captured executable's normalized full path then falls back to
-  the configured default. Global AI Rewrite off resolves to raw while preserving the
-  selection. Legacy prompt migration uses persisted prompt-key presence/provenance;
+  Auto first matches the captured executable's normalized full path, then its
+  case-insensitive `.exe` name, then the configured default. The tray offers Auto or
+  a profile including Raw; there is no separate AI Rewrite checkbox. The old disabled
+  setting migrates to manual Raw, preserving custom profiles and exact prompts. Atomic
+  save removes `llm_enabled` and writes `rewrite_controls_version=1`; `llm_enabled`
+  remains an internal effective worker field. Settings edits prompts in Profiles and
+  can choose a running `.exe` for a mapping. Older releases that require full paths
+  cannot read new name-only mappings; keep full paths if rollback is needed. Legacy prompt migration uses persisted prompt-key presence/provenance;
   damaged catalogs are preserved and require explicit repair, not silently emptied.
 
 ## Storage and Limits
@@ -784,7 +789,7 @@ flowchart LR
     M -->|Qt delivery gate| OUT[copy / guarded SendInput]
     OUT -->|attempt counts/status, not visibility| R
     R --> UI[on-demand RecoveryDialog]
-    UI -->|explicit copy, arm, rerun, retry| M
+    UI -->|explicit copy, select for insertion, rerun, retry| M
 ```
 
 Successful STT is retained before rewrite. Terminal outcomes update that record, and
@@ -814,11 +819,11 @@ commits a reduced limit; opening or cancelling Settings does not rewrite history
 
 After a manual attempt on an older entry, RAM latest retains the actual outcome even if
 the history write fails; the committed list still describes the earlier disk state. A
-rewrite candidate remains a RAM-only preview, including after Copy or Arm/insert, and
+rewrite candidate remains a RAM-only preview, including after Copy or Insert last, and
 never silently becomes an unlinked saved entry or replaces its source.
 
-Recovery presents text as plain text. A last-attempt label means only a recorded
-operation and its SendInput counts, never confirmed visible delivery. Clipboard copies
+History presents text as plain text and hides internal delivery diagnostics. Internal
+delivery attempts record SendInput counts, never confirmed visible delivery. Clipboard copies
 can expose dictated text to other software and are not restored automatically. Damaged
 history can be removed only by explicit Clear; backups are outside deletion guarantees.
 
@@ -859,3 +864,26 @@ history can be removed only by explicit Clear; backups are outside deletion guar
   request and prompt behavior; their public signatures remain `PipelineResult` based.
 - [`docs/IMPLEMENTATION-PLAN.md`](IMPLEMENTATION-PLAN.md): roadmap status and outstanding
   acceptance gates; it does not replace this current-contract reference.
+
+### Everyday controls (2026-10-31)
+
+Escape during recording stops and discards captured audio, clears the session and
+stops both recording timers. Later hold release cannot start a worker; toggle may
+start a fresh dictation on the next press. No discarded audio reaches STT.
+`sound_enabled=True` persists in ordinary settings; Windows plays bundled short WAV
+cues asynchronously for start, stop, cancellation and error. The existing assets
+packaging rule includes these files. Non-Windows imports do not require winsound.
+Stop plays only when captured audio will be processed; a recorder failure during
+cancellation plays Error instead of overlapping Cancel and Error.
+
+Insert last uses selected History text when present, otherwise the newest available
+RAM or loaded-history result. Selection remains reusable until a new recording,
+disable, Settings, deletion/clear or exit clears it. Clicking a History selection
+button does not choose an external target: the user switches to that app and presses
+the global shortcut. Each insertion captures and validates current external HWND/PID
+and uses the existing guarded injection path, without a post-type key. Copy last is
+focus-independent and is the only output action in the tray: opening the menu does
+not provide a reliable insertion target. History refreshes retain the selected
+record/variant in their notice, including after insertion. Missing or malformed
+shortcuts direct the user to Settings. The shortcut is set through the existing
+HotkeyCaptureEdit.

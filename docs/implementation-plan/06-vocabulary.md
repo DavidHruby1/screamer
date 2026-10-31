@@ -1,7 +1,7 @@
 # 6. Custom Vocabulary / Personal Dictionary
 
 > **Status (2026-09-30):** code implemented; automated final checks and transcription-quality review remain pending. The current config, request and corruption contracts are canonical in [IMPLEMENTATION.md](../IMPLEMENTATION.md). This detailed design expands P2 from
-> [FEATURES.md](../FEATURES.md#6-custom-vocabulary--personal-dictionary-p2).
+> [IMPLEMENTATION-PLAN.md](../IMPLEMENTATION-PLAN.md#product-requirements-and-acceptance-criteria).
 > Vocabulary and provider-specific STT prompt support now exist in config and request construction.
 
 ## Summary
@@ -253,7 +253,7 @@ avoiding a lost update when Apply reloads/persists settings.
 
 ## Sources
 
-- [`docs/FEATURES.md`](../FEATURES.md#6-custom-vocabulary--personal-dictionary-p2):
+- [`docs/IMPLEMENTATION-PLAN.md`](../IMPLEMENTATION-PLAN.md#product-requirements-and-acceptance-criteria):
   accepted entry types, provider-gated prompting and limits on claims.
 - [`docs/IMPLEMENTATION-PLAN.md`](../IMPLEMENTATION-PLAN.md#6-custom-vocabulary--personal-dictionary-p2):
   first proposed flow; leaves schema, bounds and malformed persistence policy

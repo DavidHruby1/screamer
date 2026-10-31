@@ -372,7 +372,7 @@ class TrayMenuTests(unittest.TestCase):
                     actions["Hotkey"].isEnabled(),
                     actions["Language"].isEnabled(),
                     actions["Post-type Key"].isEnabled(),
-                    actions["AI Rewrite"].defaultWidget().isEnabled(),
+                    actions["Rewrite Profile"].isEnabled(),
                     actions["Enabled"].defaultWidget().isEnabled(),
                     actions["Exit"].isEnabled(),
                 )

@@ -16,7 +16,7 @@ This feature lets the existing OpenAI-compatible STT path call a local server wi
 - `src/stt.py`: primary/fallback selection, endpoint construction, auth, multipart fields and response parsing.
 - `src/settings_dialog.py`: primary/fallback endpoint controls and current STT-only UI.
 - `src/main.py`: actual interactive caller via `_WorkerThread` and `transcribe()`.
-- `docs/FEATURES.md`: local/no-key requirement and offline acceptance gate.
+- `docs/IMPLEMENTATION-PLAN.md`: local/no-key requirement and offline acceptance gate.
 
 ## Current-Source Audit
 
@@ -218,7 +218,7 @@ Windows/manual acceptance is separate from mocked request tests: use a pinned ve
 
 ## Sources
 
-- `docs/FEATURES.md`: section 8 keyless requirement, configurable endpoint, offline acceptance and explicit non-guarantee.
+- `docs/IMPLEMENTATION-PLAN.md`: section 8 keyless requirement, configurable endpoint, offline acceptance and explicit non-guarantee.
 - `docs/IMPLEMENTATION-PLAN.md`: original section 8 proposal and final integration gate.
 - `src/config.py`: provider completeness, AppConfig provider factories, validation and `.env` import mappings.
 - `src/stt.py`: actual primary/fallback, endpoint, auth, fields, timeout and response parser.

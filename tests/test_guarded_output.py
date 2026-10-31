@@ -126,7 +126,13 @@ class RecoveryChordTests(unittest.TestCase):
         self.assertEqual(self.recovered, [True])
         self.assertEqual(self.dictation, [])
 
-    def test_escape_requests_disarm_without_swallowing_escape(self):
+    def test_escape_cancels_only_while_recording_without_swallowing_escape(self):
+        self.assertFalse(self.listener._on_kb_event(WM_KEYDOWN, 0x1B))
+        self.assertEqual(self.cancelled, [])
+        self.listener.set_recording(True)
+        self.assertFalse(self.listener._on_kb_event(WM_KEYDOWN, 0x1B))
+        self.assertEqual(self.cancelled, [True])
+        self.listener.set_recording(False)
         self.assertFalse(self.listener._on_kb_event(WM_KEYDOWN, 0x1B))
         self.assertEqual(self.cancelled, [True])
 

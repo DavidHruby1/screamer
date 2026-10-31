@@ -278,7 +278,7 @@ class PromptPersistenceTests(unittest.TestCase):
             cfg = load_config()
             self.assertEqual(cfg.llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
             self.assertEqual(cfg.llm_prompt_origin, "default_v2")
-            self.assertFalse(cfg.llm_enabled)
+            self.assertTrue(cfg.llm_enabled)
             settings = _get_qsettings()
             settings.setValue("llm_enabled", True)
             settings.sync()

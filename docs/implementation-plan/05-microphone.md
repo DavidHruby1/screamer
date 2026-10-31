@@ -8,7 +8,7 @@
 ## Summary
 
 This is the detailed implementation plan for feature 5 in
-[`../FEATURES.md`](../FEATURES.md): make captured input visible during a
+[`IMPLEMENTATION-PLAN.md`](../IMPLEMENTATION-PLAN.md#product-requirements-and-acceptance-criteria): make captured input visible during a
 dictation and make device failures recoverable without silently choosing a
 different explicitly selected microphone. The following records the accepted design
 and pre-implementation baseline; the implementation status is above. The recording flow is deliberately
@@ -20,7 +20,7 @@ intelligibility.
 
 ## Start Here
 
-- `docs/FEATURES.md` section 5: the accepted behaviors and hardware acceptance
+- `docs/IMPLEMENTATION-PLAN.md` section 5: the accepted behaviors and hardware acceptance
   criteria this plan elaborates.
 - `docs/IMPLEMENTATION-PLAN.md` section 5: the current concise plan and
   cross-feature delivery constraints. This file is its implementation detail,
@@ -495,13 +495,13 @@ parallel device resolver.
 
 `README.md` and `docs/IMPLEMENTATION.md` now describe the implemented behavior;
 section 5 of `docs/IMPLEMENTATION-PLAN.md` links here rather than duplicating this
-design. Leave `docs/FEATURES.md` acceptance open until the Windows manual gate
+design. Leave `docs/IMPLEMENTATION-PLAN.md` acceptance open until the Windows manual gate
 passes. No hardware test should be reported as completed without an actual
 Windows device run.
 
 ## Sources
 
-- `docs/FEATURES.md` section 5: accepted microphone-feedback behavior and
+- `docs/IMPLEMENTATION-PLAN.md` section 5: accepted microphone-feedback behavior and
   acceptance criteria.
 - `docs/IMPLEMENTATION-PLAN.md` sections 1, 5, and Final Integration Gate:
   session snapshot, recording boundary, no-queue constraints, feature plan, and

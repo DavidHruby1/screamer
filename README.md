@@ -49,7 +49,7 @@ While recording, a small pill appears near the bottom of the screen:
 - **Orange**: recording. The wave shows your microphone level, and the microphone name is shown.
 - **Blue**: processing (transcription and optional AI cleanup).
 
-Text is typed into the window that was active when recording started. If the window or application changed in the meantime, Screamer holds the text back instead of typing it somewhere else. You'll find it in **Recovery**.
+Text is typed into the window that was active when recording started. If the window or application changed in the meantime, Screamer holds the text back instead of typing it somewhere else. You'll find it in **History**.
 
 ## Tray menu
 
@@ -62,10 +62,10 @@ Right-click the tray icon for quick toggles without opening Settings.
 | Hotkey | Pick a hotkey preset. |
 | Language | Transcription language (Auto, Czech, English, favorites). |
 | Post-type Key | Key pressed after typing (Enter, Tab, ...). |
-| AI Rewrite | Turns AI cleanup on/off. Off = always raw transcript. |
-| Rewrite Profile | Cleanup profile (Raw, Clean, custom, Automatic). |
+| Rewrite Profile | Cleanup profile (Raw, Clean, custom, Auto). |
+| Copy last | Copies the latest result, or text selected in History. To insert, switch to the target app and use the global Insert last shortcut. |
 | Settings... | Opens Settings. |
-| Recovery... | Latest results: copy, retry, delete. |
+| History... | Latest results: copy, retry, delete. |
 | Exit | Quits the app. |
 
 Changes made during dictation apply to the next recording.
@@ -87,7 +87,9 @@ How dictation starts and where the text goes.
 
 - **Post-type key**: presses `Enter`, `Tab`, `Space`, or `Backspace` after typing (e.g. to send a chat message right away).
 - **Output mode**: type into the app (default), copy to clipboard only, or both. Copying replaces your clipboard and does not restore it. Copy-only never sends a post-type key.
-- **Recovery shortcut**: shortcut for inserting text from Recovery (default `Ctrl+Alt+Shift+V`).
+- **Insert last shortcut**: inserts the latest result into the current external app (default `Ctrl+Alt+Shift+V`). Set it with **Register shortcut**.
+- **Play recording and error sounds**: distinct start, stop, cancel and error cues; one switch turns all off.
+- **Esc**: cancels recording in Hold and Toggle modes; discarded audio is never transcribed or inserted.
 
 **History**
 
@@ -122,9 +124,8 @@ Speech-to-text.
 
 Optional AI cleanup of the transcript: punctuation, grammar, capitalization.
 
-- **Enable AI rewrite**: main switch. Off = raw transcript.
 - **API Key**, **Base URL**, **Model**, **Custom Headers**: LLM connection (OpenAI-compatible).
-- **System Prompt**: instructions for the model for the selected profile. **Reset to Current Default** restores the current default cleanup prompt.
+- The selected profile and its prompt are edited on **Profiles**. Raw skips AI cleanup.
 - **Enable fallback LLM provider**: a backup model.
 
 > AI can occasionally change the meaning, so double-check important dictation. If cleanup fails, the raw transcript is typed.
@@ -149,20 +150,20 @@ Preferred spellings of names and terms.
 
 Which prompt cleans up the text, and where.
 
-- **Raw**: no AI, plain transcript. **Clean**: conservative cleanup. You can add your own profiles (**Add custom** / **Rename** / **Delete**) and edit their prompt with **Edit selected prompt on LLM tab**.
-- **Selection mode: Manual**: always uses the chosen **Manual profile**.
-- **Selection mode: Automatic**: picks a profile based on the app you're dictating into. In **Application mappings**, map a full `.exe` path (e.g. `C:\Program Files\Slack\slack.exe`) to a profile; other apps get the **Default profile**. Moving an app to another path requires remapping.
+- **Raw**: no AI, plain transcript. **Clean**: conservative cleanup. You can add your own profiles (**Add custom** / **Rename** / **Delete**) and edit the prompt directly below the selected profile.
+- **Use selected profile**: always uses the profile selected in the same list.
+- **Auto**: uses application mappings, otherwise the **Default profile**. Choose a running application to map its `.exe` name, or enter a full path. Names match without regard to case; applications sharing a name share the mapping. Existing full-path mappings take precedence.
 
 Example: Clean for Slack, Raw for the terminal, a custom "formal" profile for email.
 
-## Recovery
+## History
 
-**Tray → Recovery...** shows the latest results, even with history turned off.
+**Tray → History...** shows the latest results, even with history turned off.
 
 | Button | What it does |
 | --- | --- |
 | Copy raw / Copy final | Copies the raw / cleaned-up text to the clipboard. |
-| Arm raw / Arm final | The window hides; click into the target app and press the recovery shortcut to insert the text. `Esc` cancels. |
+| Use raw / Use result for insertion | Selects text for the global shortcut. Switch to the target app and press Insert last. Without a selection, it inserts the newest result. |
 | Rerun cleanup | Runs AI cleanup again with current settings (the original is kept). |
 | Retry STT | After a failed transcription, sends the same recording again. |
 | Discard audio | Drops the pending recording from memory. |
@@ -170,7 +171,7 @@ Example: Clean for Slack, Raw for the terminal, a custom "formal" profile for em
 
 ## Tips and troubleshooting
 
-- **Nothing was typed**: check **Recovery**, the text will be there. Most often the active window changed in the meantime.
+- **Nothing was typed**: check **History**, the text will be there. Most often the active window changed in the meantime.
 - **Inaccurate transcription**: set a specific language instead of Auto, try a more accurate model, add terms to **Vocabulary**.
 - **Recording wasn't sent**: it may have been below the silence threshold; run **Recalibrate RMS Threshold**.
 - **Microphone doesn't work**: **Settings → Audio → Refresh** and select the device again. No restart needed.
