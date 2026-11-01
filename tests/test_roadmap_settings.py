@@ -79,30 +79,51 @@ class RoadmapSettingsTests(unittest.TestCase):
         self.assertEqual(restored.stt_base_url, "http://127.0.0.1:8000/v1")
         self.assertEqual(restored.stt_model, "local")
 
-    def test_damaged_vocabulary_reset_requires_confirmation_and_apply(self):
-        from src.config import _get_qsettings
+    def test_replacements_add_update_remove_apply_and_cancel(self):
+        d = self.dialog
+        d._replacement_from.setText(" screamer ")
+        d._replacement_to.setText("Screamer")
+        d._on_replacement_add()
+        d._replacement_from.setText("q thread")
+        d._replacement_to.setText("QThread")
+        d._on_replacement_add()
+        self.assertEqual(d._replacements, [("screamer", "Screamer"), ("q thread", "QThread")])
+        self.assertEqual(d._replacement_from.text(), "")
+        # Same heard text (any case) updates the existing pair.
+        d._replacement_from.setText("SCREAMER")
+        d._replacement_to.setText("Screamer app")
+        d._on_replacement_add()
+        self.assertEqual(d._replacements, [("q thread", "QThread"), ("SCREAMER", "Screamer app")])
+        with patch("src.settings_dialog.QMessageBox.warning") as warning:
+            d._replacement_from.setText("  ")
+            d._on_replacement_add()
+            d._replacement_from.setText("line\nbreak")
+            d._on_replacement_add()
+        self.assertEqual(warning.call_count, 2)
+        self.assertEqual(len(d._replacements), 2)
+        d._on_apply()
+        self.assertEqual(
+            load_config().replacements, [("q thread", "QThread"), ("SCREAMER", "Screamer app")]
+        )
+        self.assertEqual(self.cfg.replacements, [])
+        d._replacement_list.setCurrentRow(0)
+        d._on_replacement_remove()
+        self.assertEqual(d._replacements, [("SCREAMER", "Screamer app")])
+        d.reject()
+        self.assertEqual(len(load_config().replacements), 2)
 
-        settings = _get_qsettings()
-        damaged = '{"do not discard": "on unrelated save"}'
-        settings.setValue("vocabulary_entries", damaged)
-        settings.sync()
-        dialog = SettingsDialog(load_config(), devices=[])
-        self.addCleanup(dialog.deleteLater)
-        with patch(
-            "src.settings_dialog.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes
-        ):
-            dialog._vocabulary_reset_btn.click()
-        dialog.reject()
-        self.assertEqual(_get_qsettings().value("vocabulary_entries"), damaged)
-        dialog = SettingsDialog(load_config(), devices=[])
-        self.addCleanup(dialog.deleteLater)
-        with patch(
-            "src.settings_dialog.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes
-        ):
-            dialog._vocabulary_reset_btn.click()
-        dialog._on_apply()
-        self.assertEqual(load_config().vocabulary_entries, [])
-        self.assertEqual(_get_qsettings().value("vocabulary_entries"), "[]")
+    def test_audio_and_paste_preferences_apply(self):
+        d = self.dialog
+        self.assertTrue(d._trim_check.isChecked())
+        self.assertFalse(d._mute_check.isChecked())
+        d._trim_check.setChecked(False)
+        d._mute_check.setChecked(True)
+        d._output_mode_combo.setCurrentIndex(d._output_mode_combo.findData("paste"))
+        d._on_apply()
+        restored = load_config()
+        self.assertFalse(restored.trim_silence)
+        self.assertTrue(restored.mute_while_recording)
+        self.assertEqual(restored.output_mode, "paste")
 
 
 if __name__ == "__main__":

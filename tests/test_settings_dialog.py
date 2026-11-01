@@ -12,7 +12,7 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QApplication, QLineEdit, QDialog
 
-from src.config import AppConfig, DEFAULT_LLM_SYSTEM_PROMPT, load_config, save_config
+from src.config import AppConfig, load_config, save_config
 from src.utils import AppError, ScreamerError
 from src.settings_dialog import PasswordField, SettingsDialog
 
@@ -149,101 +149,54 @@ class AcceptValidationTests(unittest.TestCase):
 
 class PromptSettingsTests(unittest.TestCase):
     def setUp(self) -> None:
+        from src.config import RewriteProfile, encode_rewrite_catalog
+
         tmp = self.enterContext(tempfile.TemporaryDirectory())
         self.enterContext(patch("src.config.APP_DIR", tmp))
         self.enterContext(patch("src.config._dpapi_available", return_value=False))
         self.enterContext(patch("src.settings_dialog.is_supported", return_value=False))
+        self.prompt = " \tSaved prompt\r\nKeep whitespace.  \r\n\r\n"
         self.cfg = AppConfig(
             stt_api_key="key",
             stt_base_url="https://example.test/v1",
             stt_model="stt",
-            llm_enabled=True,
             llm_api_key="test",
             llm_base_url="https://example.test/v1",
             llm_model="test",
-            llm_system_prompt=" \tSaved prompt\r\nKeep whitespace.  \r\n\r\n",
-            llm_prompt_origin="legacy_saved",
+            rewrite_catalog=encode_rewrite_catalog(
+                [RewriteProfile("legacy", "Saved rewrite prompt", "custom", self.prompt)], []
+            ),
+            rewrite_manual_profile_id="legacy",
         )
         save_config(self.cfg)
         self.dlg = SettingsDialog(self.cfg, devices=[])
         self.addCleanup(self.dlg.deleteLater)
 
-    def test_unchanged_apply_and_ok_preserve_saved_line_endings_and_origin(self) -> None:
+    def _saved_prompt(self) -> str:
+        from src.config import resolve_rewrite_profile
+
+        return resolve_rewrite_profile(load_config(), None).prompt
+
+    def test_unchanged_apply_and_ok_preserve_saved_prompt_exactly(self) -> None:
         self.dlg._mode_toggle.setChecked(True)
         self.dlg._on_apply()
         self.dlg._on_apply()
         self.dlg.accept()
         self.assertEqual(self.dlg.result(), QDialog.DialogCode.Accepted)
-        restored = load_config()
-        self.assertEqual(restored.llm_system_prompt, self.cfg.llm_system_prompt)
-        self.assertEqual(restored.llm_prompt_origin, "legacy_saved")
-        self.assertEqual(restored.recording_mode, "toggle")
+        self.assertEqual(self._saved_prompt(), self.prompt)
+        self.assertEqual(load_config().recording_mode, "toggle")
 
-    def test_reset_then_cancel_keeps_saved_prompt_and_live_config(self) -> None:
-        self.dlg._llm_reset_prompt_btn.click()
-        self.assertEqual(self.dlg._llm_prompt.toPlainText(), DEFAULT_LLM_SYSTEM_PROMPT)
+    def test_edit_then_cancel_keeps_saved_prompt(self) -> None:
+        self.assertEqual(self.dlg._rewrite_profile_combo.currentData(), "legacy")
+        self.dlg._llm_prompt.setPlainText("Discarded.")
         self.dlg.reject()
-        restored = load_config()
-        self.assertEqual(restored.llm_system_prompt, self.cfg.llm_system_prompt)
-        self.assertEqual(restored.llm_prompt_origin, "legacy_saved")
-        self.assertEqual(self.cfg.llm_prompt_origin, "legacy_saved")
+        self.assertEqual(self._saved_prompt(), self.prompt)
 
-    def test_reset_apply_and_edit_keep_distinct_origins_across_repeated_apply(self) -> None:
-        self.dlg._llm_reset_prompt_btn.click()
-        self.dlg._on_apply()
-        self.dlg._on_apply()
-        restored = load_config()
-        self.assertEqual(restored.llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
-        self.assertEqual(restored.llm_prompt_origin, "default_v2")
-
-        edited = " \nMy edited prompt.  \n\n"
-        self.dlg._llm_prompt.setPlainText(edited)
-        self.dlg._on_apply()
-        self.dlg._on_apply()
-        restored = load_config()
-        self.assertEqual(restored.llm_system_prompt, edited)
-        self.assertEqual(restored.llm_prompt_origin, "user_saved")
-        self.dlg._llm_reset_prompt_btn.click()
-        self.dlg.reject()
-        self.assertEqual(load_config().llm_system_prompt, edited)
-        self.assertEqual(load_config().llm_prompt_origin, "user_saved")
-        self.assertEqual(self.cfg.llm_prompt_origin, "legacy_saved")
-
-    def test_edit_to_current_default_is_user_saved_not_an_implicit_reset(self) -> None:
-        self.dlg._llm_prompt.setPlainText(DEFAULT_LLM_SYSTEM_PROMPT)
-        self.dlg.accept()
-        self.assertEqual(self.dlg.result(), QDialog.DialogCode.Accepted)
-        self.assertEqual(load_config().llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
-        self.assertEqual(load_config().llm_prompt_origin, "user_saved")
-
-    def test_fresh_default_remains_default_v2_on_routine_apply(self) -> None:
-        cfg = AppConfig(stt_api_key="key", stt_base_url="https://example.test/v1", stt_model="stt")
-        dlg = SettingsDialog(cfg, devices=[])
-        self.addCleanup(dlg.deleteLater)
-        dlg._on_apply()
-        self.assertEqual(load_config().llm_prompt_origin, "default_v2")
-        self.assertTrue(load_config().llm_enabled)
-
-    def test_failed_apply_then_undo_preserves_exact_prompt_and_origin_on_retry(self) -> None:
-        for prompt, origin, failure in (
-            (self.cfg.llm_system_prompt, "legacy_saved", "validation"),
-            (self.cfg.llm_system_prompt, "legacy_saved", "save"),
-            (DEFAULT_LLM_SYSTEM_PROMPT, "default_v2", "save"),
-        ):
-            with self.subTest(origin=origin, failure=failure):
-                cfg = AppConfig(
-                    stt_api_key="key",
-                    stt_base_url="https://example.test/v1",
-                    stt_model="stt",
-                    llm_enabled=True,
-                    llm_api_key="test",
-                    llm_base_url="https://example.test/v1",
-                    llm_model="test",
-                    llm_system_prompt=prompt,
-                    llm_prompt_origin=origin,
-                )
-                save_config(cfg)
-                dlg = SettingsDialog(cfg, devices=[])
+    def test_failed_apply_keeps_saved_prompt_and_undo_drops_the_edit(self) -> None:
+        for failure in ("validation", "save"):
+            with self.subTest(failure=failure):
+                save_config(self.cfg)
+                dlg = SettingsDialog(self.cfg, devices=[])
                 self.addCleanup(dlg.deleteLater)
                 dlg._llm_prompt.insertPlainText("Temporary edit. ")
                 if failure == "validation":
@@ -257,43 +210,12 @@ class PromptSettingsTests(unittest.TestCase):
                     dlg._on_apply()
                 warning.assert_called_once()
                 self.assertEqual(replace.call_count, 0 if failure == "validation" else 1)
-                self.assertEqual(load_config().llm_system_prompt, prompt)
-                self.assertEqual(load_config().llm_prompt_origin, origin)
+                self.assertEqual(self._saved_prompt(), self.prompt)
                 dlg._llm_prompt.undo()
                 dlg._stt_model.setText("stt")
                 dlg._on_apply()
-                self.assertEqual(load_config().llm_system_prompt, prompt)
-                self.assertEqual(load_config().llm_prompt_origin, origin)
-
-    def test_failed_apply_does_not_lose_explicit_reset_after_undoing_later_edit(self) -> None:
-        self.dlg._llm_reset_prompt_btn.click()
-        self.dlg._llm_prompt.insertPlainText("Temporary edit. ")
-        with (
-            patch("src.config.os.replace", side_effect=OSError("read-only disk")),
-            patch("src.settings_dialog.QMessageBox.warning"),
-        ):
-            self.dlg._on_apply()
-        self.dlg._llm_prompt.undo()
-        self.dlg._on_apply()
-        self.assertEqual(load_config().llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
-        self.assertEqual(load_config().llm_prompt_origin, "default_v2")
-
-    def test_invalid_provenance_is_blocked_until_explicit_reset(self) -> None:
-        self.cfg.llm_prompt_origin = "default_v2"
-        dlg = SettingsDialog(self.cfg, devices=[])
-        self.addCleanup(dlg.deleteLater)
-        with patch("src.settings_dialog.QMessageBox.warning") as warning:
-            dlg.accept()
-        self.assertEqual(dlg.result(), QDialog.DialogCode.Rejected)
-        warning.assert_called_once()
-        self.assertFalse(dlg._llm_group.isHidden())
-        self.assertEqual(dlg._rewrite_profile_combo.currentData(), "legacy")
-        self.assertEqual(load_config().llm_prompt_origin, "legacy_saved")
-        dlg._llm_reset_prompt_btn.click()
-        dlg.accept()
-        self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted)
-        self.assertEqual(load_config().llm_prompt_origin, "default_v2")
-        self.assertTrue(load_config().llm_enabled)
+                # Undo restores the text; Qt normalizes line endings once it was edited.
+                self.assertEqual(self._saved_prompt(), self.prompt.replace("\r\n", "\n"))
 
 
 class MicrophoneSettingsTests(unittest.TestCase):
@@ -428,6 +350,24 @@ class MicrophoneSettingsTests(unittest.TestCase):
                     dlg.deleteLater()
 
 
+def _check_favorite(dlg, code: str, checked: bool = True) -> None:
+    for i in range(dlg._stt_favorites.count()):
+        item = dlg._stt_favorites.item(i)
+        if item.data(Qt.ItemDataRole.UserRole) == code:
+            item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+            return
+    raise AssertionError(f"{code} is not offered as a favorite")
+
+
+def _favorite_items(dlg) -> dict[str, bool]:
+    return {
+        dlg._stt_favorites.item(i).data(Qt.ItemDataRole.UserRole): (
+            dlg._stt_favorites.item(i).checkState() == Qt.CheckState.Checked
+        )
+        for i in range(dlg._stt_favorites.count())
+    }
+
+
 class LanguageSettingsTests(unittest.TestCase):
     def test_apply_saves_active_and_favorites_and_cancel_discards_later_edits(self) -> None:
         from src.config import load_config
@@ -443,15 +383,15 @@ class LanguageSettingsTests(unittest.TestCase):
             try:
                 self.assertEqual(dlg._stt_lang.currentData(), "")
                 self.assertEqual([dlg._stt_lang.itemData(i) for i in range(3)], ["", "cs", "en"])
-                dlg._stt_favorite_input.setText(" DE ")
-                dlg._on_favorite_add()
+                self.assertEqual(dlg._stt_lang.count(), 3)
+                self.assertFalse(any(_favorite_items(dlg).values()))
+                _check_favorite(dlg, "de")
                 dlg._stt_lang.setCurrentIndex(dlg._stt_lang.findData("de"))
                 dlg._on_apply()
                 self.assertEqual(load_config().stt_language, "de")
                 self.assertEqual(load_config().stt_language_favorites, ["de"])
 
-                dlg._stt_favorite_input.setText("fr")
-                dlg._on_favorite_add()
+                _check_favorite(dlg, "fr")
                 dlg._stt_lang.setCurrentIndex(dlg._stt_lang.findData("fr"))
                 dlg.reject()
                 self.assertEqual(load_config().stt_language, "de")
@@ -460,10 +400,16 @@ class LanguageSettingsTests(unittest.TestCase):
             finally:
                 dlg.deleteLater()
 
-    def test_ok_saves_active_language_and_favorites(self) -> None:
-        from src.config import load_config
+    def test_saved_custom_favorite_is_offered_and_round_trips(self) -> None:
+        from src.config import COMMON_LANGUAGES, load_config
 
-        cfg = AppConfig(stt_api_key="key", stt_base_url="https://example.test/v1", stt_model="m")
+        cfg = AppConfig(
+            stt_api_key="key",
+            stt_base_url="https://example.test/v1",
+            stt_model="m",
+            stt_language="pt-br",
+            stt_language_favorites=["pt-br"],
+        )
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch("src.config.APP_DIR", tmp),
@@ -472,9 +418,11 @@ class LanguageSettingsTests(unittest.TestCase):
         ):
             dlg = SettingsDialog(cfg, devices=[], calibrate_fn=None)
             try:
-                dlg._stt_favorite_input.setText("pt-BR")
-                dlg._on_favorite_add()
-                dlg._stt_lang.setCurrentIndex(dlg._stt_lang.findData("pt-br"))
+                items = _favorite_items(dlg)
+                self.assertEqual(
+                    list(items), [code for code, _label in COMMON_LANGUAGES] + ["pt-br"]
+                )
+                self.assertEqual([code for code, on in items.items() if on], ["pt-br"])
                 dlg.accept()
                 self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted)
                 self.assertEqual(load_config().stt_language, "pt-br")
@@ -482,42 +430,19 @@ class LanguageSettingsTests(unittest.TestCase):
             finally:
                 dlg.deleteLater()
 
-    def test_remove_active_additional_favorite_selects_auto_but_builtin_stays(self) -> None:
-        cfg = AppConfig(stt_language="de", stt_language_favorites=["cs", "de"])
-        dlg = SettingsDialog(cfg, devices=[], calibrate_fn=None)
-        try:
-            dlg._stt_favorites.setCurrentRow(1)
-            dlg._on_favorite_remove()
-            self.assertEqual(dlg._stt_lang.currentData(), "")
-            self.assertEqual(dlg._stt_lang.findData("de"), -1)
-            dlg._stt_lang.setCurrentIndex(dlg._stt_lang.findData("cs"))
-            dlg._stt_favorites.setCurrentRow(0)
-            dlg._on_favorite_remove()
-            self.assertEqual(dlg._stt_lang.currentData(), "cs")
-            self.assertEqual(dlg._stt_favorites.count(), 0)
-            dlg._collect()
-            self.assertEqual(dlg.get_config().stt_language_favorites, [])
-        finally:
-            dlg.deleteLater()
-
-    def test_edit_preserves_selection_and_invalid_or_duplicate_input_is_rejected(self) -> None:
+    def test_unchecking_favorites_updates_choices_but_keeps_active_code(self) -> None:
         cfg = AppConfig(stt_language="de", stt_language_favorites=["de", "fr"])
         dlg = SettingsDialog(cfg, devices=[], calibrate_fn=None)
         try:
-            dlg._stt_favorites.setCurrentRow(0)
-            dlg._stt_favorite_input.setText("pt-BR")
-            dlg._on_favorite_edit()
-            self.assertEqual(dlg._stt_lang.currentData(), "pt-br")
-            self.assertEqual(dlg._stt_favorites.item(0).data(Qt.ItemDataRole.UserRole), "pt-br")
-
-            with patch("src.settings_dialog.QMessageBox.warning") as warning:
-                dlg._stt_favorite_input.setText("en!")
-                dlg._on_favorite_edit()
-                dlg._stt_favorite_input.setText("fr")
-                dlg._on_favorite_edit()
-                warning.assert_called()
-            self.assertEqual(dlg._stt_favorites.item(0).data(Qt.ItemDataRole.UserRole), "pt-br")
-            self.assertEqual(dlg._stt_lang.currentData(), "pt-br")
+            self.assertNotEqual(dlg._stt_lang.findData("fr"), -1)
+            _check_favorite(dlg, "fr", False)
+            self.assertEqual(dlg._stt_lang.findData("fr"), -1)
+            _check_favorite(dlg, "de", False)
+            # The active language stays selectable even when it is no longer a favorite.
+            self.assertEqual(dlg._stt_lang.currentData(), "de")
+            dlg._collect()
+            self.assertEqual(dlg.get_config().stt_language_favorites, [])
+            self.assertEqual(dlg.get_config().stt_language, "de")
         finally:
             dlg.deleteLater()
 
@@ -529,7 +454,8 @@ class LanguageSettingsTests(unittest.TestCase):
         )
         try:
             self.assertEqual(dlg._stt_lang.currentText(), "zh_CN")
-            self.assertEqual(dlg._stt_favorites.count(), 1)
+            self.assertEqual([c for c, on in _favorite_items(dlg).items() if on], ["de"])
+            self.assertNotIn("zh_CN", _favorite_items(dlg))
             dlg._collect()
             self.assertEqual(dlg.get_config().stt_language, "zh_CN")
             self.assertEqual(dlg.get_config().stt_language_favorites, ["de"])

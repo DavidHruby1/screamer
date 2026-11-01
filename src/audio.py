@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import ctypes
 import io
 import logging
+import platform
 import threading
 import time
+import uuid
 import wave
 from dataclasses import dataclass
 from typing import Any
@@ -124,6 +127,25 @@ class AudioRecorder:
         self._capture_error: str | None = None
         self._device: AudioDeviceIdentity | None = None
         self._input_status = ""
+        self._trim_silence = True
+        self._retain_frames = True
+
+    @property
+    def trim_silence(self) -> bool:
+        return self._trim_silence
+
+    @trim_silence.setter
+    def trim_silence(self, value: bool) -> None:
+        self._trim_silence = bool(value)
+
+    @property
+    def retain_frames(self) -> bool:
+        """When False, only the live level is tracked and ``stop()`` returns no audio."""
+        return self._retain_frames
+
+    @retain_frames.setter
+    def retain_frames(self, value: bool) -> None:
+        self._retain_frames = bool(value)
 
     @property
     def rms_threshold(self) -> float:
@@ -168,8 +190,7 @@ class AudioRecorder:
                 sd.wait()
                 noise_floor = float(np.sqrt(np.mean(recording.astype(np.float64) ** 2)))
                 threshold = noise_floor * 2.0
-                if threshold < DEFAULT_RMS_THRESHOLD:
-                    threshold = DEFAULT_RMS_THRESHOLD
+                threshold = max(threshold, DEFAULT_RMS_THRESHOLD)
                 self._rms_threshold = threshold
                 log.info(
                     "Calibration done: noise_floor=%.1f, threshold=%.1f", noise_floor, threshold
@@ -184,7 +205,8 @@ class AudioRecorder:
         with self._lock:
             if not self._accepting_frames:
                 return
-            self._frames.append(indata.copy())
+            if self._retain_frames:
+                self._frames.append(indata.copy())
             self._level_rms = level_rms
             self._has_callback_data = True
             self._input_status = str(status) if status else ""
@@ -295,6 +317,15 @@ class AudioRecorder:
             log.info("Below RMS threshold; discarding")
             return b""
 
+        if self._trim_silence:
+            trimmed = trim_silence(audio_data, self._sample_rate, min_threshold=self._rms_threshold)
+            log.info(
+                "Silence trim: %.2fs -> %.2fs",
+                len(audio_data) / self._sample_rate,
+                len(trimmed) / self._sample_rate,
+            )
+            audio_data = trimmed
+
         # Encode as WAV in memory.
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
@@ -305,6 +336,200 @@ class AudioRecorder:
         wav_bytes = buf.getvalue()
         log.info("WAV encoded: %d bytes", len(wav_bytes))
         return wav_bytes
+
+
+def trim_silence(
+    audio: np.ndarray,
+    sample_rate: int,
+    *,
+    min_threshold: float,
+    pad_seconds: float = 0.3,
+    window_seconds: float = 0.02,
+) -> np.ndarray:
+    """Return ``audio`` without leading/trailing silence; the middle is never touched.
+
+    Speech is any window whose RMS exceeds ``max(min_threshold, 3 * noise_floor)``,
+    where the noise floor is the 10th percentile of window RMS. ``pad_seconds`` of
+    audio is kept around the first and last speech window. If no window qualifies
+    the input is returned unchanged (the caller's RMS gate decides discarding).
+    Accepts ``(N,)`` or ``(N, channels)`` and returns a slice of the same shape.
+    """
+    n = len(audio)
+    if n == 0:
+        return audio
+    window = max(1, round(sample_rate * window_seconds))
+    power = np.mean(audio.reshape(n, -1).astype(np.float64) ** 2, axis=1)
+    starts = np.arange(0, n, window)
+    counts = np.diff(np.append(starts, n))
+    rms = np.sqrt(np.add.reduceat(power, starts) / counts)
+    threshold = max(min_threshold, float(np.percentile(rms, 10)) * 3.0)
+    loud = np.flatnonzero(rms > threshold)
+    if loud.size == 0:
+        return audio
+    pad = round(pad_seconds * sample_rate)
+    begin = max(0, int(starts[loud[0]]) - pad)
+    end = min(n, int(starts[loud[-1]] + counts[loud[-1]]) + pad)
+    return audio[begin:end]
+
+
+# ---------------------------------------------------------------------------
+# System output mute (Windows Core Audio via raw ctypes COM)
+# ---------------------------------------------------------------------------
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_uint32),
+        ("Data2", ctypes.c_uint16),
+        ("Data3", ctypes.c_uint16),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+def _guid(text: str) -> _GUID:
+    # GUID's in-memory layout is UUID.bytes_le (little-endian first three fields).
+    return _GUID.from_buffer_copy(uuid.UUID(text).bytes_le)
+
+
+_CLSID_MMDeviceEnumerator = "BCDE0395-E52F-467C-8E3D-C4579291692E"
+_IID_IMMDeviceEnumerator = "A95664D2-9614-4F35-A746-DE8DB63617E6"
+_IID_IAudioEndpointVolume = "5CDF2C82-841E-4546-9722-0CF74078229A"
+_CLSCTX_ALL = 0x17
+_COINIT_APARTMENTTHREADED = 0x2
+_RPC_E_CHANGED_MODE = 0x80010106 - (1 << 32)  # as signed HRESULT
+_E_RENDER = 0
+_E_CONSOLE = 0
+
+# COM vtable slots. Every interface starts with IUnknown:
+#   0 QueryInterface, 1 AddRef, 2 Release
+# IMMDeviceEnumerator: 3 EnumAudioEndpoints, 4 GetDefaultAudioEndpoint
+# IMMDevice: 3 Activate
+# IAudioEndpointVolume: 3 RegisterControlChangeNotify, 4 Unregister..., 5 GetChannelCount,
+#   6-13 master/channel volume get/set, 14 SetMute, 15 GetMute
+_RELEASE = 2
+_GET_DEFAULT_AUDIO_ENDPOINT = 4
+_ACTIVATE = 3
+_SET_MUTE = 14
+_GET_MUTE = 15
+
+
+def _vtable_fn(obj: ctypes.c_void_p, index: int, restype: Any, *argtypes: Any) -> Any:
+    """Return a callable for vtable slot ``index`` of COM pointer ``obj`` (``this`` first)."""
+    vtable = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    proto = ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)  # type: ignore[attr-defined]
+    return proto(vtable[index])
+
+
+def _check(hr: int, what: str) -> None:
+    if hr < 0:
+        raise OSError(f"{what} failed: HRESULT 0x{hr & 0xFFFFFFFF:08X}")
+
+
+_HRESULT = ctypes.c_long  # 32-bit on Windows
+_PTR = ctypes.c_void_p
+
+
+class SystemAudioMute:
+    """Best-effort mute of the default render endpoint while recording.
+
+    ``mute()`` mutes only if output was not already muted; ``restore()`` unmutes
+    only what we muted and is idempotent. Failures are logged, never raised.
+    No-op off Windows.
+    """
+
+    def __init__(self) -> None:
+        self._muted_by_us = False
+
+    def mute(self) -> None:
+        if self._muted_by_us or platform.system() != "Windows":
+            return
+        try:
+            self._muted_by_us = self._with_endpoint(self._mute_if_unmuted)
+        except Exception as e:  # noqa: BLE001 - best effort; never break recording
+            log.warning("Could not mute system audio: %s", e)
+
+    def restore(self) -> None:
+        if not self._muted_by_us:
+            return
+        self._muted_by_us = False
+        if platform.system() != "Windows":
+            return
+        try:
+            self._with_endpoint(lambda ep: self._set_mute(ep, False))
+        except Exception as e:  # noqa: BLE001 - best effort; never break recording
+            log.warning("Could not restore system audio: %s", e)
+
+    @staticmethod
+    def _set_mute(endpoint: ctypes.c_void_p, muted: bool) -> None:
+        # HRESULT SetMute(BOOL bMute, LPCGUID pguidEventContext)
+        set_mute = _vtable_fn(endpoint, _SET_MUTE, _HRESULT, ctypes.c_int, _PTR)
+        _check(set_mute(endpoint, int(muted), None), "SetMute")
+
+    @classmethod
+    def _mute_if_unmuted(cls, endpoint: ctypes.c_void_p) -> bool:
+        # HRESULT GetMute(BOOL *pbMute)
+        muted = ctypes.c_int(0)
+        get_mute = _vtable_fn(endpoint, _GET_MUTE, _HRESULT, ctypes.POINTER(ctypes.c_int))
+        _check(get_mute(endpoint, ctypes.byref(muted)), "GetMute")
+        if muted.value:
+            return False
+        cls._set_mute(endpoint, True)
+        return True
+
+    @staticmethod
+    def _with_endpoint(action: Any) -> Any:
+        """Run ``action(IAudioEndpointVolume*)`` on the default console render device."""
+        ole32 = ctypes.windll.ole32  # type: ignore[attr-defined]
+        ole32.CoInitializeEx.restype = _HRESULT
+        ole32.CoInitializeEx.argtypes = [_PTR, ctypes.c_uint32]
+        ole32.CoCreateInstance.restype = _HRESULT
+        ole32.CoCreateInstance.argtypes = [_PTR, _PTR, ctypes.c_uint32, _PTR, _PTR]
+        init_hr = ole32.CoInitializeEx(None, _COINIT_APARTMENTTHREADED)
+        if init_hr != _RPC_E_CHANGED_MODE:  # S_FALSE / changed mode are fine
+            _check(init_hr, "CoInitializeEx")
+        acquired: list[ctypes.c_void_p] = []
+        try:
+            enumerator = ctypes.c_void_p()
+            hr = ole32.CoCreateInstance(
+                ctypes.byref(_guid(_CLSID_MMDeviceEnumerator)),
+                None,
+                _CLSCTX_ALL,
+                ctypes.byref(_guid(_IID_IMMDeviceEnumerator)),
+                ctypes.byref(enumerator),
+            )
+            _check(hr, "CoCreateInstance(MMDeviceEnumerator)")
+            acquired.append(enumerator)
+
+            # HRESULT GetDefaultAudioEndpoint(EDataFlow, ERole, IMMDevice **)
+            device = ctypes.c_void_p()
+            get_default = _vtable_fn(
+                enumerator, _GET_DEFAULT_AUDIO_ENDPOINT, _HRESULT, ctypes.c_int, ctypes.c_int, _PTR
+            )
+            _check(
+                get_default(enumerator, _E_RENDER, _E_CONSOLE, ctypes.byref(device)),
+                "GetDefaultAudioEndpoint",
+            )
+            acquired.append(device)
+
+            # HRESULT Activate(REFIID, DWORD dwClsCtx, PROPVARIANT *pActivationParams, void **)
+            endpoint = ctypes.c_void_p()
+            activate = _vtable_fn(device, _ACTIVATE, _HRESULT, _PTR, ctypes.c_uint32, _PTR, _PTR)
+            hr = activate(
+                device,
+                ctypes.byref(_guid(_IID_IAudioEndpointVolume)),
+                _CLSCTX_ALL,
+                None,
+                ctypes.byref(endpoint),
+            )
+            _check(hr, "IMMDevice::Activate(IAudioEndpointVolume)")
+            acquired.append(endpoint)
+            return action(endpoint)
+        finally:
+            for obj in reversed(acquired):
+                if obj.value:
+                    _vtable_fn(obj, _RELEASE, ctypes.c_ulong)(obj)
+            if init_hr >= 0:  # balance S_OK / S_FALSE; not RPC_E_CHANGED_MODE
+                ole32.CoUninitialize()
 
 
 def resolve_device(

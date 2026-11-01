@@ -18,54 +18,51 @@ Works with OpenAI, Groq, or any OpenAI-compatible `/audio/transcriptions` endpoi
 
 ## Quick start
 
-1. A tray icon (three bars) appears in the notification area, bottom right. Right-click it and choose **Settings...**
-2. On the **Speech** page, fill in your transcription provider (**Base URL**, **Model**, **API Key**) and click **OK**.
-3. Click into any text field, hold `Ctrl+Alt+Space`, say something, and release.
+1. On first launch, the **Setup guide** opens. (Later: right-click the tray icon, three bars at the bottom right, → **Setup guide...**)
+2. Pick your microphone and check that the level bar moves when you talk.
+3. Pick a speech provider (OpenAI, Groq or a local server), paste your API key, click **Test connection**, then **Save**.
+4. With the guide still focused, hold `Ctrl+Alt+Space`, say a sentence and release. The text appears in the guide's practice box.
+5. Close the guide. From now on the text is typed into whatever app you dictate into.
 
-Example: OpenAI
-
-```text
-Base URL: https://api.openai.com/v1
-Model:    whisper-1
-API Key:  your key
-```
-
-Example: Groq (fast)
+Provider presets fill in the base URL and model; you can still edit both:
 
 ```text
-Base URL: https://api.groq.com/openai/v1
-Model:    whisper-large-v3-turbo     (more accurate: whisper-large-v3)
+OpenAI:  https://api.openai.com/v1        whisper-1
+Groq:    https://api.groq.com/openai/v1   whisper-large-v3-turbo
+Local:   http://127.0.0.1:18000/v1        (Speaches, no API key)
 ```
 
-Any server compatible with OpenAI `/audio/transcriptions` works; Screamer appends that path to the base URL. For a local server, the API key may be left blank. See the [local STT setup](docs/LOCAL-STT.md).
+Any server compatible with OpenAI `/audio/transcriptions` works; Screamer appends that path to the base URL. See the [local STT setup](docs/LOCAL-STT.md).
 
 ## Dictating
 
 - **Hold to talk** (default): records while you hold the hotkey.
 - **Toggle**: first press starts recording, second press stops it.
+- **Esc** cancels the recording; nothing is sent or typed.
+- **Hold Shift** as you finish (when releasing the hotkey, or on the stopping press in Toggle mode) to press **Enter** after the text, e.g. to send a chat message.
 
 While recording, a small pill appears near the bottom of the screen:
 
 - **Orange**: recording. The wave shows your microphone level, and the microphone name is shown.
 - **Blue**: processing (transcription and optional AI cleanup).
 
-Text is typed into the window that was active when recording started. If the window or application changed in the meantime, Screamer holds the text back instead of typing it somewhere else. You'll find it in **History**.
+Short sounds mark start, stop, cancel and errors (Settings → General can turn them off).
+
+Text goes into the window that was active when recording started. If the window or application changed in the meantime, Screamer holds the text back instead of typing it somewhere else. Use **Insert last** (`Ctrl+Alt+Shift+V` by default) in the right app, or open **History**.
+
+You can keep dictating while Settings is open, for example to try a new prompt right after **Apply**. Dictation uses the last saved settings.
 
 ## Tray menu
 
-Right-click the tray icon for quick toggles without opening Settings.
-
 | Item | What it does |
 | --- | --- |
-| Enabled | Turns hotkey handling on/off. |
-| Record Mode | Hold to talk or Toggle. |
-| Hotkey | Pick a hotkey preset. |
-| Language | Transcription language (Auto, Czech, English, favorites). |
-| Post-type Key | Key pressed after typing (Enter, Tab, ...). |
-| Rewrite Profile | Cleanup profile (Raw, Clean, custom, Auto). |
-| Copy last | Copies the latest result, or text selected in History. To insert, switch to the target app and use the global Insert last shortcut. |
+| Enabled | Turns the hotkey on/off. |
+| Language | Transcription language: Auto, Czech, English and your favorites. |
+| Profile | How text is cleaned up: Auto (by app), Raw, Clean, Polished or your own. |
+| Copy last | Copies the latest result (or the one selected in History). |
+| History... | Latest results: copy, insert, rerun cleanup, delete. |
 | Settings... | Opens Settings. |
-| History... | Latest results: copy, retry, delete. |
+| Setup guide... | Microphone check, provider setup and a practice dictation. |
 | Exit | Quits the app. |
 
 Changes made during dictation apply to the next recording.
@@ -76,85 +73,48 @@ Changes made during dictation apply to the next recording.
 
 ### General
 
-How dictation starts and where the text goes.
-
-**Shortcut**
-
-- **Hotkey**: a preset (`Ctrl+Alt+Space`, `Ctrl+Shift+Space`, `Ctrl+Alt+D`, `Ctrl+Alt+S`, `Ctrl+Alt+V`, `Scroll Lock`, `Pause`) or a custom one: click **Register Hotkey** and press any combination, a function key, or a side/middle mouse button. Ordinary keys need a modifier (Ctrl/Alt/Shift). The hotkey press is not passed through to the app underneath.
+- **Hotkey**: a preset (`Ctrl+Alt+Space`, `Ctrl+Shift+Space`, `Ctrl+Alt+D`, `Ctrl+Alt+S`, `Ctrl+Alt+V`, `Scroll Lock`, `Pause`) or a custom one: click **Register Hotkey** and press any combination, a function key, or a side/middle mouse button. Ordinary keys need a modifier.
 - **Recording mode**: Hold to talk / Toggle.
-
-**Output**
-
-- **Post-type key**: presses `Enter`, `Tab`, `Space`, or `Backspace` after typing (e.g. to send a chat message right away).
-- **Output mode**: type into the app (default), copy to clipboard only, or both. Copying replaces your clipboard and does not restore it. Copy-only never sends a post-type key.
-- **Insert last shortcut**: inserts the latest result into the current external app (default `Ctrl+Alt+Shift+V`). Set it with **Register shortcut**.
-- **Play recording and error sounds**: distinct start, stop, cancel and error cues; one switch turns all off.
-- **Esc**: cancels recording in Hold and Toggle modes; discarded audio is never transcribed or inserted.
-
-**History**
-
-- **Save local text history**: optionally keeps the last 1–100 texts, encrypted under your Windows account. Off by default. Audio is never written to disk.
-- **Retain latest results**: how many entries to keep.
-- **Clear History...**: deletes saved history. Turning history off does not delete anything by itself.
-
-**System**
-
-- **Start Screamer with Windows**: launch on login.
+- **Output**:
+  - **Type into the app** (default) types the text key by key.
+  - **Paste via clipboard** is faster for long texts; your previous clipboard is put back afterwards.
+  - **Copy to clipboard only**, or **Copy and type**.
+- **Then press**: a key pressed after every result (Enter, Tab, ...). Shift-at-the-end works without it.
+- **Insert last shortcut**: types the latest result into the current app.
+- **Sounds**, **History** (opt-in, encrypted, 1–100 entries, never audio) and **Start with Windows**.
 
 ### Speech
 
-Speech-to-text.
-
-**Primary provider**
-
-- **API Key**, **Base URL**, **Model**: provider connection. Keys are stored encrypted (Windows DPAPI). The eye icon reveals the key.
-- **Custom Headers**: optional HTTP headers as JSON, e.g. `{"X-Custom": "value"}`.
-- **Send vocabulary prompt to primary STT**: also sends your vocabulary to transcription. Enable only if your server supports the `prompt` field.
-
-**Language**
-
-- **Active language**: Auto, or a specific language (often more accurate than Auto). Language hints don't translate and don't handle mixed-language speech.
-- **Favorite languages**: your own list of codes (ISO 639-1, e.g. `de`) that then show up in the tray **Language** menu. Add / edit / remove with the buttons below the field.
-
-**Fallback**
-
-- **Enable fallback STT provider**: a backup provider used when the primary one fails.
+- **Provider**: a preset or Custom, then **API key** (optional for local servers), **Base URL** and **Model**. **Test connection** checks the server and whether it lists the model.
+- **Language**: Auto, or a specific language (often more accurate). Tick the languages you want in the tray menu under **Also show in tray**.
+- **Advanced**: custom HTTP headers, sending your vocabulary to the provider, and a fallback provider used when the main one fails.
 
 ### Rewrite
 
-Optional AI cleanup of the transcript: punctuation, grammar, capitalization.
-
-- **API Key**, **Base URL**, **Model**, **Custom Headers**: LLM connection (OpenAI-compatible).
-- The selected profile and its prompt are edited on **Profiles**. Raw skips AI cleanup.
-- **Enable fallback LLM provider**: a backup model.
+The language model used by the Clean, Polished and custom profiles: preset, **API key** (optional for local servers such as Ollama or LM Studio), **Base URL**, **Model**, **Test connection**. Custom headers are under **Advanced**.
 
 > AI can occasionally change the meaning, so double-check important dictation. If cleanup fails, the raw transcript is typed.
 
 ### Audio
 
-Microphone and silence detection.
-
-- **Input Device**: your microphone. **System Default** follows the current Windows default device. Avoid devices like Stereo Mix, Monitor, or HDMI.
-- **Refresh**: reloads the list after plugging/unplugging a microphone. An unavailable microphone is never silently swapped for another one.
-- **Recalibrate RMS Threshold**: measures background noise and sets the silence threshold. **RMS Threshold** can also be set manually; recordings below it count as silence and are not sent.
+- **Microphone**: **System Default** follows the Windows default. **Refresh** after plugging a device in or out; an unavailable microphone is never silently swapped for another.
+- **Mute speakers while recording**: silences music and calls while you talk, then restores them.
+- **Cut silence at the start and end**: sends less audio, which is faster and avoids made-up words in silent parts.
+- **Advanced: silence threshold**: recordings quieter than the threshold are dropped. **Calibrate** measures your room.
 
 ### Vocabulary
 
-Preferred spellings of names and terms.
-
-- Add words that should be written exactly that way (e.g. `PySide6`, colleagues' names, project names).
-- Vocabulary guides AI cleanup; it goes to transcription only for providers where you explicitly enable it on the **Speech** page.
-- Limits: 128 terms, 128 characters per term. It is not a replacement table and does not guarantee recognition.
+- **Preferred spellings**: names and terms (e.g. `PySide6`). The AI rewrite uses them as hints; transcription gets them only if you enable it under Speech → Advanced.
+- **Replacements**: exact fixes applied to every result, whole words only, ignoring case. Example: heard `pajsajd` → write `PySide6`. They work even with the Raw profile.
 
 ### Profiles
 
-Which prompt cleans up the text, and where.
+- **Use**: Raw (no AI), **Clean** (conservative fixes), **Polished** (also removes filler words and keeps only the final version when you correct yourself), your own profiles, or **Auto**.
+- **Auto** picks a profile by the app you dictate into; otherwise the **When no app matches** profile.
+- **Edit profiles**: built-ins are read-only; **Duplicate** one or click **New profile**, then edit its name and prompt in place.
+- **Apps**: type an `.exe` name (e.g. `slack.exe`) or **Choose running app...**, pick a profile, **Add / update**.
 
-- **Raw**: no AI, plain transcript. **Clean**: conservative cleanup. You can add your own profiles (**Add custom** / **Rename** / **Delete**) and edit the prompt directly below the selected profile.
-- **Use selected profile**: always uses the profile selected in the same list.
-- **Auto**: uses application mappings, otherwise the **Default profile**. Choose a running application to map its `.exe` name, or enter a full path. Names match without regard to case; applications sharing a name share the mapping. Existing full-path mappings take precedence.
-
-Example: Clean for Slack, Raw for the terminal, a custom "formal" profile for email.
+Example: Polished for Slack, Raw for the terminal, a custom "formal" profile for email.
 
 ## History
 
@@ -162,21 +122,22 @@ Example: Clean for Slack, Raw for the terminal, a custom "formal" profile for em
 
 | Button | What it does |
 | --- | --- |
-| Copy raw / Copy final | Copies the raw / cleaned-up text to the clipboard. |
-| Use raw / Use result for insertion | Selects text for the global shortcut. Switch to the target app and press Insert last. Without a selection, it inserts the newest result. |
+| Copy raw / Copy final | Copies the raw / cleaned-up text. |
+| Use raw / Use result for insertion | Picks the text for **Insert last**. Switch to the target app and press the shortcut. |
 | Rerun cleanup | Runs AI cleanup again with current settings (the original is kept). |
-| Retry STT | After a failed transcription, sends the same recording again. |
-| Discard audio | Drops the pending recording from memory. |
+| Retry STT | Shown only after a failed transcription: sends the same recording again. |
+| Discard audio | Drops that pending recording from memory. |
 | Delete / Clear all | Deletes the selected entry / all entries. |
 
 ## Tips and troubleshooting
 
-- **Nothing was typed**: check **History**, the text will be there. Most often the active window changed in the meantime.
-- **Inaccurate transcription**: set a specific language instead of Auto, try a more accurate model, add terms to **Vocabulary**.
-- **Recording wasn't sent**: it may have been below the silence threshold; run **Recalibrate RMS Threshold**.
+- **Nothing was typed**: press **Insert last** in the right app, or check **History**. Most often the active window changed in the meantime.
+- **Inaccurate transcription**: set a specific language instead of Auto, try a more accurate model, add **Replacements** for words it keeps getting wrong.
+- **Recording wasn't sent**: it may have been below the silence threshold; use **Calibrate** under Audio → Advanced.
 - **Microphone doesn't work**: **Settings → Audio → Refresh** and select the device again. No restart needed.
-- **Offline dictation**: use a local STT server and turn off AI rewrite and both fallbacks.
-- Logs are in `%LOCALAPPDATA%\Screamer\screamer.log`. Only one instance can run at a time.
+- **Offline dictation**: use a local STT server, and either the Raw profile or a local LLM server.
+- **"Some saved settings were damaged and reset"**: the damaged value is kept in `%LOCALAPPDATA%\Screamer\settings-damaged.txt`.
+- Logs are in `%LOCALAPPDATA%\Screamer\screamer.log`, including a per-dictation timing line (transcription, rewrite, output). Only one instance can run at a time.
 
 ### Privacy notes
 
@@ -185,8 +146,15 @@ History stores dictated text (including anything sensitive you say), never audio
 ## For developers
 
 See [implementation and API contracts](docs/IMPLEMENTATION.md),
-[planned features](docs/FEATURES.md), [their implementation plan](docs/IMPLEMENTATION-PLAN.md),
+[the product review and roadmap status](docs/PRODUCT-REVIEW-2026-10.md),
+[the implementation plan](docs/IMPLEMENTATION-PLAN.md),
 and [release operations](docs/RELEASES.md).
+
+Measure transcription latency (median and p95) on the same recordings:
+
+```bash
+python -m src.stt --repeat 5 cs.wav en.wav mixed.wav
+```
 
 Run from source:
 

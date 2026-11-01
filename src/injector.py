@@ -19,6 +19,10 @@ _POST_KEY_VK: dict[str, int] = {
     "backspace": 0x08,
 }
 
+_VK_SHIFT, _VK_CONTROL, _VK_MENU, _VK_V = 0x10, 0x11, 0x12, 0x56
+# Modifiers a user may still hold from the hotkey chord when injection starts.
+_RELEASE_BEFORE_CHORD = (_VK_SHIFT, _VK_MENU)
+
 
 @dataclass(frozen=True)
 class WindowIdentity:
@@ -40,9 +44,13 @@ class InjectionError(ScreamerError):
         detail: str,
         text_events_submitted: int = 0,
         post_key_events_submitted: int = 0,
+        text_events_expected: int | None = None,
     ) -> None:
         self.text_events_submitted = text_events_submitted
         self.post_key_events_submitted = post_key_events_submitted
+        # Total text events in the batch; equal to ``text_events_submitted`` when the
+        # text went through and only the post key failed.
+        self.text_events_expected = text_events_expected
         super().__init__(AppError.INJECTION_FAILED, detail)
 
 
@@ -98,9 +106,15 @@ def type_text(
     post_key: str | None = None,
     *,
     expected_target: WindowIdentity | None = None,
+    paste: bool = False,
 ) -> InjectionReport:
     """Type *text* into the active window via Win32 SendInput.
 
+    With *paste*, send Ctrl+V instead (the caller has already put *text* on the
+    clipboard); ``text_events_submitted`` then counts the shortcut events (4, plus
+    one release per Shift/Alt the user is still physically holding, so the target
+    never sees Ctrl+Shift+V or Ctrl+Alt+V). A still-held Shift or Alt is released
+    the same way before *post_key*, so a Shift-to-submit Enter is not Shift+Enter.
     0.05s delay then press *post_key* if not ``None`` and not ``"none"``.
     Reports submitted events, not visible insertion. Never retries a partial send.
     Raises ``InjectionError`` with separate text/post-key counts on failure.
@@ -112,6 +126,7 @@ def type_text(
     if normalized_key != "none" and normalized_key not in _POST_KEY_VK:
         raise InjectionError("Unknown post-type key")
     text_sent = 0
+    text_expected: int | None = None
     post_sent = 0
 
     import ctypes
@@ -168,36 +183,67 @@ def type_text(
     user32 = ctypes.WinDLL("user32", use_last_error=True)  # type: ignore[attr-defined]
     user32.SendInput.argtypes = (ctypes.wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
     user32.SendInput.restype = ctypes.wintypes.UINT
+    user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
+    user32.GetAsyncKeyState.restype = ctypes.c_short
 
     def _raise_sendinput_failed(detail: str) -> None:
         err = ctypes.get_last_error()  # type: ignore[attr-defined]
         if err:
             detail = f"{detail} (WinError {err})"
-        raise InjectionError(detail, text_sent, post_sent)
+        raise InjectionError(detail, text_sent, post_sent, text_expected)
+
+    def _held_modifier_releases() -> list[tuple[int, bool]]:
+        """Key-up events for Shift/Alt the user still holds from the hotkey chord."""
+        return [(vk, True) for vk in _RELEASE_BEFORE_CHORD if user32.GetAsyncKeyState(vk) & 0x8000]
+
+    def _vk_batch(events: list[tuple[int, bool]]):
+        batch = (INPUT * len(events))()
+        for i, (vk, up) in enumerate(events):
+            batch[i].type = INPUT_KEYBOARD
+            batch[i].ki.wVk = vk
+            batch[i].ki.dwFlags = KEYEVENTF_KEYUP if up else 0
+        return batch
 
     def _send_vk(vk: int) -> None:
         nonlocal post_sent
-        batch = (INPUT * 2)()
-        batch[0].type = INPUT_KEYBOARD
-        batch[0].ki.wVk = vk
-        batch[1].type = INPUT_KEYBOARD
-        batch[1].ki.wVk = vk
-        batch[1].ki.dwFlags = KEYEVENTF_KEYUP
+        events = [*_held_modifier_releases(), (vk, False), (vk, True)]
+        batch = _vk_batch(events)
         ctypes.set_last_error(0)  # type: ignore[attr-defined]
-        post_sent = user32.SendInput(2, batch, ctypes.sizeof(INPUT))
-        if post_sent != 2:
+        post_sent = user32.SendInput(len(events), batch, ctypes.sizeof(INPUT))
+        if post_sent != len(events):
             _raise_sendinput_failed(
-                f"SendInput submitted {post_sent}/2 post-key events for VK 0x{vk:02X}"
+                f"SendInput submitted {post_sent}/{len(events)} post-key events for VK 0x{vk:02X}"
             )
 
     try:
         with log_duration(log, f"Text injection ({len(text)} chars)"):
-            log.info("Typing %d characters", len(text))
+            log.info("%s %d characters", "Pasting" if paste else "Typing", len(text))
+            if paste:
+                # Ctrl goes down first so a held Alt is released "after another key"
+                # and does not pop the target's menu bar; then V, then Ctrl up.
+                events = [
+                    (_VK_CONTROL, False),
+                    *_held_modifier_releases(),
+                    (_VK_V, False),
+                    (_VK_V, True),
+                    (_VK_CONTROL, True),
+                ]
+                text_expected = len(events)
+                batch = _vk_batch(events)
+                if expected_target is not None and get_foreground_target() != expected_target:
+                    raise InjectionError("Foreground target changed or unavailable")
+                ctypes.set_last_error(0)  # type: ignore[attr-defined]
+                text_sent = user32.SendInput(text_expected, batch, ctypes.sizeof(INPUT))
+                if text_sent != text_expected:
+                    _raise_sendinput_failed(
+                        f"SendInput submitted {text_sent}/{text_expected} paste events"
+                    )
             # One batched SendInput call: atomic with respect to concurrent
             # user input and far fewer syscalls than per-character sends.
-            units = _utf16_units(text)
+            units = [] if paste else _utf16_units(text)
             if units:
                 count = 2 * len(units)
+                text_expected = count
                 batch = (INPUT * count)()
                 for i, unit in enumerate(units):
                     code = ord(unit)
@@ -229,7 +275,7 @@ def type_text(
     except ScreamerError:
         raise
     except Exception as e:
-        raise InjectionError(str(e), text_sent, post_sent) from e
+        raise InjectionError(str(e), text_sent, post_sent, text_expected) from e
 
 
 # ---------------------------------------------------------------------------

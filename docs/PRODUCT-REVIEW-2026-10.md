@@ -3,8 +3,42 @@
 > Stav k 2026-10-31 (commit `a81750c`). Analýza vychází z kódu, README a textů v UI.
 > Aplikace nebyla spuštěna na Windows. Údaje o konkurenci pocházejí ze stránek výrobců
 > a ze srovnávacích článků, které často píší sami konkurenti. Ceny a čísla jsou proto
-> orientační. Toto je podklad k rozhodnutí, ne schválený backlog. Ten je v
-> [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md#product-requirements-and-acceptance-criteria).
+> orientační. Stav realizace je v sekci níže a v
+> [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
+
+## Stav implementace (2026-11-01)
+
+Vlastník schválil implementaci celé analýzy kromě bodů, které jsou výslovně jeho
+rozhodnutím (4.11 edit mode, 4.12 profily podle URL) nebo jsou „Nedoporučeno“.
+Kód a automatické testy na Linuxu existují; ruční ověření na Windows zatím neproběhlo.
+
+| Bod | Stav |
+| --- | --- |
+| 1.1 Profily | Hotovo: jeden výběr „Use“ (Auto/profil), prompt přímo u profilu, vestavěné jen ke čtení s „Duplicate“, mapování podle názvu `.exe` a běžící aplikace; `llm_prompt_origin` a uložený `llm_system_prompt` odstraněny (jednorázová migrace). |
+| 1.2 AI Rewrite vs. Raw | Hotovo (už dříve). |
+| 1.3 Historie | Hotovo: Insert last bez armování, Retry STT jen po selhání přepisu, ladicí údaje jen v logu. |
+| 1.4 Poškozené hodnoty | Hotovo: záloha do `settings-damaged.txt`, reset, jedna bublina; opravné UI odstraněno. |
+| 1.5 Fallbacky | LLM fallback odstraněn; STT fallback ponechán v sekci Advanced. |
+| 1.6 Texty nápověd | Přepsány srozumitelně. |
+| 1.7 Zkratka Insert last | Hotovo (už dříve). |
+| 1.8 Oblíbené jazyky | Zaškrtávací seznam 16 jazyků. |
+| 1.9 RMS práh | Schován do Audio → Advanced; navíc ořez ticha. |
+| 1.10 Tray | Enabled, Language, Profile, Copy last, History, Settings, Setup guide, Exit. |
+| 1.11 Custom headers | V sekci Advanced. |
+| 1.12 Nastavení blokuje diktování | Diktování, Historie i Insert last fungují při otevřeném nastavení (s posledním uloženým stavem). |
+| Repo a dokumentace | Hotovo (už dříve). |
+| 4.1–4.3 Esc, zvuky, vložit poslední | Hotovo (už dříve). |
+| 4.4 Nahrazování slov | Hotovo (Vocabulary → Replacements). |
+| 4.5 Předvolby a test připojení | Hotovo pro STT i LLM. |
+| 4.6 Ořez ticha | Hotovo (výchozí zapnuto). |
+| 4.7 Ztlumení během nahrávání | Hotovo bez nové závislosti (Core Audio přes ctypes), volitelné. |
+| 4.8 Vkládání přes schránku | Hotovo jako výstupní režim „Paste via clipboard“ s obnovou schránky. |
+| 4.9 Profil Polished | Hotovo. |
+| 4.10 Shift = Enter | Hotovo; post-type key zůstal jen v nastavení. |
+| 4.11, 4.12 | Nerealizováno (rozhodnutí vlastníka, mimo rozsah). |
+| 6.1 Latence | Řádek `Dictation timing:` v logu a `python -m src.stt --repeat N` (medián, p95). 250ms tail beze změny. |
+| 6.2 Průvodce prvním diktátem | Hotovo (`setup_wizard.py`). |
+| 6.3 LLM bez klíče | Hotovo. |
 
 ## Shrnutí
 

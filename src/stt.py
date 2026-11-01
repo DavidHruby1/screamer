@@ -178,11 +178,31 @@ def _stt_timeout(audio_wav: bytes) -> httpx.Timeout:
 # CLI smoke test
 # ---------------------------------------------------------------------------
 
+
+def latency_summary(samples: list[float]) -> dict[str, float]:
+    """Median and nearest-rank p95 of elapsed seconds (used by the CLI benchmark)."""
+    if not samples:
+        return {"count": 0, "median": 0.0, "p95": 0.0}
+    ordered = sorted(samples)
+    middle = len(ordered) // 2
+    median = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+    p95 = ordered[max(0, -(-95 * len(ordered) // 100) - 1)]
+    return {"count": len(ordered), "median": median, "p95": p95}
+
+
 if __name__ == "__main__":
+    import argparse
     import os
     import sys
 
     from src.config import import_from_env, load_config, setup_logging
+
+    parser = argparse.ArgumentParser(
+        description="Transcribe WAV files; with --repeat, report median/p95 latency."
+    )
+    parser.add_argument("wav", nargs="*", default=["test.wav"])
+    parser.add_argument("--repeat", type=int, default=1, help="requests per file")
+    args = parser.parse_args()
 
     setup_logging()
 
@@ -196,29 +216,36 @@ if __name__ == "__main__":
         print(
             "No STT configuration found. Set a base URL and model (API key optional) via:\n"
             "  - Place a .env file in the project root\n"
-            "  - Or run python -m src.settings_dialog (Phase 2)",
+            "  - Or run python -m src.settings_dialog",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    wav_path = sys.argv[1] if len(sys.argv) > 1 else "test.wav"
-    if not os.path.exists(wav_path):
-        print(f"WAV file not found: {wav_path}", file=sys.stderr)
-        sys.exit(1)
+    elapsed: list[float] = []
+    failures = 0
+    for wav_path in args.wav:
+        if not os.path.exists(wav_path):
+            print(f"WAV file not found: {wav_path}", file=sys.stderr)
+            sys.exit(1)
+        with open(wav_path, "rb") as f:
+            wav_bytes = f.read()
+        for attempt in range(max(1, args.repeat)):
+            started = perf_counter()
+            try:
+                result = transcribe(wav_bytes, cfg)
+            except ScreamerError as e:
+                failures += 1
+                print(f"{wav_path} #{attempt + 1}: error {e.code.name}", file=sys.stderr)
+                continue
+            elapsed.append(perf_counter() - started)
+            print(f"{wav_path} #{attempt + 1}: {elapsed[-1]:.3f}s  {result.text}")
+            if result.warnings:
+                print(f"  Warnings: {[w.value for w in result.warnings]}")
 
-    with open(wav_path, "rb") as f:
-        wav_bytes = f.read()
-
-    try:
-        result = transcribe(wav_bytes, cfg)
-        print(f"Transcription: {result.text}")
-        if result.warnings:
-            print(f"Warnings: {[w.value for w in result.warnings]}")
-    except ScreamerError as e:
-        print(f"Error: {e.code.value}", file=sys.stderr)
-        if e.detail:
-            print(f"Detail: {e.detail}", file=sys.stderr)
-        sys.exit(1)
-
+    summary = latency_summary(elapsed)
     print()
-    print("STT module OK")
+    print(
+        f"STT latency: n={summary['count']} median={summary['median']:.3f}s "
+        f"p95={summary['p95']:.3f}s failures={failures}"
+    )
+    sys.exit(1 if failures and not elapsed else 0)

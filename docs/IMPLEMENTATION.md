@@ -27,6 +27,7 @@ src/
 ├── injector.py
 ├── results.py
 ├── recovery_dialog.py
+├── setup_wizard.py      (first-dictation guide: microphone, provider, practice field)
 ├── icons.py
 ├── snackbar.py
 ├── theme.py             (Hush design system: tokens, fonts, QSS, window polish)
@@ -51,11 +52,11 @@ class AppError(Enum):
     MIC_UNAVAILABLE = "Microphone unavailable. Open Settings > Audio, refresh devices, and try again."
     MIC_DISCONNECTED = "Microphone capture failed. Check Settings > Audio and try again."
     STT_FAILED = "Transcription failed. Check your API key and internet."
-    STT_FALLBACK_USED = "Primary STT failed. Used fallback provider."
+    STT_FALLBACK_USED = "Speech provider failed. Used the fallback provider."
     LLM_FAILED = "AI rewrite failed. Using raw transcription."
     NETWORK_ERROR = "Network error. Please check your connection."
     NO_SPEECH = "No speech detected. Try speaking louder or closer."
-    DICTATION_ACTIVE = "Finish the current dictation before opening Settings."
+    DICTATION_ACTIVE = "Finish the current dictation first."
     INJECTION_FAILED = "Could not type text. Focus may have changed."
     HOTKEY_CONFLICT = "Hotkey conflict. Choose a different hotkey."
     HOTKEY_INVALID = "That key combination can't be used. Add a modifier or pick another key."
@@ -65,9 +66,10 @@ class AppError(Enum):
     STARTUP_REGISTRATION_FAILED = "Could not update Windows startup setting."
     OUTPUT_WITHHELD = "Typing withheld because the target changed. Open History or use Insert last."
     CLIPBOARD_FAILED = "Could not copy text. Open History to try again."
-    HISTORY_STORAGE_FAILED = "Could not read or save encrypted history. RAM recovery remains available; explicitly Clear to remove an unreadable file."
-    HISTORY_DISABLED = "Enable history to delete a saved entry, or explicitly Clear all."
-    CONFIG_INVALID = "Invalid settings. Open Settings and repair the rewrite profile configuration."
+    HISTORY_STORAGE_FAILED = "Could not read or save history. The latest text is still in History until you exit."
+    HISTORY_DISABLED = "Turn on history in Settings to delete a saved entry, or use Clear all."
+    CONFIG_INVALID = "Invalid settings. Open Settings and check the rewrite profiles."
+    SETTINGS_DAMAGED = "Some saved settings were damaged and reset. A copy is in settings-damaged.txt."
 
 class ScreamerError(Exception):
     def __init__(self, code: AppError, detail: str | None = None): ...
@@ -75,6 +77,7 @@ class ScreamerError(Exception):
 class SignalBridge(QObject):
     hotkey_pressed = Signal()
     hotkey_released = Signal()
+    submit_requested = Signal()   # extra Shift held as the dictation ended → press Enter
     recovery_requested = Signal()
     recovery_cancelled = Signal()
     error_occurred = Signal(AppError)
@@ -108,10 +111,15 @@ class InjectionReport:
 class InjectionError(ScreamerError):
     text_events_submitted: int
     post_key_events_submitted: int
+    text_events_expected: int | None   # size of the text batch, when known
 
 def type_text(text: str, post_key: str | None = None, *,
-              expected_target: WindowIdentity | None = None) -> InjectionReport: ...
-    """Submitted-event counts are not proof of visible insertion; no retry on partial send."""
+              expected_target: WindowIdentity | None = None,
+              paste: bool = False) -> InjectionReport: ...
+    """Submitted-event counts are not proof of visible insertion; no retry on partial send.
+    paste=True sends Ctrl+V instead of typing (4 events, plus one key-up per Shift/Alt the
+    user still holds, released after Ctrl down); the caller owns the clipboard. A held
+    Shift/Alt is released the same way before post_key, so Enter is never Shift+Enter."""
 ```
 
 ### results.py
@@ -120,7 +128,7 @@ def type_text(text: str, post_key: str | None = None, *,
 @dataclass(frozen=True)
 class DeliveryAttempt:
     attempted_at: str
-    mode: str                 # type | copy | copy_and_type | manual
+    mode: str                 # type | paste | copy | copy_and_type | manual
     copied: bool = False
     text_state: str = "not_attempted"
     text_events_submitted: int | None = None
@@ -156,7 +164,8 @@ class HistoryStore:
 ### config.py
 
 ```python
-DEFAULT_LLM_SYSTEM_PROMPT: str  # Full cleanup-only dictation prompt is defined in config.py.
+DEFAULT_LLM_SYSTEM_PROMPT: str   # Clean profile: conservative cleanup-only prompt.
+POLISHED_LLM_SYSTEM_PROMPT: str  # Polished profile: also drops fillers and resolves self-corrections.
 
 DEFAULT_RMS_THRESHOLD: float = 5.0
 
@@ -164,6 +173,8 @@ MOUSE_X1 = 1; MOUSE_X2 = 2; MOUSE_MIDDLE = 3   # mouse trigger ids
 
 HOTKEY_OPTIONS: list[tuple[str, str]]  # (canonical_string, display_label) preset pairs
 LANGUAGE_OPTIONS: list[tuple[str, str]]  # Auto, Czech, English; always in Settings and tray
+COMMON_LANGUAGES: list[tuple[str, str]]  # favorite checkboxes offered in Settings
+OUTPUT_MODES: list[tuple[str, str]]      # type | paste | copy | copy_and_type
 SAFE_STANDALONE_KEYS: frozenset[int]   # VKs bindable without a modifier (F-keys, locks, etc.)
 MODIFIER_VK_TO_NAME: dict[int, str]    # LL-hook modifier VK → "ctrl"/"alt"/"shift"/"win"
 
@@ -178,7 +189,7 @@ class Hotkey:
     def to_label(self) -> str: ...       # "Ctrl+Alt+Space", "Mouse Back"
     def validate(self) -> str | None: ...  # error message if unsafe, else None
     @classmethod
-    def parse(cls, value: str) -> "Hotkey | None": ...  # canonical OR legacy preset key
+    def parse(cls, value: str) -> Hotkey | None: ...  # canonical OR legacy preset key
 
 @dataclass(frozen=True)
 class ProviderConfig:
@@ -186,9 +197,10 @@ class ProviderConfig:
     base_url: str = ""
     model: str = ""
     custom_headers: str = ""
+    is_complete: bool  # property: base_url and model (the API key is optional)
 
 @dataclass(frozen=True)
-class FallbackProviderConfig:
+class FallbackProviderConfig:   # STT only
     enabled: bool = False
     provider: ProviderConfig = field(default_factory=ProviderConfig)
 
@@ -202,16 +214,19 @@ class AppConfig:
     hotkey: str = "ctrl+alt+key:0x20"     # canonical Hotkey string (see Hotkey.parse)
     recording_mode: str = "hold"          # "hold" | "toggle"
     post_type_key: str = "none"           # "none" | "enter" | "tab" | "space" | "backspace"
-    output_mode: str = "type"              # "type" | "copy" | "copy_and_type"
+    output_mode: str = "type"             # OUTPUT_MODES key; invalid saved values load as "type"
     history_enabled: bool = False          # opt-in encrypted text history
     history_limit: int = 100               # 1..100
     sound_enabled: bool = True
-    recovery_hotkey: str = "ctrl+alt+shift+key:0x56"
+    recovery_hotkey: str = "ctrl+alt+shift+key:0x56"   # Insert last; "" = none
     vocabulary_entries: list[str] = field(default_factory=list)
+    replacements: list[tuple[str, str]] = field(default_factory=list)
     start_with_windows: bool = False
     audio_device_id: int | None = None
     audio_device_name: str = ""
     rms_threshold: float = 5.0
+    trim_silence: bool = True
+    mute_while_recording: bool = False
     # STT primary
     stt_api_key: str = ""
     stt_base_url: str = ""
@@ -228,130 +243,101 @@ class AppConfig:
     stt_fallback_custom_headers: str = ""
     stt_prompt_fallback_enabled: bool = False
     # LLM
-    llm_enabled: bool = False
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_model: str = ""
     llm_custom_headers: str = ""
+    rewrite_catalog: str = EMPTY_REWRITE_CATALOG   # version-1 JSON of custom profiles + mappings
+    rewrite_default_profile_id: str = "clean"      # Auto when no app mapping matches
+    rewrite_selection_mode: str = "manual"         # "manual" | "automatic"
+    rewrite_manual_profile_id: str = "raw"
+    # Session-only, resolved from the profile at recording start; never persisted:
+    llm_enabled: bool = False
     llm_system_prompt: str = DEFAULT_LLM_SYSTEM_PROMPT
-    llm_prompt_origin: str = "default_v2"  # "legacy_saved" | "default_v2" | "user_saved"
-    # LLM fallback
-    llm_fallback_enabled: bool = False
-    llm_fallback_api_key: str = ""
-    llm_fallback_base_url: str = ""
-    llm_fallback_model: str = ""
-    llm_fallback_custom_headers: str = ""
-    rewrite_catalog: str | None = None
-    rewrite_default_profile_id: str = "clean"
-    rewrite_selection_mode: str = "manual"
-    rewrite_manual_profile_id: str = "clean"
 
     def stt_provider(self) -> ProviderConfig: ...
     def stt_fallback_provider(self) -> FallbackProviderConfig: ...
     def llm_provider(self) -> ProviderConfig: ...
-    def llm_fallback_provider(self) -> FallbackProviderConfig: ...
 
 def load_config() -> AppConfig: ...
-    """Load QSettings + DPAPI. Missing favorites default to []; malformed favorites
-    reset only that collection, preserving the active stt_language."""
+    """Load QSettings + DPAPI. A damaged vocabulary, replacement list or rewrite catalog is
+    appended to APP_DIR/settings-damaged.txt, reset to its default and named in
+    cfg._damaged_settings (the tray app saves and shows SETTINGS_DAMAGED). A legacy
+    llm_system_prompt that cannot become a profile (over 32 KiB, invalid text) is backed up
+    the same way instead of failing startup. Selections that reference a missing profile
+    fall back to Clean. Malformed favorites reset to []."""
 
 def save_config(cfg: AppConfig) -> None: ...
-    """Serialize plain and DPAPI-encrypted fields to an INI, then atomically replace settings.ini."""
+    """Serialize plain and DPAPI-encrypted fields to an INI, then atomically replace settings.ini.
+    Session-only fields are not written; obsolete keys from older versions are dropped."""
 
 def normalize_language_code(value: str) -> str: ...
-    """Trim and lowercase a BCP-47-like code; reject invalid syntax or >32 characters."""
-
 def normalize_language_favorites(codes: list[str]) -> list[str]: ...
-    """Validate at most 32 codes; normalize and deduplicate in input order."""
-
 def language_choices(active: str, favorites: list[str]) -> list[tuple[str, str]]: ...
     """Auto, Czech, English, ordered favorites, and any unmatched active code."""
+def language_label(code: str) -> str: ...
 
 def has_plaintext_secrets() -> bool: ...
-    """True if legacy plaintext INI or keys.enc secrets need migration."""
-
 def reset_config() -> AppConfig: ...
-    """Fresh AppConfig with all defaults. Does not write disk."""
-
 def import_from_env(cfg: AppConfig) -> AppConfig: ...
     """Read .env at cwd (next to the exe when frozen); backfill empty str fields,
     except an explicitly persisted empty stt_language (Auto)."""
-
 def setup_logging(debug: bool = False) -> None: ...
     """Rotating file at APP_DIR/screamer.log. Never log api_key values.
     Never log transcripts unless debug=True."""
-
 def parse_custom_headers(custom_headers: str) -> dict[str, str]: ...
-    """Parse a JSON object of string-ish values; validate HTTP names and sendable ASCII values."""
-
 def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]: ...
-    """Return all startup/settings validation issues for the current config."""
-
+    """An LLM (base URL + model) is required only when rewrite_needs_llm(cfg)."""
+def rewrite_needs_llm(cfg: AppConfig) -> bool: ...
 def insecure_base_urls(cfg: AppConfig) -> list[tuple[str, str]]: ...
-    """(label, url) for http:// provider URLs on a non-loopback host. Settings warns
-    once when such a URL is newly entered; it never blocks saving."""
-
-def stt_provider_is_configured(provider: ProviderConfig) -> bool: ...
-    """STT requires URL + model; key is optional. LLM still requires key + URL + model."""
+def stt_provider_is_configured(provider: ProviderConfig) -> bool: ...  # URL + model
 
 def normalize_vocabulary_entries(entries: list[str]) -> list[str]: ...
     """Trim and casefold-deduplicate; cap 128 terms, 128 chars/term and 8,000 rendered chars."""
-
 def encode_vocabulary_entries(entries: list[str]) -> str: ...
 def decode_vocabulary_entries(value: object) -> list[str]: ...
+
+def normalize_replacements(pairs: list) -> list[tuple[str, str]]: ...
+    """(heard, write) pairs; trimmed, no controls, ≤256 chars each, ≤256 pairs, first wins."""
+def encode_replacements(pairs: list[tuple[str, str]]) -> str: ...
+def decode_replacements(value: object) -> list[tuple[str, str]]: ...
+def apply_replacements(text: str, pairs: list[tuple[str, str]]) -> str: ...
+    """Whole-word/phrase, case-insensitive, longest match first, one pass (no chaining)."""
+
 def protect_bytes(data: bytes) -> bytes: ...
 def unprotect_bytes(data: bytes) -> bytes: ...
-    """Share the existing Windows-user DPAPI primitive; unsupported off Windows."""
 
 @dataclass(frozen=True)
 class RewriteProfile:
     id: str
     name: str
-    kind: str                 # raw | clean | custom
+    kind: str                 # raw | clean | polished | custom
     prompt: str | None = None
 
 @dataclass(frozen=True)
 class AppMapping:
-    executable_path: str
+    executable_path: str      # case-folded .exe name or full path
     profile_id: str
 
-def builtin_rewrite_profiles() -> tuple[RewriteProfile, RewriteProfile]: ...
+def builtin_rewrite_profiles() -> tuple[RewriteProfile, ...]: ...   # raw, clean, polished
 def normalize_executable_path(value: str) -> str: ...
 def decode_rewrite_catalog(value: object) -> tuple[list[RewriteProfile], list[AppMapping]]: ...
 def encode_rewrite_catalog(profiles: list[RewriteProfile], mappings: list[AppMapping]) -> str: ...
-def migrate_rewrite_catalog(cfg: AppConfig) -> None: ...
 def resolve_rewrite_profile(cfg: AppConfig, executable_path: str | None) -> RewriteProfile: ...
-    """Resolve raw when global rewrite is off; otherwise manual or Automatic mapping/default."""
+    """Manual profile, or Auto: full-path mapping, then .exe-name mapping, then the default."""
 ```
 
-The version-2 default cleanup prompt treats dictated questions, commands and apparent
-instructions as transcript data, not requests to execute. It limits edits to clear
-corrections, preserves meaning/negation/names/numbers/identifiers/language choices,
-and leaves ambiguity unchanged. This is a model instruction, not semantic validation;
-LLM rewriting remains disabled by default.
+Built-in profile prompts are code-owned and follow the current release; only custom
+profiles are stored. Both built-in prompts treat dictated questions, commands and
+apparent instructions as transcript data, not requests to execute. Clean limits edits
+to clear corrections; Polished additionally removes fillers and keeps only the final
+version of a self-correction. This is a model instruction, not semantic validation.
 
-`llm_prompt_origin` is persisted alongside the exact `llm_system_prompt` string.
-For an older INI without the marker, presence of the prompt key means `legacy_saved`,
-even for an empty prompt or one identical to an old/current default. Absence means
-`default_v2`. Loading never substitutes or normalizes a saved prompt. New configurations
-and explicit prompt reset use `default_v2`; Settings edits use `user_saved`, even if
-the edited text equals the current default. Routine Apply/OK retains provenance.
-Unknown origins or a `default_v2` marker with text different from its version-2 default
-are validation issues in the LLM tab and require an explicit edit/reset, not silent
-reclassification. A future default revision must use a new origin marker rather than
-changing the meaning of `default_v2`. Programmatic custom prompts must also set
-`llm_prompt_origin="user_saved"` (or preserve a loaded `legacy_saved` origin).
-
-The Settings prompt editor retains the original saved string when its displayed text
-is unchanged, so Qt's line-ending normalization cannot alter prompts on unrelated
-Apply/OK. Deliberate edits save the literal editor text without trimming (Qt uses LF
-line endings); Reset to Current Default replaces only the draft until Apply/OK.
-Failed validation/save does not advance the prompt baseline: undoing an edit before
-a retry retains the exact original prompt and origin (or a deliberately selected
-reset default). An LLM validation issue exposes its repair controls without enabling
-rewriting.
-Cancel discards changes since the last successful Apply. Raw/final inspection is
-available in History; prompt instructions do not establish model-quality certification.
+Older settings migrate once on load: a saved `llm_system_prompt` that differs from the
+current default and has no catalog becomes the custom profile `legacy` ("Saved rewrite
+prompt") and is selected; an INI without `rewrite_controls_version` whose legacy AI
+switch was off selects Raw. `llm_prompt_origin`, `llm_system_prompt`, `llm_enabled` and
+the removed LLM fallback keys are dropped on the next save. New installs default to Raw.
 
 Language key presence is tracked privately across configuration drafts. An explicitly
 saved Auto selection remains Auto during `.env` backfill after restart; an absent
@@ -384,6 +370,8 @@ class AudioRecorder:
     def __init__(self, device_id: int | None = None, sample_rate: int = 16000): ...
     @property
     def rms_threshold(self) -> float: ...
+    trim_silence: bool  # property, default True: stop() trims leading/trailing silence
+    retain_frames: bool # property, default True; False tracks level_rms only (guide preview)
     def calibrate(self, duration: float = 2.0) -> float: ...
         """Return max(noise_floor * 2.0, DEFAULT_RMS_THRESHOLD); measurement failure raises
         MIC_UNAVAILABLE and leaves the current threshold unchanged."""
@@ -397,7 +385,18 @@ class AudioRecorder:
         return mono int16 WAV; short/quiet capture returns b"". Samples the backend
         drains during stream.stop() are kept. A valid-length attempt without samples,
         unexpected stream finish, or stop/close failure raises MIC_DISCONNECTED and
-        discards frames. Callbacks after stop() returns cannot append."""
+        discards frames. Callbacks after stop() returns cannot append. The length and
+        RMS gates use untrimmed audio; trimming then applies when trim_silence is on."""
+
+def trim_silence(audio: np.ndarray, sample_rate: int, *, min_threshold: float,
+                 pad_seconds: float = 0.3, window_seconds: float = 0.02) -> np.ndarray: ...
+    """Drop leading/trailing windows below max(min_threshold, 3 × 10th-percentile RMS),
+    keeping pad_seconds around speech; never touches the middle; unchanged if no speech."""
+
+class SystemAudioMute:
+    def mute(self) -> None: ...     # mute default render endpoint if not already muted
+    def restore(self) -> None: ...  # unmute only what mute() muted; idempotent
+    """Core Audio via ctypes COM (IAudioEndpointVolume); best effort, no-op off Windows."""
 
 def resolve_device(
     preferred_id: int | None,
@@ -425,7 +424,9 @@ class HotkeyListener:
         """Install WH_KEYBOARD_LL + WH_MOUSE_LL global hooks + GetMessage pump in a daemon thread.
         Matches modifiers + trigger, swallows the matched trigger event (returns 1 from the hook).
         Emits bridge.hotkey_pressed / bridge.hotkey_released; SetWindowsHookEx failure →
-        bridge.error_occurred(AppError.HOTKEY_HOOK_FAILED)."""
+        bridge.error_occurred(AppError.HOTKEY_HOOK_FAILED). An extra Shift (not part of the
+        chord) held at the hold-mode release or the toggle-mode stopping press emits
+        bridge.submit_requested first; that stopping press also matches with the extra Shift."""
     def stop(self) -> None: ...
         """PostThreadMessage WM_QUIT, join thread, unhook both hooks."""
     def set_mode(self, mode: HotkeyMode) -> None: ...
@@ -441,14 +442,29 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult: ...
     Filter: keep if ANY segment no_speech_prob < 0.7. All-above → ScreamerError(AppError.NO_SPEECH).
     HTTP/network errors → ScreamerError(AppError.STT_FAILED).
     Fallback success → PipelineResult with AppError.STT_FALLBACK_USED in warnings."""
+
+def latency_summary(samples: list[float]) -> dict[str, float]: ...  # count, median, p95
+# CLI benchmark: python -m src.stt [--repeat N] a.wav b.wav ...
 ```
 
 ### rewrite.py
 
 ```python
 def rewrite(text: str, config: AppConfig) -> PipelineResult: ...
-    """Send text to LLM with system prompt. Primary → fallback. Failure keeps raw text with LLM_FAILED warning.
+    """Send text to the one LLM provider with the session system prompt. Failure keeps raw
+    text with an LLM_FAILED warning. No Authorization header when the API key is empty.
     Returns input text unchanged in PipelineResult.text if config.llm_enabled is False."""
+```
+
+### http_client.py
+
+```python
+def post(url, *, headers, data=None, files=None, json=None, timeout=None) -> httpx.Response: ...
+def check_connection(base_url: str, headers: httpx.Headers, model: str = "") -> str: ...
+    """GET {base_url}/models; return "Connected." or a missing-model note; raise RuntimeError
+    (URL-free message) for connection failure, 401/403 or other non-2xx status."""
+def raise_for_status(response: httpx.Response) -> None: ...
+def close() -> None: ...
 ```
 
 ### icons.py
@@ -534,7 +550,47 @@ class SettingsDialog(QDialog):
         """Preserve unresolved choice; on enumeration failure keep the existing list and warn."""
 
 # if __name__ == "__main__": launches standalone for testing
+
+STT_PRESETS: list[tuple[str, str, str]]  # (label, base URL, model): OpenAI, Groq, local Speaches
+LLM_PRESETS: list[tuple[str, str, str]]  # OpenAI, Groq, Ollama, LM Studio
+
+class ProviderFields(QObject):
+    """Preset combo, API key, base URL, model, Test connection, custom headers (optionally
+    placed in an Advanced form). provider() -> ProviderConfig; set_values(...)."""
+
+class ConnectionTestThread(QThread):
+    done = Signal(bool, str)   # runs http_client.check_connection off the UI thread
+    def abort(self) -> None: ...
+        """requestInterruption + wait; returns within ~100 ms because the request runs in
+        a daemon thread whose late result is dropped. ProviderFields.abort_test() wraps it;
+        SettingsDialog.done() and SetupWizard.done() call it so closing or exiting never
+        waits out the 10 s timeout or destroys a running QThread."""
+
+class Collapsible(QWidget):
+    """'▸ Advanced' disclosure holding a QFormLayout (form)."""
 ```
+
+### setup_wizard.py
+
+```python
+class SetupWizard(QDialog):
+    saved = Signal()               # settings written (main reloads from disk)
+    settings_requested = Signal()  # "All settings…"
+    def __init__(self, config: AppConfig, *, devices_fn=None, hotkey_label: str = "",
+                 parent=None): ...
+    def start_preview(self) -> None: ...   # live microphone level via a preview AudioRecorder
+    def stop_preview(self) -> None: ...    # main calls this before a real recording starts
+    def show_practice_result(self, text: str) -> None: ...
+```
+
+Non-modal. Save loads the current settings, applies microphone, STT provider and
+language, and saves. Opened on a manual launch when no STT provider is configured, and
+from the tray (**Setup guide...**). A dictation started while the guide window itself is
+active (`isActiveWindow()`, foreground PID is Screamer's own or unknown) is a *practice*
+session: its result is shown in the guide and never typed or pasted. Dictating into
+another Screamer window (History, Settings) is a normal session. The level meter is a
+`retain_frames=False` recorder; `ensure_preview()` restarts it whenever the tray returns
+to IDLE after any dictation released the microphone.
 
 ### startup.py
 
@@ -571,7 +627,7 @@ No public exports. Entry point only:
 | Rule | Detail |
 |------|--------|
 | Composition root | `main.py` imports all other modules. Nothing imports `main.py`. |
-| Settings dialog | `settings_dialog.py` imports `config.py`, `startup.py`, `utils.py`, `theme.py`, and the shared `audio.py` device-resolution policy. |
+| Settings dialog | `settings_dialog.py` imports `config.py`, `startup.py`, `utils.py`, `theme.py`, `http_client.py` (connection test) and the shared `audio.py` device-resolution policy. `setup_wizard.py` reuses `settings_dialog.py` widgets plus `audio.py` and `config.py`. |
 | Theme | UI modules (`settings_dialog.py`, `recovery_dialog.py`, `snackbar.py`, `main.py`) may import `theme.py`; `theme.py` imports only Qt. |
 | Shared utilities | `audio.py`, `hotkey.py`, `stt.py`, `rewrite.py`, `injector.py`, `startup.py` may import `utils.py`. |
 | Zero peer imports | The six backend modules must NOT import each other. |
@@ -632,7 +688,9 @@ ruff format --check src/ tests/ .github/scripts/
 ## Runtime Behavior
 
 - Settings survive dialog close/reopen and full app restart.
-- Tray menu quick-toggles sync bidirectionally with Settings dialog values.
+- The tray menu holds only everyday controls: Enabled, Language, Profile (Auto/Raw/Clean/
+  Polished/custom), Copy last, History, Settings, Setup guide, Exit. Hotkey, recording
+  mode and post-type key are set in Settings.
 - The tray Language radio submenu switches the persisted active STT code immediately.
   Auto omits the STT language field and rewrite hint; a selected code is sent to both
   primary and fallback STT and added to the optional rewrite prompt. Provider support
@@ -642,10 +700,18 @@ ruff format --check src/ tests/ .github/scripts/
   the previous visible and live selection.
 - Tray icon: grey (idle) → red (recording) → yellow (processing) → grey.
 - Errors appear as tray balloons (user-facing `AppError` messages).
-- Initial Settings opens only after the main Qt event loop starts. Settings cannot open
-  during dictation, and hotkey presses cannot start dictation while Settings is open.
-  Config-mutating tray controls are disabled during Settings, including after Apply;
-  Enabled and Exit remain usable.
+- The setup guide or Settings opens only after the main Qt event loop starts. Dictation,
+  History and Insert last stay available while Settings is open and use the last saved
+  settings (Apply makes edits effective for the next recording). Output still passes the
+  target check, so dictating into the Settings window itself is withheld. Config-mutating
+  tray controls are disabled during Settings; Enabled and Exit remain usable.
+- Esc cancels a recording. An extra Shift held as the dictation ends marks the session
+  `submit`: Enter is pressed after the text instead of the configured post-type key.
+- With `mute_while_recording`, the default output device is muted 250 ms after the start
+  cue (so the cue is audible) and restored on stop, cancel, disable and exit.
+- Each finished dictation logs one `Dictation timing:` line (audio length, release to
+  worker start, STT, rewrite, output, total). `python -m src.stt --repeat N files...`
+  reports median and p95 STT latency for comparing providers on the same recordings.
 - Recording start takes one config copy for audio setup, STT primary/fallback, optional
   rewrite, output mode/post-type key, vocabulary and profile. It captures foreground
   HWND/PID and optional executable path before recording UI changes focus, resolves the
@@ -695,6 +761,11 @@ ruff format --check src/ tests/ .github/scripts/
 - Windows copy success additionally requires Qt clipboard ownership after `setText()`;
   native clipboard failures can return without a Python exception. Missing ownership
   is reported as a copy failure without reading/restoring the clipboard or retrying.
+- Output mode `paste` snapshots every clipboard format, places the text, sends Ctrl+V
+  through the same HWND/PID guard and restores the snapshot after 800 ms, unless the
+  clipboard text has changed in the meantime. Copy modes never restore the clipboard.
+  If staging the clipboard fails, nothing is injected and the attempt is recorded as
+  `clipboard_failed` / withheld with `CLIPBOARD_FAILED`, not `INJECTION_FAILED`.
 - History exposes raw/final copy or selection for Insert last, explicit cleanup rerun, history deletion/clear,
   and Retry/Discard for one in-memory WAV retained only after STT failure. Retry uses
   its original config snapshot, is recovery-only (no automatic output), and holds the
@@ -719,21 +790,24 @@ ruff format --check src/ tests/ .github/scripts/
   changing physical trigger state, so Screamer's post-key cannot trigger dictation.
 - Vocabulary is JSON in ordinary settings. Terms are trimmed, blanks dropped,
   casefold-deduplicated in order, and bounded to 128 entries, 128 characters per term
-  and 8,000 rendered characters. Malformed persisted data uses an empty effective list
-  but preserves the original on unrelated saves until explicit repair. `rewrite()` adds
+  and 8,000 rendered characters. `rewrite()` adds
   quoted spelling guidance; STT adds multipart `prompt` only when that provider's own
   opt-in is enabled and vocabulary is nonempty. These are hints, not guarantees.
-- Rewrite profiles are code-owned `raw`/`clean` plus up to 32 custom profiles in a
-  versioned JSON catalog. Manual selection persists until Automatic is selected;
-  Auto first matches the captured executable's normalized full path, then its
-  case-insensitive `.exe` name, then the configured default. The tray offers Auto or
-  a profile including Raw; there is no separate AI Rewrite checkbox. The old disabled
-  setting migrates to manual Raw, preserving custom profiles and exact prompts. Atomic
-  save removes `llm_enabled` and writes `rewrite_controls_version=1`; `llm_enabled`
-  remains an internal effective worker field. Settings edits prompts in Profiles and
-  can choose a running `.exe` for a mapping. Older releases that require full paths
-  cannot read new name-only mappings; keep full paths if rollback is needed. Legacy prompt migration uses persisted prompt-key presence/provenance;
-  damaged catalogs are preserved and require explicit repair, not silently emptied.
+- Replacements are JSON `[heard, write]` pairs applied by the worker to the raw
+  transcript after STT and to the rewritten text after the LLM, so they also work with
+  Raw. Matching is whole-word, case-insensitive, longest first, in one pass.
+- Rewrite profiles are code-owned `raw`/`clean`/`polished` plus up to 32 custom
+  profiles in a versioned JSON catalog. Manual selection persists until Auto is
+  selected; Auto first matches the captured executable's normalized full path, then its
+  case-insensitive `.exe` name, then the default profile. Settings has one "Use"
+  selector (Auto or a profile), edits a custom profile's name and prompt in place,
+  keeps built-ins read-only (Duplicate to customize), and maps apps by `.exe` name or a
+  running app. Deleting a profile moves its selections to Clean and removes its mappings.
+- Damaged collections (vocabulary, replacements, rewrite catalog) are backed up to
+  `settings-damaged.txt`, reset, saved and reported once with `SETTINGS_DAMAGED`;
+  there is no in-dialog repair flow.
+- The LLM provider needs a base URL and model; the API key is optional for local
+  servers. There is no LLM fallback: a failed rewrite already types the raw transcript.
 
 ## Storage and Limits
 
@@ -782,7 +856,7 @@ flowchart LR
     A -->|usable WAV| W[one QThread]
     W --> STT[transcribe: STT primary / fallback]
     STT -->|raw_ready| M
-    W --> RW[rewrite: optional primary / fallback]
+    W --> RW[rewrite: optional, one provider]
     W -->|terminal outcome| M
     M --> R[latest immutable DictationRecord in RAM]
     R -->|if opted in| HS[HistoryStore -> DPAPI ciphertext]

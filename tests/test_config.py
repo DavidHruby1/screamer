@@ -60,11 +60,8 @@ class ConfigValidationTests(unittest.TestCase):
 
         messages = [issue.message for issue in validate_config(cfg)]
 
-        self.assertIn("Primary STT requires a base URL and model; API key is optional.", messages)
-        self.assertIn(
-            "Configure a primary or enabled fallback STT provider with a base URL and model.",
-            messages,
-        )
+        self.assertIn("Speech to text needs a base URL and model.", messages)
+        self.assertIn("Set up a speech-to-text provider (base URL and model).", messages)
 
     def test_fallback_stt_can_satisfy_required_config(self) -> None:
         cfg = AppConfig(
@@ -86,26 +83,37 @@ class ConfigValidationTests(unittest.TestCase):
         )
         self.assertEqual(
             [issue.message for issue in validate_config(cfg)],
-            ["Primary STT requires a base URL and model; API key is optional."],
+            ["Speech to text needs a base URL and model."],
         )
 
     def test_plain_http_remains_supported(self) -> None:
         cfg = AppConfig(stt_api_key="key", stt_base_url="http://localhost:8080/v1", stt_model="stt")
         self.assertEqual(validate_config(cfg), [])
 
-    def test_enabled_llm_requires_complete_provider(self) -> None:
+    def test_llm_profile_requires_llm_url_and_model_but_raw_does_not(self) -> None:
         cfg = AppConfig(
             stt_api_key="key",
             stt_base_url="https://example.test/v1",
             stt_model="stt",
-            llm_enabled=True,
             llm_api_key="llm-key",
         )
+        self.assertEqual(cfg.rewrite_manual_profile_id, "raw")
+        self.assertEqual(validate_config(cfg), [])
 
-        messages = [issue.message for issue in validate_config(cfg)]
+        cfg.rewrite_manual_profile_id = "clean"
+        issues = validate_config(cfg)
+        self.assertEqual([issue.tab_index for issue in issues], [2])
+        self.assertIn("needs an LLM base URL and model", issues[0].message)
 
-        self.assertIn("Primary LLM requires an API key, base URL, and model.", messages)
-        self.assertIn("AI rewrite requires a complete primary or fallback LLM provider.", messages)
+        # API key is optional for the LLM too.
+        cfg.llm_api_key = ""
+        cfg.llm_base_url = "http://localhost:1234/v1"
+        cfg.llm_model = "local"
+        self.assertEqual(validate_config(cfg), [])
+
+    def test_empty_recovery_hotkey_is_valid(self) -> None:
+        cfg = AppConfig(stt_base_url="https://example.test/v1", stt_model="stt", recovery_hotkey="")
+        self.assertEqual(validate_config(cfg), [])
 
     def test_parse_custom_headers_requires_json_object(self) -> None:
         self.assertEqual(
@@ -128,9 +136,8 @@ class ConfigValidationTests(unittest.TestCase):
             stt_base_url="http://192.168.1.5:8000/v1",
             stt_fallback_base_url="http://localhost:8000/v1",
             llm_base_url="http://127.0.0.1:1234/v1",
-            llm_fallback_base_url="https://api.example.test/v1",
         )
-        self.assertEqual(insecure_base_urls(cfg), [("Primary STT", "http://192.168.1.5:8000/v1")])
+        self.assertEqual(insecure_base_urls(cfg), [("Speech", "http://192.168.1.5:8000/v1")])
         self.assertEqual(insecure_base_urls(replace(cfg, stt_base_url="http://[::1]/v1")), [])
 
     def test_invalid_http_headers_and_urls_are_rejected(self) -> None:
@@ -242,7 +249,8 @@ class LanguageFavoritesTests(unittest.TestCase):
     def test_choices_include_old_or_env_language_without_adding_favorite(self) -> None:
         choices = language_choices("fr", ["de", "cs"])
         self.assertEqual(
-            choices, [("", "Auto"), ("cs", "Czech"), ("en", "English"), ("de", "de"), ("fr", "fr")]
+            choices,
+            [("", "Auto"), ("cs", "Czech"), ("en", "English"), ("de", "German"), ("fr", "French")],
         )
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp, ".env")
@@ -271,30 +279,30 @@ class LanguageFavoritesTests(unittest.TestCase):
 
 
 class PromptPersistenceTests(unittest.TestCase):
-    def test_absent_prompt_uses_v2_without_changing_rewrite_enablement(self) -> None:
-        from src.config import _get_qsettings
+    def test_fresh_config_defaults_to_raw_and_session_fields_are_not_persisted(self) -> None:
+        from src.config import EMPTY_REWRITE_CATALOG, _get_qsettings
 
         with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
             cfg = load_config()
-            self.assertEqual(cfg.llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
-            self.assertEqual(cfg.llm_prompt_origin, "default_v2")
-            self.assertTrue(cfg.llm_enabled)
+            self.assertEqual(cfg.rewrite_selection_mode, "manual")
+            self.assertEqual(cfg.rewrite_manual_profile_id, "raw")
+            self.assertEqual(cfg.rewrite_catalog, EMPTY_REWRITE_CATALOG)
+            save_config(replace(cfg, llm_enabled=False, llm_system_prompt="session only"))
             settings = _get_qsettings()
-            settings.setValue("llm_enabled", True)
-            settings.sync()
-            cfg = load_config()
-            self.assertTrue(cfg.llm_enabled)
-            self.assertEqual(cfg.llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
-            self.assertEqual(cfg.llm_prompt_origin, "default_v2")
-            save_config(cfg)
-            self.assertEqual(load_config().llm_prompt_origin, "default_v2")
+            self.assertFalse(settings.contains("llm_enabled"))
+            self.assertFalse(settings.contains("llm_system_prompt"))
+            self.assertFalse(settings.contains("llm_prompt_origin"))
+            self.assertEqual(int(settings.value("rewrite_controls_version")), 2)
+            self.assertEqual(settings.value("rewrite_catalog"), EMPTY_REWRITE_CATALOG)
+            restored = load_config()
+            self.assertFalse(restored.llm_enabled)
+            self.assertEqual(restored.llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
 
-    def test_every_legacy_saved_prompt_survives_unrelated_save_exactly(self) -> None:
-        from src.config import _get_qsettings
+    def test_every_non_default_legacy_prompt_migrates_exactly_to_a_custom_profile(self) -> None:
+        from src.config import _get_qsettings, decode_rewrite_catalog, resolve_rewrite_profile
 
         for prompt in (
             LEGACY_LLM_SYSTEM_PROMPT,
-            DEFAULT_LLM_SYSTEM_PROMPT,
             "",
             " \tCustom prompt\r\nKeep this line.  \r\n\r\n",
         ):
@@ -305,53 +313,70 @@ class PromptPersistenceTests(unittest.TestCase):
             ):
                 settings = _get_qsettings()
                 settings.setValue("llm_system_prompt", prompt)
+                settings.setValue("llm_prompt_origin", "legacy_saved")
+                settings.setValue("llm_enabled", True)
                 settings.sync()
                 cfg = load_config()
-                self.assertEqual(cfg.llm_system_prompt, prompt)
-                self.assertEqual(cfg.llm_prompt_origin, "legacy_saved")
+                custom, mappings = decode_rewrite_catalog(cfg.rewrite_catalog)
+                self.assertEqual(
+                    [(p.id, p.name, p.kind) for p in custom],
+                    [("legacy", "Saved rewrite prompt", "custom")],
+                )
+                self.assertEqual(custom[0].prompt, prompt)
+                self.assertEqual(mappings, [])
+                self.assertEqual(
+                    (cfg.rewrite_selection_mode, cfg.rewrite_manual_profile_id),
+                    ("manual", "legacy"),
+                )
                 cfg.stt_language = "cs"
                 save_config(cfg)
                 restored = load_config()
-                self.assertEqual(restored.llm_system_prompt, prompt)
-                self.assertEqual(restored.llm_prompt_origin, "legacy_saved")
-                self.assertEqual(_get_qsettings().value("llm_prompt_origin"), "legacy_saved")
+                self.assertEqual(resolve_rewrite_profile(restored, None).prompt, prompt)
+                for key in ("llm_system_prompt", "llm_prompt_origin", "llm_enabled"):
+                    self.assertFalse(_get_qsettings().contains(key))
 
-    def test_explicit_origins_round_trip_even_when_text_equals_current_default(self) -> None:
-        for origin in ("legacy_saved", "default_v2", "user_saved"):
-            with (
-                self.subTest(origin=origin),
-                tempfile.TemporaryDirectory() as tmp,
-                patch("src.config.APP_DIR", tmp),
-            ):
-                save_config(AppConfig(llm_prompt_origin=origin))
-                restored = load_config()
-                self.assertEqual(restored.llm_prompt_origin, origin)
-                self.assertEqual(restored.llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
+    def test_default_legacy_prompt_does_not_create_a_profile(self) -> None:
+        from src.config import EMPTY_REWRITE_CATALOG, _get_qsettings
 
-    def test_invalid_provenance_requires_repair_without_reclassifying_saved_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            settings = _get_qsettings()
+            settings.setValue("llm_system_prompt", DEFAULT_LLM_SYSTEM_PROMPT)
+            settings.setValue("llm_enabled", True)
+            settings.sync()
+            cfg = load_config()
+            self.assertEqual(cfg.rewrite_catalog, EMPTY_REWRITE_CATALOG)
+            self.assertEqual(cfg.rewrite_manual_profile_id, "clean")
+
+    def test_legacy_ini_with_rewrite_disabled_selects_raw(self) -> None:
         from src.config import _get_qsettings
 
-        for origin in ("default_v2", "unknown"):
-            with (
-                self.subTest(origin=origin),
-                tempfile.TemporaryDirectory() as tmp,
-                patch("src.config.APP_DIR", tmp),
-            ):
-                settings = _get_qsettings()
-                settings.setValue("llm_system_prompt", "Keep this saved prompt.\r\n")
-                settings.setValue("llm_prompt_origin", origin)
-                settings.sync()
-                cfg = load_config()
-                self.assertEqual(cfg.llm_system_prompt, "Keep this saved prompt.\r\n")
-                self.assertEqual(cfg.llm_prompt_origin, origin)
-                cfg.stt_api_key = "key"
-                cfg.stt_base_url = "https://example.test/v1"
-                cfg.stt_model = "stt"
-                issues = validate_config(cfg)
-                self.assertEqual([issue.tab_index for issue in issues], [2])
-                self.assertIn("Reset to Current Default", issues[0].message)
-                cfg.llm_prompt_origin = "user_saved"
-                self.assertEqual(validate_config(cfg), [])
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            settings = _get_qsettings()
+            settings.setValue("llm_system_prompt", "Custom")
+            settings.setValue("llm_enabled", False)
+            settings.setValue("rewrite_manual_profile_id", "clean")
+            settings.sync()
+            cfg = load_config()
+            self.assertEqual(
+                (cfg.rewrite_selection_mode, cfg.rewrite_manual_profile_id), ("manual", "raw")
+            )
+            # The saved prompt is still available as a profile.
+            self.assertIn('"legacy"', cfg.rewrite_catalog)
+
+    def test_invalid_selection_ids_are_repaired_to_clean(self) -> None:
+        from src.config import _get_qsettings
+
+        with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
+            settings = _get_qsettings()
+            settings.setValue("rewrite_controls_version", 2)
+            settings.setValue("rewrite_manual_profile_id", "deleted")
+            settings.setValue("rewrite_default_profile_id", "gone")
+            settings.setValue("rewrite_selection_mode", "bogus")
+            settings.sync()
+            cfg = load_config()
+            self.assertEqual(cfg.rewrite_selection_mode, "manual")
+            self.assertEqual(cfg.rewrite_manual_profile_id, "clean")
+            self.assertEqual(cfg.rewrite_default_profile_id, "clean")
 
 
 class SecretHeaderTests(unittest.TestCase):
@@ -363,10 +388,10 @@ class SecretHeaderTests(unittest.TestCase):
                 "stt_custom_headers",
                 "stt_fallback_custom_headers",
                 "llm_custom_headers",
-                "llm_fallback_custom_headers",
             }
             <= _SECRET_FIELDS
         )
+        self.assertNotIn("llm_fallback_custom_headers", _SECRET_FIELDS)
 
     @unittest.skipUnless(platform.system() == "Windows", "DPAPI requires Windows")
     def test_save_config_keeps_headers_out_of_ini_and_roundtrips(self) -> None:

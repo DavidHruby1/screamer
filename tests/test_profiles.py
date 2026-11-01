@@ -34,7 +34,7 @@ class ProfileContractsTests(unittest.TestCase):
         self.enterContext(patch("src.config.APP_DIR", directory))
         self.enterContext(patch("src.config._dpapi_available", return_value=False))
 
-    def test_catalog_roundtrip_and_manual_automatic_global_off_precedence(self):
+    def test_catalog_roundtrip_and_manual_automatic_precedence(self):
         custom = RewriteProfile("custom-1", "Coding", "custom", "Preserve identifiers.\r\n")
         catalog = encode_rewrite_catalog(
             [custom], [AppMapping("C:\\Tools\\Editor.exe", "custom-1")]
@@ -48,24 +48,18 @@ class ProfileContractsTests(unittest.TestCase):
         self.assertEqual(resolve_rewrite_profile(cfg, "c:/TOOLS/EDITOR.exe"), custom)
         self.assertEqual(resolve_rewrite_profile(cfg, "C:\\Other\\Editor.exe").id, "clean")
         self.assertEqual(resolve_rewrite_profile(cfg, None).id, "clean")
+        # The session-only llm_enabled flag no longer participates in resolution.
         cfg.llm_enabled = False
-        self.assertEqual(resolve_rewrite_profile(cfg, "C:\\Tools\\Editor.exe").id, "raw")
-        cfg.llm_enabled = True
         self.assertEqual(resolve_rewrite_profile(cfg, "C:\\Tools\\Editor.exe"), custom)
         save_config(cfg)
         restored = load_config()
         self.assertEqual(restored.rewrite_selection_mode, "automatic")
         self.assertEqual(resolve_rewrite_profile(restored, "C:\\Tools\\Editor.exe"), custom)
 
-    def test_every_saved_legacy_prompt_migrates_once_even_identical_or_empty(self):
+    def test_every_non_default_legacy_prompt_migrates_once_even_identical_or_empty(self):
         from src.config import _get_qsettings
 
-        for prompt in (
-            LEGACY_LLM_SYSTEM_PROMPT,
-            DEFAULT_LLM_SYSTEM_PROMPT,
-            "",
-            " \tCustom\r\n\r\n",
-        ):
+        for prompt in (LEGACY_LLM_SYSTEM_PROMPT, "", " \tCustom\r\n\r\n"):
             with self.subTest(prompt=prompt):
                 settings = _get_qsettings()
                 settings.clear()
@@ -75,15 +69,27 @@ class ProfileContractsTests(unittest.TestCase):
                 cfg = load_config()
                 profiles, mappings = decode_rewrite_catalog(cfg.rewrite_catalog)
                 self.assertEqual(len(profiles), 1)
+                self.assertEqual(profiles[0].id, "legacy")
                 self.assertEqual(profiles[0].prompt, prompt)
                 self.assertEqual(profiles[0].kind, "custom")
+                # Rewrite was off: Raw stays selected; the old prompt remains available.
                 self.assertEqual(cfg.rewrite_manual_profile_id, "raw")
                 self.assertEqual(mappings, [])
-                self.assertTrue(cfg.llm_enabled)
                 save_config(cfg)
                 restored = load_config()
                 self.assertEqual(decode_rewrite_catalog(restored.rewrite_catalog)[0], profiles)
-                self.assertEqual(restored.llm_system_prompt, prompt)
+                self.assertEqual(restored.rewrite_manual_profile_id, "raw")
+
+    def test_saved_current_default_prompt_needs_no_custom_profile(self):
+        from src.config import _get_qsettings
+
+        settings = _get_qsettings()
+        settings.setValue("llm_system_prompt", DEFAULT_LLM_SYSTEM_PROMPT)
+        settings.setValue("llm_enabled", False)
+        settings.sync()
+        cfg = load_config()
+        self.assertEqual(decode_rewrite_catalog(cfg.rewrite_catalog), ([], []))
+        self.assertEqual(cfg.rewrite_manual_profile_id, "raw")
 
     def test_enabled_legacy_prompt_stays_selected_and_old_switch_is_removed_after_save(self):
         from src.config import _get_qsettings
@@ -105,7 +111,7 @@ class ProfileContractsTests(unittest.TestCase):
     def test_new_and_recorded_v2_defaults_do_not_create_legacy_profiles(self):
         cfg = load_config()
         self.assertEqual(decode_rewrite_catalog(cfg.rewrite_catalog), ([], []))
-        self.assertTrue(cfg.llm_enabled)
+        self.assertFalse(cfg.llm_enabled)
         self.assertEqual(cfg.rewrite_manual_profile_id, "raw")
         save_config(cfg)
         self.assertEqual(decode_rewrite_catalog(load_config().rewrite_catalog), ([], []))
@@ -128,19 +134,28 @@ class ProfileContractsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             decode_rewrite_catalog('{"version":1,"version":1,"profiles":[],"mappings":[]}')
 
-    def test_damaged_catalog_survives_unrelated_save_until_explicit_repair(self):
-        from src.config import _get_qsettings
+    def test_damaged_catalog_is_backed_up_reset_and_replaced_on_save(self):
+        from pathlib import Path
+
+        from src.config import EMPTY_REWRITE_CATALOG, _get_qsettings
 
         settings = _get_qsettings()
         damaged = '{"version": 99, "profiles": ["important original"]}'
         settings.setValue("rewrite_catalog", damaged)
+        settings.setValue("rewrite_controls_version", 2)
+        settings.setValue("rewrite_manual_profile_id", "custom-gone")
         settings.sync()
         cfg = load_config()
-        cfg.stt_language = "cs"
+        self.assertEqual(cfg.rewrite_catalog, EMPTY_REWRITE_CATALOG)
+        self.assertEqual(cfg._damaged_settings, ["rewrite_catalog"])
+        self.assertEqual(cfg.rewrite_manual_profile_id, "clean")
+        backup = Path(_get_qsettings().fileName()).parent / "settings-damaged.txt"
+        self.assertIn(damaged, backup.read_text(encoding="utf-8"))
+        self.assertEqual(resolve_rewrite_profile(cfg, None).id, "clean")
         save_config(cfg)
-        self.assertEqual(_get_qsettings().value("rewrite_catalog"), damaged)
-        with self.assertRaises(ValueError):
-            resolve_rewrite_profile(cfg, None)
+        self.assertEqual(cfg._damaged_settings, [])
+        self.assertEqual(_get_qsettings().value("rewrite_catalog"), EMPTY_REWRITE_CATALOG)
+        self.assertEqual(load_config()._damaged_settings, [])
 
     def test_failed_first_migration_save_does_not_replace_legacy_disk_state(self):
         from src.config import _get_qsettings
@@ -154,7 +169,9 @@ class ProfileContractsTests(unittest.TestCase):
             with self.assertRaises(ScreamerError):
                 save_config(cfg)
         self.assertFalse(_get_qsettings().contains("rewrite_catalog"))
-        self.assertEqual(load_config().llm_system_prompt, "Exact old prompt.\r\n")
+        self.assertEqual(_get_qsettings().value("llm_system_prompt"), "Exact old prompt.\r\n")
+        profiles, _ = decode_rewrite_catalog(load_config().rewrite_catalog)
+        self.assertEqual(profiles[0].prompt, "Exact old prompt.\r\n")
 
 
 class ProfileSettingsTests(unittest.TestCase):
@@ -175,12 +192,14 @@ class ProfileSettingsTests(unittest.TestCase):
         self.addCleanup(self.dialog.deleteLater)
 
     def test_custom_profile_editor_apply_and_cancel_keep_separate_authority(self):
-        self.dialog._rewrite_name_input.setText("Coding")
         self.dialog._rewrite_add_btn.click()
-        self.dialog._llm_prompt.setPlainText("Keep technical identifiers.")
         selected = self.dialog._rewrite_profile_combo.currentData()
-        self.dialog._rewrite_manual_combo.setCurrentIndex(
-            self.dialog._rewrite_manual_combo.findData(selected)
+        self.assertNotIn(selected, ("raw", "clean", "polished"))
+        self.dialog._rewrite_name_input.setText("Coding")
+        self.dialog._on_profile_rename()
+        self.dialog._llm_prompt.setPlainText("Keep technical identifiers.")
+        self.dialog._rewrite_active_combo.setCurrentIndex(
+            self.dialog._rewrite_active_combo.findData(selected)
         )
         self.dialog._on_apply()
         restored = load_config()
@@ -197,15 +216,70 @@ class ProfileSettingsTests(unittest.TestCase):
             "Keep technical identifiers.",
         )
 
-    def test_mapping_add_duplicate_reject_and_cancel(self):
+    def test_builtin_profiles_are_read_only_and_cannot_be_deleted(self):
+        for profile_id in ("raw", "clean", "polished"):
+            with self.subTest(profile_id=profile_id):
+                combo = self.dialog._rewrite_profile_combo
+                combo.setCurrentIndex(combo.findData(profile_id))
+                self.assertTrue(self.dialog._llm_prompt.isReadOnly())
+                self.assertTrue(self.dialog._rewrite_name_input.isReadOnly())
+                self.assertFalse(self.dialog._rewrite_delete_btn.isEnabled())
+
+    def test_default_combo_is_visible_only_for_auto(self):
+        self.dialog.show()
+        self.addCleanup(self.dialog.hide)
+        active = self.dialog._rewrite_active_combo
+        form = self.dialog._rewrite_form
+        active.setCurrentIndex(active.findData("clean"))
+        self.assertFalse(form.isRowVisible(self.dialog._rewrite_default_combo))
+        active.setCurrentIndex(active.findData("__automatic__"))
+        self.assertTrue(form.isRowVisible(self.dialog._rewrite_default_combo))
+
+    def test_deleting_a_profile_reassigns_selections_and_mappings_to_clean(self):
+        self.dialog._rewrite_add_btn.click()
+        custom_id = self.dialog._rewrite_profile_combo.currentData()
+        self.dialog._rewrite_active_combo.setCurrentIndex(
+            self.dialog._rewrite_active_combo.findData(custom_id)
+        )
+        self.dialog._rewrite_default_combo.setCurrentIndex(
+            self.dialog._rewrite_default_combo.findData(custom_id)
+        )
+        self.dialog._rewrite_path_input.setText("editor.exe")
+        self.dialog._rewrite_mapping_profile_combo.setCurrentIndex(
+            self.dialog._rewrite_mapping_profile_combo.findData(custom_id)
+        )
+        self.dialog._on_mapping_write()
+        self.assertEqual(self.dialog._rewrite_mappings.count(), 1)
+        self.dialog._rewrite_profile_combo.setCurrentIndex(
+            self.dialog._rewrite_profile_combo.findData(custom_id)
+        )
+        self.dialog._rewrite_delete_btn.click()
+        self.assertEqual(self.dialog._rewrite_active_combo.currentData(), "clean")
+        self.assertEqual(self.dialog._rewrite_default_combo.currentData(), "clean")
+        self.assertEqual(self.dialog._rewrite_mappings.count(), 0)
+        self.assertEqual(self.dialog._rewrite_profile_combo.findData(custom_id), -1)
+
+    def test_mapping_write_adds_then_updates_by_app_and_cancel_discards(self):
         self.dialog._rewrite_path_input.setText("C:\\Tools\\Editor.exe")
-        self.dialog._rewrite_mapping_add_btn.click()
+        self.dialog._on_mapping_write()
         self.assertEqual(self.dialog._rewrite_mappings.count(), 1)
+        self.assertEqual(self.dialog._rewrite_app_mappings[0].profile_id, "clean")
         self.dialog._rewrite_path_input.setText("c:/tools/EDITOR.exe")
-        with patch("src.settings_dialog.QMessageBox.warning") as warning:
-            self.dialog._rewrite_mapping_add_btn.click()
-        warning.assert_called_once()
+        combo = self.dialog._rewrite_mapping_profile_combo
+        combo.setCurrentIndex(combo.findData("polished"))
+        self.dialog._on_mapping_write()
         self.assertEqual(self.dialog._rewrite_mappings.count(), 1)
+        self.assertEqual(
+            self.dialog._rewrite_app_mappings,
+            [AppMapping("c:\\tools\\editor.exe", "polished")],
+        )
+        self.dialog._rewrite_path_input.setText("not-an-exe")
+        with patch("src.settings_dialog.QMessageBox.warning") as warning:
+            self.dialog._on_mapping_write()
+        warning.assert_called_once()
+        self.dialog._rewrite_mappings.setCurrentRow(0)
+        self.dialog._on_mapping_remove()
+        self.assertEqual(self.dialog._rewrite_mappings.count(), 0)
         self.dialog.reject()
         self.assertEqual(decode_rewrite_catalog(load_config().rewrite_catalog)[1], [])
 
@@ -283,12 +357,10 @@ class ProfileSessionTests(unittest.TestCase):
         self.tray._on_worker_finished()
 
     def test_failed_tray_profile_save_restores_visible_selection(self):
-        self.tray._config.llm_enabled = True
+        self.tray._config.rewrite_manual_profile_id = "clean"
         self.tray._rebuild_menu()
         menu = next(
-            action.menu()
-            for action in self.tray._menu.actions()
-            if action.text() == "Rewrite Profile"
+            action.menu() for action in self.tray._menu.actions() if action.text() == "Profile"
         )
         raw = next(
             action.defaultWidget()
@@ -299,16 +371,14 @@ class ProfileSessionTests(unittest.TestCase):
             raw.setChecked(True)
         self.assertEqual(self.tray._config.rewrite_manual_profile_id, "clean")
         menu = next(
-            action.menu()
-            for action in self.tray._menu.actions()
-            if action.text() == "Rewrite Profile"
+            action.menu() for action in self.tray._menu.actions() if action.text() == "Profile"
         )
         selected = [
             action.defaultWidget().text()
             for action in menu.actions()
             if action.defaultWidget().isChecked()
         ]
-        self.assertEqual(selected, ["Clean dictation"])
+        self.assertEqual(selected, ["Clean"])
 
 
 if __name__ == "__main__":

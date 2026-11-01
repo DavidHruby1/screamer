@@ -2,6 +2,19 @@
 
 This plan tracks the seven roadmap items in priority order; their product requirements and acceptance criteria are preserved below. Feature IDs remain stable; the removed item 4 is not reused. This file tracks roadmap progress and acceptance gates; [IMPLEMENTATION.md](IMPLEMENTATION.md) is the current contract reference. Code implementation is not a release claim or completion of manual Windows acceptance. Work was divided into verifiable increments rather than one cross-cutting rewrite. Snippets, analytics, an enforced local-only policy, selected-text editing, and other excluded work are not planned here. The linked detailed pages retain their accepted designs and acceptance criteria; they are not the canonical current API. Do not implement from abbreviated sections alone.
 
+## Accepted update (2026-11-01): product review implemented
+
+The owner accepted the whole [product review](PRODUCT-REVIEW-2026-10.md) except the
+owner-decision items (edit mode on selected text, URL-based profiles) and the
+"not recommended" list. Its status table lists each item. This supersedes earlier
+statements here about prompt provenance, retained damaged values with explicit repair,
+the LLM fallback, the tray Hotkey/Record Mode/Post-type submenus and Settings blocking
+dictation. The integration rules below (session snapshot, target check, raw retention,
+single worker) are unchanged. Manual Windows checks still open for this slice: muting
+the real output device, clipboard paste and restore in common apps, Shift-to-submit in
+hold and toggle mode, the setup guide's microphone preview and practice dictation, and
+dictating while Settings is open.
+
 ## Accepted update (2026-10-31)
 
 The user accepts the current Windows baseline and explicitly skips further Notepad

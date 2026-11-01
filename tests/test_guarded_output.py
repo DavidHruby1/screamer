@@ -19,6 +19,7 @@ class GuardedInjectionTests(unittest.TestCase):
     def setUp(self):
         self.target = WindowIdentity(100, 200, None)
         self.user32 = Mock()
+        self.user32.GetAsyncKeyState.return_value = 0
         self.user32.SendInput.side_effect = lambda count, _batch, _size: count
         self.enterContext(patch("src.injector.platform.system", return_value="Windows"))
         self.enterContext(patch.object(ctypes, "WinDLL", return_value=self.user32, create=True))
