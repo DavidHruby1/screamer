@@ -157,6 +157,10 @@ class PromptSettingsTests(unittest.TestCase):
             stt_api_key="key",
             stt_base_url="https://example.test/v1",
             stt_model="stt",
+            llm_enabled=True,
+            llm_api_key="test",
+            llm_base_url="https://example.test/v1",
+            llm_model="test",
             llm_system_prompt=" \tSaved prompt\r\nKeep whitespace.  \r\n\r\n",
             llm_prompt_origin="legacy_saved",
         )
@@ -218,7 +222,7 @@ class PromptSettingsTests(unittest.TestCase):
         self.addCleanup(dlg.deleteLater)
         dlg._on_apply()
         self.assertEqual(load_config().llm_prompt_origin, "default_v2")
-        self.assertFalse(load_config().llm_enabled)
+        self.assertTrue(load_config().llm_enabled)
 
     def test_failed_apply_then_undo_preserves_exact_prompt_and_origin_on_retry(self) -> None:
         for prompt, origin, failure in (
@@ -231,6 +235,10 @@ class PromptSettingsTests(unittest.TestCase):
                     stt_api_key="key",
                     stt_base_url="https://example.test/v1",
                     stt_model="stt",
+                    llm_enabled=True,
+                    llm_api_key="test",
+                    llm_base_url="https://example.test/v1",
+                    llm_model="test",
                     llm_system_prompt=prompt,
                     llm_prompt_origin=origin,
                 )
@@ -279,13 +287,13 @@ class PromptSettingsTests(unittest.TestCase):
         self.assertEqual(dlg.result(), QDialog.DialogCode.Rejected)
         warning.assert_called_once()
         self.assertFalse(dlg._llm_group.isHidden())
-        self.assertFalse(dlg._llm_check.isChecked())
+        self.assertEqual(dlg._rewrite_profile_combo.currentData(), "legacy")
         self.assertEqual(load_config().llm_prompt_origin, "legacy_saved")
         dlg._llm_reset_prompt_btn.click()
         dlg.accept()
         self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted)
         self.assertEqual(load_config().llm_prompt_origin, "default_v2")
-        self.assertFalse(load_config().llm_enabled)
+        self.assertTrue(load_config().llm_enabled)
 
 
 class MicrophoneSettingsTests(unittest.TestCase):
@@ -662,8 +670,8 @@ class SidebarNavigationTests(unittest.TestCase):
 
         dlg = SettingsDialog(AppConfig(), devices=[], calibrate_fn=None)
         self.addCleanup(dlg.deleteLater)
-        self.assertIsInstance(dlg._llm_check, QCheckBox)
-        dlg._llm_check.setChecked(False)
-        dlg._llm_check.click()
-        self.assertTrue(dlg._llm_check.isChecked())
+        self.assertIsInstance(dlg._sound_check, QCheckBox)
+        dlg._sound_check.setChecked(False)
+        dlg._sound_check.click()
+        self.assertTrue(dlg._sound_check.isChecked())
         self.assertFalse(dlg._llm_group.isHidden())

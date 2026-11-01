@@ -28,10 +28,8 @@ class AppError(Enum):
     NO_SPEECH = "No speech detected. Try speaking louder or closer."
     DICTATION_ACTIVE = "Finish the current dictation before opening Settings."
     INJECTION_FAILED = "Could not type text. Focus may have changed."
-    OUTPUT_WITHHELD = (
-        "Typing withheld because the target changed. Open Recovery to copy or arm insertion."
-    )
-    CLIPBOARD_FAILED = "Could not copy text. Open Recovery to try explicitly."
+    OUTPUT_WITHHELD = "Typing withheld because the target changed. Open History or use Insert last."
+    CLIPBOARD_FAILED = "Could not copy text. Open History to try again."
     HISTORY_STORAGE_FAILED = "Could not read or save encrypted history. RAM recovery remains available; explicitly Clear to remove an unreadable file."
     HISTORY_DISABLED = "Enable history to delete a saved entry, or explicitly Clear all."
     HOTKEY_CONFLICT = "Hotkey conflict. Choose a different hotkey."

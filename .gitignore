@@ -29,6 +29,7 @@ Thumbs.db
 
 # Project artifacts
 *.wav
+!src/assets/*.wav
 *.exe
 icon_*.png
 

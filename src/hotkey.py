@@ -73,6 +73,8 @@ class HotkeyListener:
         self._recovery_trigger_held = False
         self._recovery_matched = False
         self._recovery_pending = False
+        # Set by the Qt thread while a dictation is being captured; Esc only matters then.
+        self._recording_active = False
         self._thread: threading.Thread | None = None
         self._thread_id: int = 0
         self._stop_event = threading.Event()
@@ -155,6 +157,10 @@ class HotkeyListener:
         self._armed = False
         log.info("Hotkey mode changed to %s", mode.value)
 
+    def set_recording(self, active: bool) -> None:
+        """Tell the listener whether a recording is in flight (enables Esc cancellation)."""
+        self._recording_active = active
+
     # ------------------------------------------------------------------
     # Pure matching core (OS-independent; unit-tested)
     # ------------------------------------------------------------------
@@ -163,7 +169,7 @@ class HotkeyListener:
         """Handle a keyboard hook event. Return True to suppress (swallow) it."""
         if flags & 0x10:  # LLKHF_INJECTED; only physical keyboard events drive shortcuts
             return False
-        if vk == 0x1B and wparam in _KEY_DOWN and self._recovery_hotkey is not None:
+        if vk == 0x1B and wparam in _KEY_DOWN and self._recording_active:
             self._recovery_pending = False
             self._bridge.recovery_cancelled.emit()
         mod = MODIFIER_VK_TO_NAME.get(vk)

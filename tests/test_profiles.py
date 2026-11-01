@@ -77,19 +77,36 @@ class ProfileContractsTests(unittest.TestCase):
                 self.assertEqual(len(profiles), 1)
                 self.assertEqual(profiles[0].prompt, prompt)
                 self.assertEqual(profiles[0].kind, "custom")
-                self.assertEqual(cfg.rewrite_manual_profile_id, profiles[0].id)
+                self.assertEqual(cfg.rewrite_manual_profile_id, "raw")
                 self.assertEqual(mappings, [])
-                self.assertFalse(cfg.llm_enabled)
+                self.assertTrue(cfg.llm_enabled)
                 save_config(cfg)
                 restored = load_config()
                 self.assertEqual(decode_rewrite_catalog(restored.rewrite_catalog)[0], profiles)
                 self.assertEqual(restored.llm_system_prompt, prompt)
 
+    def test_enabled_legacy_prompt_stays_selected_and_old_switch_is_removed_after_save(self):
+        from src.config import _get_qsettings
+
+        settings = _get_qsettings()
+        prompt = "Keep exact prompt.\r\n"
+        settings.setValue("llm_enabled", True)
+        settings.setValue("llm_system_prompt", prompt)
+        settings.sync()
+        cfg = load_config()
+        self.assertEqual(resolve_rewrite_profile(cfg, None).prompt, prompt)
+        cfg.sound_enabled = False
+        save_config(cfg)
+        self.assertFalse(_get_qsettings().contains("llm_enabled"))
+        restored = load_config()
+        self.assertEqual(resolve_rewrite_profile(restored, None).prompt, prompt)
+        self.assertFalse(restored.sound_enabled)
+
     def test_new_and_recorded_v2_defaults_do_not_create_legacy_profiles(self):
         cfg = load_config()
         self.assertEqual(decode_rewrite_catalog(cfg.rewrite_catalog), ([], []))
-        self.assertFalse(cfg.llm_enabled)
-        self.assertEqual(cfg.rewrite_manual_profile_id, "clean")
+        self.assertTrue(cfg.llm_enabled)
+        self.assertEqual(cfg.rewrite_manual_profile_id, "raw")
         save_config(cfg)
         self.assertEqual(decode_rewrite_catalog(load_config().rewrite_catalog), ([], []))
 
@@ -98,7 +115,7 @@ class ProfileContractsTests(unittest.TestCase):
         cases = (
             ([RewriteProfile("clean", "Changed clean", "custom", "Prompt")], []),
             ([custom, custom], []),
-            ([custom], [AppMapping("editor.exe", "custom")]),
+            ([custom], [AppMapping("editor", "custom")]),
             ([custom], [AppMapping("C:\\Editor.exe", "missing")]),
             (
                 [custom],
@@ -146,7 +163,13 @@ class ProfileSettingsTests(unittest.TestCase):
         self.enterContext(patch("src.config.APP_DIR", directory))
         self.enterContext(patch("src.config._dpapi_available", return_value=False))
         self.enterContext(patch("src.settings_dialog.is_supported", return_value=False))
-        self.cfg = AppConfig(stt_base_url="http://localhost:8000/v1", stt_model="local")
+        self.cfg = AppConfig(
+            stt_base_url="http://localhost:8000/v1",
+            stt_model="local",
+            llm_api_key="test",
+            llm_base_url="https://example.test/v1",
+            llm_model="test",
+        )
         save_config(self.cfg)
         self.dialog = SettingsDialog(self.cfg, devices=[])
         self.addCleanup(self.dialog.deleteLater)

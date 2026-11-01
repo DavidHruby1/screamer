@@ -651,15 +651,18 @@ class SettingsDialog(QDialog):
             self._output_mode_combo.addItem(label, value)
         form.addRow("Output mode:", self._output_mode_combo)
 
-        self._recovery_hotkey_input = QLineEdit()
-        self._recovery_hotkey_input.setPlaceholderText("ctrl+alt+shift+key:0x56")
-        self._recovery_hotkey_input.setToolTip(
-            "Canonical keyboard shortcut: modifiers plus key:0x56 (V). "
-            "Mouse bindings are not supported. Must differ from the dictation shortcut. "
-            "The registered-shortcut conflict check cannot detect other low-level-hook apps."
+        self._recovery_hotkey_input = HotkeyCaptureEdit()
+        self._recovery_hotkey_input.setPlaceholderText("No shortcut set")
+        self._recovery_record_btn = QPushButton("Register shortcut")
+        self._recovery_record_btn.clicked.connect(self._start_insert_capture)
+        self._recovery_hotkey_input.captured.connect(self._on_insert_captured)
+        self._recovery_hotkey_input.cancelled.connect(self._stop_insert_capture)
+        form.addRow(
+            "Insert last shortcut:",
+            _button_row(self._recovery_hotkey_input, self._recovery_record_btn),
         )
-        _mono(self._recovery_hotkey_input)
-        form.addRow("Recovery shortcut:", self._recovery_hotkey_input)
+        self._sound_check = ToggleSwitch("Play recording and error sounds")
+        form.addRow(self._sound_check)
 
         _section(form, "History")
         self._history_check = ToggleSwitch("Save local text history (opt-in)")
@@ -707,6 +710,32 @@ class SettingsDialog(QDialog):
 
     # --- Hotkey capture interaction -----------------------------------
 
+    def _start_insert_capture(self) -> None:
+        self._stop_hotkey_recording()
+        self.hotkey_capture_active_changed.emit(True)
+        self._recovery_hotkey_input.start_recording()
+
+    def _stop_insert_capture(self) -> None:
+        if self._recovery_hotkey_input.is_recording():
+            self._recovery_hotkey_input.stop_recording()
+            if self._insert_hotkey is not None:
+                self._recovery_hotkey_input.show_hotkey(self._insert_hotkey)
+            else:
+                self._recovery_hotkey_input.clear()
+            self.hotkey_capture_active_changed.emit(False)
+
+    def _on_insert_captured(self, hotkey: Hotkey) -> None:
+        if hotkey.kind != "key" or hotkey.validate() is not None:
+            self._stop_insert_capture()
+            QMessageBox.warning(
+                self,
+                "Invalid shortcut",
+                hotkey.validate() or "Choose a keyboard shortcut, such as Ctrl+Shift+V or F8.",
+            )
+            return
+        self._insert_hotkey = hotkey
+        self._stop_insert_capture()
+
     def _set_captured_hotkey(self, hotkey: Hotkey) -> None:
         """Store a validated hotkey and reflect it in combo + capture field."""
         self._captured_hotkey = hotkey
@@ -728,6 +757,7 @@ class SettingsDialog(QDialog):
             self._set_captured_hotkey(hotkey)
 
     def _start_hotkey_recording(self) -> None:
+        self._stop_insert_capture()
         if self._hotkey_capture.is_recording():
             return
         self._hotkey_record_btn.setChecked(True)
@@ -737,6 +767,7 @@ class SettingsDialog(QDialog):
         self._hotkey_capture.start_recording()
 
     def _stop_hotkey_recording(self) -> None:
+        self._stop_insert_capture()
         if not self._hotkey_capture.is_recording():
             return
         self._hotkey_record_btn.setChecked(False)
@@ -915,9 +946,6 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         form = QFormLayout(tab)
 
-        self._llm_check = ToggleSwitch("Enable AI rewrite")
-        form.addRow(self._llm_check)
-
         self._llm_group = QGroupBox("LLM Settings")
         llm_form = _card_form(self._llm_group)
 
@@ -930,17 +958,9 @@ class SettingsDialog(QDialog):
         self._llm_prompt.setFont(theme.mono_font(12))
         self._llm_prompt.setTabChangesFocus(True)
         self._llm_prompt.textChanged.connect(self._on_profile_prompt_changed)
-        llm_form.addRow("System Prompt:", self._llm_prompt)
 
         self._llm_reset_prompt_btn = QPushButton("Reset to Current Default")
         self._llm_reset_prompt_btn.clicked.connect(self._on_reset_prompt)
-        llm_form.addRow(_button_row(self._llm_reset_prompt_btn))
-        prompt_hint = QLabel(
-            "Saved prompts are kept unchanged on upgrade. Reset explicitly selects the current "
-            "cleanup default. Models can still change meaning; review important dictation."
-        )
-        prompt_hint.setWordWrap(True)
-        llm_form.addRow(_hint(prompt_hint))
 
         # --- LLM Fallback ---
         self._llm_fb_check = ToggleSwitch("Enable fallback LLM provider")
@@ -959,8 +979,7 @@ class SettingsDialog(QDialog):
         llm_form.addRow(self._llm_fb_group)
         _style_form(llm_form)
 
-        self._llm_group.setVisible(False)
-        self._llm_check.toggled.connect(self._llm_group.setVisible)
+        self._llm_group.setVisible(True)
         form.addRow(self._llm_group)
 
         _style_form(form)
@@ -992,11 +1011,9 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         form = QFormLayout(tab)
         hint = QLabel(
-            "AI rewrite off always uses Raw. Manual selection ignores application mappings. "
-            "Automatic selection matches the full executable path, then uses the default. "
-            "Raw never calls an LLM. Edit the selected profile's prompt on the LLM tab; "
-            "editing Clean creates a custom profile. Limits: 32 custom profiles, "
-            "100-character names, 32 KiB UTF-8 prompts."
+            "Select a profile and edit its prompt here. Raw skips rewrite. "
+            "Auto uses application mappings, then the default profile. "
+            "Editing Clean creates a custom profile; saved prompts survive upgrades."
         )
         hint.setWordWrap(True)
         form.addRow(_hint(hint))
@@ -1015,19 +1032,21 @@ class SettingsDialog(QDialog):
         form.addRow(self._rewrite_repair_row)
         self._rewrite_form = form
         self._rewrite_mode_combo = QComboBox()
-        self._rewrite_mode_combo.addItem("Manual", "manual")
-        self._rewrite_mode_combo.addItem("Automatic (application mappings)", "automatic")
+        self._rewrite_mode_combo.addItem("Use selected profile", "manual")
+        self._rewrite_mode_combo.addItem("Auto (application mappings)", "automatic")
         self._rewrite_default_combo = QComboBox()
         self._rewrite_manual_combo = QComboBox()
         _section(form, "Selection")
         form.addRow("Selection mode:", self._rewrite_mode_combo)
         form.addRow("Default profile:", self._rewrite_default_combo)
-        form.addRow("Manual profile:", self._rewrite_manual_combo)
+        self._rewrite_manual_combo.hide()
         self._rewrite_profile_combo = QComboBox()
         self._rewrite_profile_combo.currentIndexChanged.connect(self._on_profile_selected)
         _section(form, "Profiles")
-        form.addRow("Profile to edit:", self._rewrite_profile_combo)
-        self._rewrite_edit_prompt_btn = QPushButton("Edit selected prompt on LLM tab")
+        form.addRow("Profile:", self._rewrite_profile_combo)
+        form.addRow("Prompt:", self._llm_prompt)
+        form.addRow(_button_row(self._llm_reset_prompt_btn))
+        self._rewrite_edit_prompt_btn = QPushButton("Use selected profile")
         self._rewrite_edit_prompt_btn.clicked.connect(self._on_edit_profile_prompt)
         form.addRow("", _button_row(self._rewrite_edit_prompt_btn))
         self._rewrite_name_input = QLineEdit()
@@ -1051,7 +1070,10 @@ class SettingsDialog(QDialog):
         self._rewrite_path_input.setPlaceholderText(r"C:\Program Files\Application\app.exe")
         _mono(self._rewrite_path_input)
         self._rewrite_mapping_profile_combo = QComboBox()
-        form.addRow("Full executable path:", self._rewrite_path_input)
+        form.addRow("Executable name or path:", self._rewrite_path_input)
+        running_button = QPushButton("Choose running application…")
+        running_button.clicked.connect(self._choose_running_application)
+        form.addRow(_button_row(running_button))
         form.addRow("Mapped profile:", self._rewrite_mapping_profile_combo)
         self._rewrite_mapping_add_btn = QPushButton("Add mapping")
         self._rewrite_mapping_edit_btn = QPushButton("Edit selected")
@@ -1070,6 +1092,43 @@ class SettingsDialog(QDialog):
         _style_form(form)
         self._tabs.addTab(tab, "Profiles")
 
+    def _choose_running_application(self) -> None:
+        import csv
+        import io
+        import platform
+        import subprocess
+
+        if platform.system() != "Windows":
+            QMessageBox.information(self, "Running applications", "Available on Windows.")
+            return
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            names = sorted(
+                {
+                    row[0]
+                    for row in csv.reader(io.StringIO(result.stdout))
+                    if row and row[0].lower().endswith(".exe")
+                },
+                key=str.casefold,
+            )
+        except (OSError, subprocess.SubprocessError):
+            QMessageBox.warning(
+                self, "Running applications", "Could not list running applications."
+            )
+            return
+        if names:
+            name, accepted = QInputDialog.getItem(
+                self, "Running applications", "Application (.exe):", names, 0, False
+            )
+            if accepted:
+                self._rewrite_path_input.setText(name)
+
     def _all_rewrite_profiles(self) -> list[RewriteProfile]:
         return [*builtin_rewrite_profiles(), *self._rewrite_profiles]
 
@@ -1084,8 +1143,11 @@ class SettingsDialog(QDialog):
             if cfg.rewrite_catalog is not None:
                 cfg._rewrite_catalog_corrupt_original = (cfg.rewrite_catalog,)
         self._rewrite_error = None
+        # Fresh/reset configs still use the legacy off default; display its effective Raw profile.
+        selection_mode = cfg.rewrite_selection_mode if cfg.llm_enabled else "manual"
+        manual_profile_id = cfg.rewrite_manual_profile_id if cfg.llm_enabled else "raw"
         self._rewrite_mode_combo.setCurrentIndex(
-            _combo_index(self._rewrite_mode_combo, cfg.rewrite_selection_mode)
+            _combo_index(self._rewrite_mode_combo, selection_mode)
         )
         self._rewrite_default_combo.clear()
         self._rewrite_manual_combo.clear()
@@ -1096,15 +1158,15 @@ class SettingsDialog(QDialog):
             _combo_index(self._rewrite_default_combo, cfg.rewrite_default_profile_id)
         )
         self._rewrite_manual_combo.setCurrentIndex(
-            _combo_index(self._rewrite_manual_combo, cfg.rewrite_manual_profile_id)
+            _combo_index(self._rewrite_manual_combo, manual_profile_id)
         )
-        self._refresh_profile_choices(cfg.rewrite_manual_profile_id)
+        self._refresh_profile_choices(manual_profile_id)
         # Missing persisted IDs stay invalid and visible as an unselected combo.
         self._rewrite_default_combo.setCurrentIndex(
             _combo_index(self._rewrite_default_combo, cfg.rewrite_default_profile_id)
         )
         self._rewrite_manual_combo.setCurrentIndex(
-            _combo_index(self._rewrite_manual_combo, cfg.rewrite_manual_profile_id)
+            _combo_index(self._rewrite_manual_combo, manual_profile_id)
         )
         # A provenance mismatch must remain visible until an explicit edit/reset.
         if cfg.rewrite_catalog is None or self._rewrite_profile_combo.currentIndex() < 0:
@@ -1128,7 +1190,7 @@ class SettingsDialog(QDialog):
             old = selected if combo is self._rewrite_profile_combo else combo.currentData()
             combo.clear()
             for profile in self._all_rewrite_profiles():
-                combo.addItem(f"{profile.name} [{profile.id}]", profile.id)
+                combo.addItem(profile.name, profile.id)
             if old is not None:
                 combo.setCurrentIndex(_combo_index(combo, old))
             else:
@@ -1159,6 +1221,9 @@ class SettingsDialog(QDialog):
         profile_id = self._rewrite_profile_combo.currentData()
         profile = next((p for p in self._all_rewrite_profiles() if p.id == profile_id), None)
         self._profile_editor_id = profile_id
+        self._rewrite_manual_combo.setCurrentIndex(
+            _combo_index(self._rewrite_manual_combo, profile_id)
+        )
         if profile is None:
             return
         self._rewrite_name_input.setText(profile.name)
@@ -1170,8 +1235,10 @@ class SettingsDialog(QDialog):
         self._show_profile_prompt(prompt, origin)
 
     def _on_edit_profile_prompt(self) -> None:
-        self._tabs.setCurrentIndex(2)
-        self._llm_group.setVisible(True)
+        self._rewrite_mode_combo.setCurrentIndex(0)
+        self._rewrite_manual_combo.setCurrentIndex(
+            _combo_index(self._rewrite_manual_combo, self._rewrite_profile_combo.currentData())
+        )
         self._llm_prompt.setFocus()
 
     def _on_profile_prompt_changed(self) -> None:
@@ -1235,8 +1302,10 @@ class SettingsDialog(QDialog):
             return
         self._rewrite_profiles = profiles
         self._refresh_profile_choices(profile.id)
-        self._tabs.setCurrentIndex(2)
-        self._llm_group.setVisible(True)
+        self._rewrite_mode_combo.setCurrentIndex(0)
+        self._rewrite_manual_combo.setCurrentIndex(
+            _combo_index(self._rewrite_manual_combo, self._rewrite_profile_combo.currentData())
+        )
         self._llm_prompt.setFocus()
 
     def _on_profile_rename(self) -> None:
@@ -1594,7 +1663,12 @@ class SettingsDialog(QDialog):
         self._output_mode_combo.setCurrentIndex(
             _combo_index(self._output_mode_combo, cfg.output_mode)
         )
-        self._recovery_hotkey_input.setText(cfg.recovery_hotkey)
+        self._insert_hotkey = Hotkey.parse(cfg.recovery_hotkey)
+        if self._insert_hotkey is not None:
+            self._recovery_hotkey_input.show_hotkey(self._insert_hotkey)
+        else:
+            self._recovery_hotkey_input.clear()
+        self._sound_check.setChecked(cfg.sound_enabled)
         self._history_check.setChecked(cfg.history_enabled)
         self._history_limit_spin.setValue(cfg.history_limit)
 
@@ -1619,7 +1693,6 @@ class SettingsDialog(QDialog):
         self._stt_fb_headers.setText(cfg.stt_fallback_custom_headers)
 
         # LLM
-        self._llm_check.setChecked(cfg.llm_enabled)
         self._llm_key.setText(cfg.llm_api_key)
         self._llm_url.setText(cfg.llm_base_url)
         self._llm_model.setText(cfg.llm_model)
@@ -1651,7 +1724,8 @@ class SettingsDialog(QDialog):
         cfg.post_type_key = self._post_key_combo.currentData()
         cfg.start_with_windows = self._startup_check.isChecked()
         cfg.output_mode = self._output_mode_combo.currentData()
-        cfg.recovery_hotkey = self._recovery_hotkey_input.text().strip()
+        cfg.recovery_hotkey = self._insert_hotkey.to_canonical() if self._insert_hotkey else ""
+        cfg.sound_enabled = self._sound_check.isChecked()
         cfg.history_enabled = self._history_check.isChecked()
         cfg.history_limit = self._history_limit_spin.value()
         if cfg._vocabulary_corrupt_original is None:
@@ -1676,7 +1750,7 @@ class SettingsDialog(QDialog):
         cfg.stt_fallback_custom_headers = self._stt_fb_headers.text().strip()
 
         # LLM
-        cfg.llm_enabled = self._llm_check.isChecked()
+        cfg.llm_enabled = True
         cfg.llm_api_key = self._llm_key.text().strip()
         cfg.llm_base_url = self._llm_url.text().strip()
         cfg.llm_model = self._llm_model.text().strip()
@@ -1905,7 +1979,7 @@ class SettingsDialog(QDialog):
         super().done(result)
 
     def is_hotkey_capture_active(self) -> bool:
-        return self._hotkey_capture.is_recording()
+        return self._hotkey_capture.is_recording() or self._recovery_hotkey_input.is_recording()
 
     def _show_validation_issue(self) -> bool:
         if self._rewrite_error is not None:

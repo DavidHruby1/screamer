@@ -12,7 +12,7 @@ import re
 import sys
 import tempfile
 import unicodedata
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlsplit
 
@@ -64,16 +64,20 @@ def builtin_rewrite_profiles() -> tuple[RewriteProfile, RewriteProfile]:
 
 
 def normalize_executable_path(value: str) -> str:
-    """Canonical full Windows path, independent of the host OS."""
+    """Canonical executable name or full Windows path, independent of the host OS."""
     if not isinstance(value, str) or not value or any(ord(c) < 32 for c in value):
-        raise ValueError("Application path must be a full Windows absolute path")
+        raise ValueError("Use an executable name ending in .exe or a full Windows absolute path")
+    if ntpath.basename(value) == value:
+        if not value.casefold().endswith(".exe") or not value[:-4].strip(" ."):
+            raise ValueError("Use an executable name ending in .exe, such as notepad.exe")
+        return value.casefold()
     drive, tail = ntpath.splitdrive(value.replace("/", "\\"))
     if (
         not drive
         or not tail.startswith("\\")
         or (not drive.startswith("\\\\") and not re.fullmatch(r"[A-Za-z]:", drive))
     ):
-        raise ValueError("Application path must be a full Windows absolute path")
+        raise ValueError("Use an executable name ending in .exe or a full Windows absolute path")
     path = ntpath.normpath(value).casefold()
     if not ntpath.basename(path) or tail in ("\\", "/"):
         raise ValueError("Application path must identify an executable, not a root")
@@ -232,9 +236,10 @@ def resolve_rewrite_profile(cfg: AppConfig, executable_path: str | None) -> Rewr
             path = normalize_executable_path(executable_path)
         except ValueError:
             path = None
-        for mapping in mappings:
-            if mapping.executable_path == path:
-                return profiles[mapping.profile_id]
+        for match in (path, ntpath.basename(path) if path else None):
+            for mapping in mappings:
+                if mapping.executable_path == match:
+                    return profiles[mapping.profile_id]
     return profiles[cfg.rewrite_default_profile_id]
 
 
@@ -566,6 +571,7 @@ class AppConfig:
     output_mode: str = "type"  # "type" | "copy" | "copy_and_type"
     history_enabled: bool = False
     history_limit: int = 100
+    sound_enabled: bool = True
     recovery_hotkey: str = "ctrl+alt+shift+key:0x56"
     vocabulary_entries: list[str] = field(default_factory=list)
     _vocabulary_corrupt_original: tuple[object] | None = field(
@@ -885,6 +891,11 @@ def load_config() -> AppConfig:
     except ValueError:
         log.warning("Rewrite prompt provenance requires explicit repair; original retained")
 
+    if not settings.contains("rewrite_controls_version") and not cfg.llm_enabled:
+        cfg.rewrite_selection_mode = "manual"
+        cfg.rewrite_manual_profile_id = "raw"
+    cfg.llm_enabled = True  # Effective session value is derived from the selected profile.
+
     parsed_hotkey = Hotkey.parse(cfg.hotkey)
     if parsed_hotkey is None or parsed_hotkey.validate() is not None:
         cfg.hotkey = "ctrl+alt+key:0x20"
@@ -909,6 +920,8 @@ def save_config(cfg: AppConfig) -> None:
     ):
         raise ValueError("AI rewrite prompt provenance requires explicit repair")
     migrate_rewrite_catalog(cfg)
+    if not cfg.llm_enabled:
+        cfg = replace(cfg, rewrite_selection_mode="manual", rewrite_manual_profile_id="raw")
     if cfg._rewrite_catalog_corrupt_original is None:
         _validated_rewrite_selection(cfg)
     encrypted = (
@@ -934,7 +947,7 @@ def save_config(cfg: AppConfig) -> None:
             if key not in _SECRET_FIELDS or not encrypted:
                 pending.setValue(key, current.value(key))
         for f in fields(AppConfig):
-            if f.name.startswith("_"):
+            if f.name.startswith("_") or f.name == "llm_enabled":
                 continue
             if f.name in _SECRET_FIELDS:
                 if encrypted:
@@ -960,6 +973,8 @@ def save_config(cfg: AppConfig) -> None:
                 )
             else:
                 pending.setValue(f.name, getattr(cfg, f.name))
+        pending.remove("llm_enabled")
+        pending.setValue("rewrite_controls_version", 1)
         if encrypted:
             pending.setValue("secret_storage", "dpapi-v1")
         pending.sync()
@@ -1133,12 +1148,12 @@ def validate_config(cfg: AppConfig) -> list[ConfigValidationIssue]:
 
     llm = cfg.llm_provider()
     llm_fallback = cfg.llm_fallback_provider()
-    needs_llm = cfg.llm_enabled
+    needs_llm = cfg.llm_enabled and not (
+        cfg.rewrite_selection_mode == "manual" and cfg.rewrite_manual_profile_id == "raw"
+    )
     try:
         profiles, mappings = _validated_rewrite_selection(cfg)
-        if cfg.rewrite_selection_mode == "manual":
-            needs_llm = needs_llm and resolve_rewrite_profile(cfg, None).kind != "raw"
-        else:
+        if cfg.rewrite_selection_mode == "automatic":
             needs_llm = needs_llm and any(
                 profiles[profile_id].kind != "raw"
                 for profile_id in [

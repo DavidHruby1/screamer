@@ -3,7 +3,7 @@
 > **Status:** code implemented (2026-09-29); packaged Windows tray and long-recording
 > manual acceptance still pending. See [progress](../IMPLEMENTATION-PLAN.md#progress-2026-09-30)
 > and the shipped API in [IMPLEMENTATION.md](../IMPLEMENTATION.md).
-> This plan expands P0 from [FEATURES.md](../FEATURES.md#1-quick-language-switching-in-the-tray-p0).
+> This plan expands P0 from [IMPLEMENTATION-PLAN.md](../IMPLEMENTATION-PLAN.md#product-requirements-and-acceptance-criteria).
 
 ## Summary
 
@@ -200,7 +200,7 @@ sequenceDiagram
 
 ## Sources
 
-- [`docs/FEATURES.md`](../FEATURES.md#1-quick-language-switching-in-the-tray-p0):
+- [`docs/IMPLEMENTATION-PLAN.md`](../IMPLEMENTATION-PLAN.md#product-requirements-and-acceptance-criteria):
   required behavior, acceptance and P0 independence.
 - [`docs/IMPLEMENTATION-PLAN.md`](../IMPLEMENTATION-PLAN.md#1-quick-language-switching-in-the-tray-p0):
   initial design, migration intent and tests; underspecifies schema and limits.

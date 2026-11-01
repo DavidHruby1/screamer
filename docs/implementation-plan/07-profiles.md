@@ -1,7 +1,7 @@
 # 7. Simple Rewrite Profiles and App Matching
 
 > **Status (2026-09-30):** code implemented; final automated checks and Windows app-matching acceptance remain pending. Current config, migration and runtime contracts are canonical in [IMPLEMENTATION.md](../IMPLEMENTATION.md). This detailed design expands P2 from
-> [FEATURES.md](../FEATURES.md#7-simple-rewrite-profiles-and-app-matching-p2).
+> [IMPLEMENTATION-PLAN.md](../IMPLEMENTATION-PLAN.md#product-requirements-and-acceptance-criteria).
 > The source now includes profile settings, migration, resolution and captured-executable matching; Windows identity behavior is not certified here.
 
 ## Summary
@@ -320,7 +320,7 @@ sequenceDiagram
 
 ## Sources
 
-- [`docs/FEATURES.md`](../FEATURES.md#7-simple-rewrite-profiles-and-app-matching-p2):
+- [`docs/IMPLEMENTATION-PLAN.md`](../IMPLEMENTATION-PLAN.md#product-requirements-and-acceptance-criteria):
   raw/clean/custom, app matching, manual override and no-context boundaries.
 - [`docs/IMPLEMENTATION-PLAN.md`](../IMPLEMENTATION-PLAN.md#7-simple-rewrite-profiles-and-app-matching-p2):
   first profile/migration proposal; leaves persistence schema and raw-mode
