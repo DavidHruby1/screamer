@@ -130,9 +130,7 @@ class RecoveryLifecycleTests(unittest.TestCase):
             "original", self.session.started_at, "raw", "old final", "succeeded"
         )
         self.tray._latest = original
-        self.tray._config = AppConfig(
-            llm_enabled=True, llm_system_prompt="Current policy", llm_prompt_origin="user_saved"
-        )
+        self.tray._config = AppConfig(rewrite_manual_profile_id="clean")
         self.tray._rerun_rewrite(original)
         with (
             patch("src.main.transcribe") as stt,
@@ -244,7 +242,7 @@ class RecoveryDeliveryTests(unittest.TestCase):
             self.tray._deliver(self.entry, "final", "copy_and_type", self.target)
         clipboard.setText.assert_called_once_with("final")
         self.assertEqual(inject.call_count, 1)
-        inject.assert_called_with("final", None, expected_target=self.target)
+        inject.assert_called_with("final", None, expected_target=self.target, paste=False)
         self.assertTrue(self.tray._latest.last_delivery.copied)
         self.assertEqual(self.tray._latest.last_delivery.text_state, "events_submitted")
 
@@ -289,7 +287,7 @@ class RecoveryDeliveryTests(unittest.TestCase):
             self.tray._insert_last()
             self.tray._insert_last()
         self.assertEqual(inject.call_count, 2)
-        inject.assert_called_with("final", None, expected_target=self.target)
+        inject.assert_called_with("final", None, expected_target=self.target, paste=False)
 
     def test_failed_delete_or_clear_preserves_latest_and_armed_choice(self):
         self.tray._config.history_enabled = True

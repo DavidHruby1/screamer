@@ -270,13 +270,24 @@ class HotkeyListener:
         self._recovery_pending = False
         self._bridge.recovery_requested.emit()
 
+    def _shift_submit(self) -> bool:
+        """Extra Shift (not part of the chord) at the end of a dictation means 'press Enter'."""
+        held = {MODIFIER_VK_TO_NAME[vk] for vk in self._held}
+        return "shift" in held and "shift" not in self._hotkey.mods
+
     def _trigger_down(self) -> bool:
         if self._trigger_held:
             return self._armed  # suppress repeats only for a matched trigger cycle
         self._trigger_held = True
-        if {MODIFIER_VK_TO_NAME[vk] for vk in self._held} != self._hotkey.mods:
+        held = {MODIFIER_VK_TO_NAME[vk] for vk in self._held}
+        ending_toggle = self._mode == HotkeyMode.TOGGLE and self._recording_active
+        if held != self._hotkey.mods and not (
+            ending_toggle and held - {"shift"} == self._hotkey.mods
+        ):
             return False
         self._armed = True
+        if ending_toggle and self._shift_submit():
+            self._bridge.submit_requested.emit()
         self._bridge.hotkey_pressed.emit()
         return True
 
@@ -286,6 +297,8 @@ class HotkeyListener:
             return False
         self._armed = False
         if self._mode == HotkeyMode.HOLD:
+            if self._shift_submit():
+                self._bridge.submit_requested.emit()
             self._bridge.hotkey_released.emit()
         return True
 

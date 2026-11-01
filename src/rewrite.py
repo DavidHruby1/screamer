@@ -1,4 +1,4 @@
-"""LLM rewrite via shared HTTP transport: primary + fallback providers, prompt template with system prompt."""
+"""LLM rewrite via shared HTTP transport: one OpenAI-compatible provider and a system prompt."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import httpx
 
 from src import http_client
 from src.config import (
+    DEFAULT_LLM_SYSTEM_PROMPT,
     AppConfig,
     ProviderConfig,
     parse_custom_headers,
@@ -35,7 +36,7 @@ def format_vocabulary_context(entries: list[str]) -> str:
 
 
 def rewrite(text: str, config: AppConfig) -> PipelineResult:
-    """Send text to LLM with system prompt. Primary → fallback.
+    """Send text to the LLM with the session's system prompt.
 
     Returns input text unchanged in ``PipelineResult.text`` if ``config.llm_enabled`` is False.
     Provider errors return the original text with ``AppError.LLM_FAILED`` as a warning.
@@ -52,31 +53,15 @@ def rewrite(text: str, config: AppConfig) -> PipelineResult:
         if language:
             system_prompt += f"\nThe speech language is {language}."
 
-        primary = config.llm_provider()
-        fallback = config.llm_fallback_provider()
-
-        for is_fallback, provider in ((False, primary), (True, fallback.provider)):
-            if is_fallback and not fallback.enabled:
-                continue
-            if not provider.is_complete:
-                continue
-
+        provider = config.llm_provider()
+        if provider.is_complete:
             try:
                 result = _call_llm(provider=provider, system_prompt=system_prompt, user_text=text)
                 if result:
-                    log.debug(
-                        "%s LLM rewrite: %r → %r",
-                        "Fallback" if is_fallback else "Primary",
-                        text[:60],
-                        result[:60],
-                    )
+                    log.debug("LLM rewrite: %r → %r", text[:60], result[:60])
                     return PipelineResult(text=result)
             except Exception as e:
-                log.warning(
-                    "%s LLM failed: %s", "Fallback" if is_fallback else "Primary", type(e).__name__
-                )
-                if not fallback.enabled:
-                    return PipelineResult(text=text, warnings=[AppError.LLM_FAILED])
+                log.warning("LLM failed: %s", type(e).__name__)
 
         log.debug("LLM rewrite failed or returned empty; using original text")
         return PipelineResult(text=text, warnings=[AppError.LLM_FAILED])
@@ -88,17 +73,12 @@ def _call_llm(
     user_text: str,
 ) -> str | None:
     """Call an OpenAI-compatible chat completions endpoint. Returns corrected text or None."""
-    if not provider.api_key:
-        return None
-
     url = provider.base_url.rstrip("/") + "/chat/completions"
 
-    headers = httpx.Headers(
-        {
-            "Authorization": f"Bearer {provider.api_key}",
-            "Content-Type": "application/json",
-        }
-    )
+    headers = httpx.Headers({"Content-Type": "application/json"})
+    if provider.api_key:
+        # Local servers may need no key; never send an empty Bearer token.
+        headers["Authorization"] = f"Bearer {provider.api_key}"
     try:
         headers.update(parse_custom_headers(provider.custom_headers))
     except ValueError as e:
@@ -143,14 +123,10 @@ def _call_llm(
     choices = data.get("choices") or [{}]
     finish_reason = choices[0].get("finish_reason")
     log.info(
-        "LLM response detail: model=%s input_chars=%d output_cap=%s finish_reason=%s elapsed=%.3fs x_groq_region=%s cf_ray=%s",
+        "LLM response detail: model=%s finish_reason=%s elapsed=%.3fs",
         provider.model,
-        len(user_text),
-        output_cap if output_cap is not None else "none",
         finish_reason or "-",
         request_elapsed,
-        resp.headers.get("x-groq-region") or "-",
-        resp.headers.get("cf-ray") or "-",
     )
 
     # Treat any truncated completion as unusable; partial rewrites are worse than no rewrite.
@@ -184,16 +160,17 @@ if __name__ == "__main__":
     cfg = load_config()
     cfg = import_from_env(cfg)
 
-    if not cfg.llm_api_key:
+    if not cfg.llm_provider().is_complete:
         print(
-            "No LLM configuration found. Set up credentials via:\n"
+            "No LLM configuration found. Set a base URL and model (API key optional) via:\n"
             "  - Place a .env file in the project root\n"
-            "  - Or run python -m src.settings_dialog (Phase 2)",
+            "  - Or run python -m src.settings_dialog",
             file=sys.stderr,
         )
         sys.exit(1)
 
     cfg.llm_enabled = True
+    cfg.llm_system_prompt = DEFAULT_LLM_SYSTEM_PROMPT
 
     text = sys.argv[1] if len(sys.argv) > 1 else "test sentense wit erors"
     print(f"Input: {text}")

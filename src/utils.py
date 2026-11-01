@@ -22,22 +22,27 @@ class AppError(Enum):
     )
     MIC_DISCONNECTED = "Microphone capture failed. Check Settings > Audio and try again."
     STT_FAILED = "Transcription failed. Check your API key and internet."
-    STT_FALLBACK_USED = "Primary STT failed. Used fallback provider."
+    STT_FALLBACK_USED = "Speech provider failed. Used the fallback provider."
     LLM_FAILED = "AI rewrite failed. Using raw transcription."
     NETWORK_ERROR = "Network error. Please check your connection."
     NO_SPEECH = "No speech detected. Try speaking louder or closer."
-    DICTATION_ACTIVE = "Finish the current dictation before opening Settings."
+    DICTATION_ACTIVE = "Finish the current dictation first."
     INJECTION_FAILED = "Could not type text. Focus may have changed."
     OUTPUT_WITHHELD = "Typing withheld because the target changed. Open History or use Insert last."
     CLIPBOARD_FAILED = "Could not copy text. Open History to try again."
-    HISTORY_STORAGE_FAILED = "Could not read or save encrypted history. RAM recovery remains available; explicitly Clear to remove an unreadable file."
-    HISTORY_DISABLED = "Enable history to delete a saved entry, or explicitly Clear all."
+    HISTORY_STORAGE_FAILED = (
+        "Could not read or save history. The latest text is still in History until you exit."
+    )
+    HISTORY_DISABLED = "Turn on history in Settings to delete a saved entry, or use Clear all."
     HOTKEY_CONFLICT = "Hotkey conflict. Choose a different hotkey."
     HOTKEY_INVALID = "That key combination can't be used. Add a modifier or pick another key."
     HOTKEY_HOOK_FAILED = "Could not install the global hotkey listener."
     UNSUPPORTED_PLATFORM = "This feature is only available on Windows."
     KEY_STORAGE_FAILED = "Could not save or load API keys securely."
-    CONFIG_INVALID = "Invalid settings. Open Settings and repair the rewrite profile configuration."
+    CONFIG_INVALID = "Invalid settings. Open Settings and check the rewrite profiles."
+    SETTINGS_DAMAGED = (
+        "Some saved settings were damaged and reset. A copy is in settings-damaged.txt."
+    )
     STARTUP_REGISTRATION_FAILED = "Could not update Windows startup setting."
 
 
@@ -55,6 +60,8 @@ class SignalBridge(QObject):
 
     hotkey_pressed = Signal()
     hotkey_released = Signal()
+    # Shift was held when the dictation ended: press Enter after this result.
+    submit_requested = Signal()
     recovery_requested = Signal()
     recovery_cancelled = Signal()
     error_occurred = Signal(AppError)

@@ -13,6 +13,7 @@ import os
 import platform
 import threading
 from dataclasses import dataclass, replace
+from time import perf_counter
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -34,16 +35,15 @@ from PySide6.QtWidgets import (
 from src.audio import (
     RELEASE_TAIL,
     AudioRecorder,
+    SystemAudioMute,
     default_input_device_id,
     list_devices,
     resolve_device,
 )
 from src.config import (
-    DEFAULT_LLM_SYSTEM_PROMPT,
-    HOTKEY_OPTIONS,
-    POST_KEY_OPTIONS,
     AppConfig,
     Hotkey,
+    apply_replacements,
     builtin_rewrite_profiles,
     decode_rewrite_catalog,
     has_plaintext_secrets,
@@ -52,6 +52,7 @@ from src.config import (
     load_config,
     resolve_rewrite_profile,
     save_config,
+    stt_provider_is_configured,
     validate_config,
 )
 from src import http_client, theme
@@ -62,6 +63,7 @@ from src.results import DictationRecord, DeliveryAttempt, HistoryStore, utc_now
 from src.recovery_dialog import RecoveryDialog
 from src.rewrite import rewrite
 from src.settings_dialog import SettingsDialog
+from src.setup_wizard import SetupWizard
 from src.snackbar import RecordingSnackbar, snackbar_content_for
 from src.stt import transcribe
 from src.utils import APP_DIR, AppError, ScreamerError, SignalBridge
@@ -81,6 +83,10 @@ class _Session:
     id: str
     started_at: str
     profile_id: str | None = None
+    # Shift was held when the dictation ended: press Enter after the text.
+    submit: bool = False
+    # Started from the setup guide's practice field; the result goes there, not to an app.
+    practice: bool = False
 
 
 @dataclass(frozen=True)
@@ -92,6 +98,8 @@ class _Terminal:
     warnings: tuple[AppError, ...]
     cancelled: bool = False
     error: Exception | None = None
+    stt_seconds: float = 0.0
+    rewrite_seconds: float = 0.0
 
 
 class _WorkerThread(QThread):
@@ -139,15 +147,19 @@ class _WorkerThread(QThread):
         warnings = ()
         status = "pending" if self._config.llm_enabled and not self._stt_only else "not_requested"
         rewritten = None
+        timing = {"stt_seconds": 0.0, "rewrite_seconds": 0.0}
+        replacements = self._config.replacements
         try:
             if self._cancel.is_set():
                 self._publish_terminal(
-                    _Terminal(self._session_id, raw, None, "cancelled", warnings, True)
+                    _Terminal(self._session_id, raw, None, "cancelled", warnings, True, **timing)
                 )
                 return
             if raw is None:
+                started = perf_counter()
                 stt_result = transcribe(self._audio_wav, self._config)
-                raw = stt_result.text
+                timing["stt_seconds"] = perf_counter() - started
+                raw = apply_replacements(stt_result.text, replacements)
                 if not raw.strip():
                     raise ScreamerError(AppError.STT_FAILED)
                 warnings = tuple(stt_result.warnings)
@@ -155,11 +167,13 @@ class _WorkerThread(QThread):
                 self.raw_ready.emit(self._session_id, raw, warnings)
             if self._cancel.is_set():
                 self._publish_terminal(
-                    _Terminal(self._session_id, raw, None, "cancelled", warnings, True)
+                    _Terminal(self._session_id, raw, None, "cancelled", warnings, True, **timing)
                 )
                 return
             if self._config.llm_enabled and not self._stt_only:
+                started = perf_counter()
                 result = rewrite(raw, self._config)
+                timing["rewrite_seconds"] = perf_counter() - started
                 warnings += tuple(result.warnings)
                 if not result.text.strip() or AppError.LLM_FAILED in result.warnings:
                     status = "failed"
@@ -167,20 +181,25 @@ class _WorkerThread(QThread):
                         warnings += (AppError.LLM_FAILED,)
                 else:
                     status = "succeeded"
-                    rewritten = result.text
+                    # Exact replacements win over the model's spelling.
+                    rewritten = apply_replacements(result.text, replacements)
             if self._cancel.is_set():
                 self._publish_terminal(
-                    _Terminal(self._session_id, raw, rewritten, "cancelled", warnings, True)
+                    _Terminal(
+                        self._session_id, raw, rewritten, "cancelled", warnings, True, **timing
+                    )
                 )
                 return
-            self._publish_terminal(_Terminal(self._session_id, raw, rewritten, status, warnings))
+            self._publish_terminal(
+                _Terminal(self._session_id, raw, rewritten, status, warnings, **timing)
+            )
         except Exception as e:
             if raw is not None:
                 status = "failed"
                 if AppError.LLM_FAILED not in warnings:
                     warnings += (AppError.LLM_FAILED,)
             self._publish_terminal(
-                _Terminal(self._session_id, raw, None, status, warnings, error=e)
+                _Terminal(self._session_id, raw, None, status, warnings, error=e, **timing)
             )
 
 
@@ -196,10 +215,12 @@ class _TrayApp(QObject):
         super().__init__()
 
         self._config = load_config()
+        damaged = bool(self._config._damaged_settings)
         imported = import_from_env(copy.deepcopy(self._config))
-        if imported != self._config or has_plaintext_secrets():
-            # Save when .env added values, or to purge plaintext secrets an
-            # older version left in settings.ini (save_config removes them).
+        if imported != self._config or has_plaintext_secrets() or damaged:
+            # Save when .env added values, to purge plaintext secrets an older
+            # version left in settings.ini, or to replace damaged values that
+            # load_config already backed up and reset.
             self._config = imported
             save_config(self._config)
 
@@ -224,6 +245,12 @@ class _TrayApp(QObject):
         self._committed_ids: set[str] = set()
         self._recovery_dlg: RecoveryDialog | None = None
         self._settings_dlg: SettingsDialog | None = None
+        self._setup_dlg: SetupWizard | None = None
+        self._submit_requested = False
+        self._mute = SystemAudioMute()
+        self._finalize_started = 0.0
+        self._worker_started = 0.0
+        self._audio_seconds = 0.0
         # Keep the most recently closed dialog alive for post-event-loop thread joins.
         self._last_settings_dlg: SettingsDialog | None = None
         self._settings_hotkey_capture_paused = False
@@ -250,9 +277,14 @@ class _TrayApp(QObject):
         self._load_history()
         self._build_hotkey()
         self._apply_state(TrayState.IDLE)
+        if damaged:
+            self._on_error(AppError.SETTINGS_DAMAGED)
 
-        # Auto-open settings on manual launch only if startup config is incomplete.
-        if not startup_mode and validate_config(self._config):
+        # On manual launch, guide a first-time user; otherwise open Settings to fix issues.
+        if not startup_mode and not stt_provider_is_configured(self._config.stt_provider()):
+            log.info("No speech provider; opening the setup guide")
+            QTimer.singleShot(0, self._open_setup)
+        elif not startup_mode and validate_config(self._config):
             log.info("Incomplete configuration; opening settings on startup")
             QTimer.singleShot(0, self._open_settings)
 
@@ -341,49 +373,27 @@ class _TrayApp(QObject):
         return checkbox
 
     def _rebuild_menu(self) -> None:
-        """Rebuild the context menu from current config."""
+        """Rebuild the context menu from current config: only everyday controls."""
         self._menu.clear()
         c = self._config
 
         self._add_persistent_checkbox("Enabled", self._enabled, self._toggle_enabled)
 
         self._menu.addSeparator()
-
-        self._add_choice_submenu(
-            "Record Mode",
-            [("hold", "Hold to talk"), ("toggle", "Toggle")],
-            c.recording_mode,
-            self._set_recording_mode,
-        )
-        self._add_choice_submenu("Hotkey", HOTKEY_OPTIONS, c.hotkey, self._set_hotkey)
         self._add_choice_submenu(
             "Language",
             language_choices(c.stt_language, c.stt_language_favorites),
             c.stt_language,
             self._set_language,
         )
-        self._add_choice_submenu(
-            "Post-type Key", POST_KEY_OPTIONS, c.post_type_key, self._set_post_key
-        )
-
-        self._menu.addSeparator()
         try:
-            custom, _mappings = (
-                decode_rewrite_catalog(c.rewrite_catalog)
-                if c.rewrite_catalog is not None
-                else ([], [])
-            )
-            resolve_rewrite_profile(c, None)  # Validate persisted selections, even when AI is off.
+            custom, _mappings = decode_rewrite_catalog(c.rewrite_catalog)
+            resolve_rewrite_profile(c, None)  # Validate persisted selections.
         except (TypeError, ValueError):
-            submenu = self._add_choice_submenu(
-                "Rewrite Profile — repair required",
-                [],
-                "",
-                self._set_rewrite_profile,
-            )
+            submenu = self._add_choice_submenu("Profile", [], "", self._set_rewrite_profile)
             submenu.setEnabled(False)
         else:
-            options = [("__automatic__", "Auto")]
+            options = [("__automatic__", "Auto (by app)")]
             options.extend(
                 (profile.id, profile.name) for profile in (*builtin_rewrite_profiles(), *custom)
             )
@@ -392,13 +402,14 @@ class _TrayApp(QObject):
                 if c.rewrite_selection_mode == "automatic"
                 else c.rewrite_manual_profile_id
             )
-            self._add_choice_submenu("Rewrite Profile", options, current, self._set_rewrite_profile)
+            self._add_choice_submenu("Profile", options, current, self._set_rewrite_profile)
 
-        # Settings / Exit.
         self._menu.addSeparator()
-        self._menu.addAction("Settings...", self._open_settings)
         self._menu.addAction("Copy last", self._copy_last)
         self._menu.addAction("History...", self._open_recovery)
+        self._menu.addAction("Settings...", self._open_settings)
+        self._menu.addAction("Setup guide...", self._open_setup)
+        self._menu.addSeparator()
         self._menu.addAction("Exit", self._exit)
 
     # ------------------------------------------------------------------
@@ -434,6 +445,7 @@ class _TrayApp(QObject):
     def _build_hotkey(self) -> None:
         self._bridge.hotkey_pressed.connect(self._on_hotkey_pressed)
         self._bridge.hotkey_released.connect(self._on_hotkey_released)
+        self._bridge.submit_requested.connect(self._on_submit_requested)
         self._bridge.error_occurred.connect(self._on_error)
         self._bridge.recovery_requested.connect(self._insert_last)
         self._bridge.recovery_cancelled.connect(self._on_escape)
@@ -455,6 +467,8 @@ class _TrayApp(QObject):
     # ------------------------------------------------------------------
 
     def _apply_state(self, state: TrayState) -> None:
+        if state == TrayState.IDLE and self._setup_dlg is not None:
+            self._setup_dlg.ensure_preview()  # The microphone is free again.
         self._tray.setIcon(QIcon(get_icon_pixmap(state)))
         labels = {
             TrayState.IDLE: "Idle",
@@ -478,11 +492,7 @@ class _TrayApp(QObject):
         """Resolve once and apply effective fields only to the supplied session snapshot."""
         profile = resolve_rewrite_profile(config, executable_path)
         config.llm_enabled = profile.kind != "raw"
-        if profile.kind == "clean":
-            config.llm_system_prompt = DEFAULT_LLM_SYSTEM_PROMPT
-        elif profile.kind == "custom":
-            assert profile.prompt is not None  # Validated custom prompts may be empty.
-            config.llm_system_prompt = profile.prompt
+        config.llm_system_prompt = profile.prompt or ""
         return profile.id
 
     def _start_recording(self) -> None:
@@ -494,11 +504,19 @@ class _TrayApp(QObject):
             # foreground identity on Qt before any recording UI changes the focus.
             config = copy.deepcopy(self._config)
             target = get_foreground_target()
+            practice = (
+                self._setup_dlg is not None
+                and (target is None or target.process_id == os.getpid())
+                and self._setup_dlg.isActiveWindow()
+            )
             profile_id = self._apply_rewrite_profile(
                 config, target.executable_path if target else None
             )
             self._session_config = config
-            self._session = _Session(config, target, uuid4().hex, utc_now(), profile_id)
+            self._session = _Session(
+                config, target, uuid4().hex, utc_now(), profile_id, practice=practice
+            )
+            self._submit_requested = False
         except Exception:
             self._recording = False
             self._session_config = None
@@ -509,13 +527,20 @@ class _TrayApp(QObject):
             return
         try:
             device_id = resolve_device(config.audio_device_id, config.audio_device_name)
+            if self._setup_dlg is not None:
+                self._setup_dlg.stop_preview()  # Free the microphone for the real capture.
             self._recorder = AudioRecorder(device_id=device_id)
             self._recorder.rms_threshold = config.rms_threshold
+            self._recorder.trim_silence = config.trim_silence
             self._recorder.start()
             self._pending_audio = None
             self._disarm()
             self._recording = True
             self._play_sound("start")
+            if config.mute_while_recording:
+                # Let the start cue finish before silencing the speakers.
+                session_id = self._session.id
+                QTimer.singleShot(250, lambda: self._mute_if_recording(session_id))
             self._recording_timer.start()
             self._apply_state(TrayState.RECORDING)
             self._level_timer.start()
@@ -549,12 +574,25 @@ class _TrayApp(QObject):
             label, min(capture.level_rms / 32767.0, 1.0), capture.has_callback_data
         )
 
+    def _mute_if_recording(self, session_id: str) -> None:
+        if self._recording and self._session is not None and self._session.id == session_id:
+            self._mute.mute()
+
+    def _on_submit_requested(self) -> None:
+        if self._recording:
+            self._submit_requested = True
+
     def _finalize_recording(self, tail: float = 0.0) -> None:
         """Stop recording and start the processing worker."""
+        self._finalize_started = perf_counter()
         self._recording_timer.stop()
         self._level_timer.stop()
         self._recording = False
+        self._mute.restore()
         self._apply_state(TrayState.PROCESSING)
+        if self._session is not None and self._submit_requested:
+            self._session = replace(self._session, submit=True)
+        self._submit_requested = False
 
         try:
             audio_wav = self._recorder.stop(tail=tail)
@@ -574,6 +612,7 @@ class _TrayApp(QObject):
             self._apply_state(TrayState.IDLE)
             return
 
+        self._audio_seconds = max(0, len(audio_wav) - 44) / 32000
         self._play_sound("stop")
         assert self._session is not None
         self._start_worker(audio_wav, self._session)
@@ -583,8 +622,10 @@ class _TrayApp(QObject):
         self._recording_timer.stop()
         self._level_timer.stop()
         self._recording = False
+        self._mute.restore()
         self._session_config = None
         self._session = None
+        self._submit_requested = False
         try:
             self._recorder.stop()
         except ScreamerError as e:
@@ -601,7 +642,8 @@ class _TrayApp(QObject):
     # ------------------------------------------------------------------
 
     def _on_hotkey_pressed(self) -> None:
-        if not self._enabled or self._exiting or self._settings_dlg is not None:
+        # Dictation stays available while Settings is open; it uses the last saved settings.
+        if not self._enabled or self._exiting:
             return
 
         if self._is_hotkey_capture_active() and not self._recording:
@@ -661,6 +703,7 @@ class _TrayApp(QObject):
         self._stt_only = stt_only
         self._terminal_handled = self._thread_finished = False
         self._cancel_event.clear()
+        self._worker_started = perf_counter()
         worker = _WorkerThread(
             audio,
             session.config,
@@ -722,14 +765,30 @@ class _TrayApp(QObject):
                 self._refresh_recovery()
             else:
                 self._retain(record)
-                if not self._recovery_only:
+                output_started = perf_counter()
+                if session.practice and self._setup_dlg is not None:
+                    if not result.cancelled:
+                        self._setup_dlg.show_practice_result(record.final_text)
+                elif not self._recovery_only:
                     self._deliver(
                         record,
                         record.final_text,
                         session.config.output_mode,
                         session.target,
-                        session.config.post_type_key,
+                        "enter" if session.submit else session.config.post_type_key,
                         allowed=self._automatic_allowed() and not result.cancelled,
+                    )
+                if not self._recovery_only:
+                    finished = perf_counter()
+                    log.info(
+                        "Dictation timing: audio=%.2fs release_to_worker=%.3fs stt=%.3fs "
+                        "rewrite=%.3fs output=%.3fs total=%.3fs",
+                        self._audio_seconds,
+                        max(0.0, self._worker_started - self._finalize_started),
+                        result.stt_seconds,
+                        result.rewrite_seconds,
+                        finished - output_started,
+                        max(0.0, finished - self._finalize_started),
                     )
             for warning in result.warnings:
                 self._on_error(warning)
@@ -766,12 +825,7 @@ class _TrayApp(QObject):
             self._finish_exit()
 
     def _automatic_allowed(self) -> bool:
-        return (
-            not self._cancel_event.is_set()
-            and self._enabled
-            and not self._exiting
-            and self._settings_dlg is None
-        )
+        return not self._cancel_event.is_set() and self._enabled and not self._exiting
 
     @staticmethod
     def _same_target(first: WindowIdentity | None, second: WindowIdentity | None) -> bool:
@@ -795,6 +849,7 @@ class _TrayApp(QObject):
     ) -> None:
         attempt = DeliveryAttempt(utc_now(), mode)
         clipboard_failed = False
+        paste = mode == "paste" and not copy_only
         if not allowed:
             attempt = replace(attempt, text_state="withheld", reason="suppressed")
         else:
@@ -815,7 +870,7 @@ class _TrayApp(QObject):
                     clipboard_failed = True
                     attempt = replace(attempt, copied=False, reason="clipboard_failed")
                     self._on_error(AppError.CLIPBOARD_FAILED)
-            if mode in {"type", "copy_and_type", "manual"} and not copy_only:
+            if mode in {"type", "copy_and_type", "manual", "paste"} and not copy_only:
                 current = get_foreground_target()
                 if mode != "manual" and not self._automatic_allowed():
                     attempt = replace(attempt, text_state="withheld", reason="suppressed")
@@ -831,47 +886,109 @@ class _TrayApp(QObject):
                     )
                     self._on_error(AppError.OUTPUT_WITHHELD)
                 else:
+                    restore = None
                     try:
-                        report = type_text(
-                            text, None if post_key == "none" else post_key, expected_target=target
+                        if paste:
+                            restore = self._stage_paste(text)
+                    except Exception:
+                        # The clipboard, not the target, failed: nothing was typed.
+                        clipboard_failed = True
+                        attempt = replace(attempt, copied=False, text_state="withheld")
+                        self._on_error(AppError.CLIPBOARD_FAILED)
+                    else:
+                        attempt = self._inject(
+                            attempt, text, post_key, target, paste=paste, restore=restore
                         )
-                        post_state = (
-                            "skipped"
-                            if report.post_key_skipped
-                            else "submitted"
-                            if report.post_key_events_submitted
-                            else "not_requested"
-                        )
-                        attempt = replace(
-                            attempt,
-                            text_state="events_submitted",
-                            text_events_submitted=report.text_events_submitted,
-                            post_key_state=post_state,
-                            reason="post_key_skipped"
-                            if report.post_key_skipped
-                            else attempt.reason,
-                        )
-                        if report.post_key_skipped:
-                            self._on_error(AppError.OUTPUT_WITHHELD)
-                    except Exception as error:
-                        count = getattr(error, "text_events_submitted", None)
-                        expected_count = len(text.encode("utf-16-le", errors="surrogatepass"))
-                        text_complete = count is not None and count == expected_count
-                        attempt = replace(
-                            attempt,
-                            text_state="events_submitted" if text_complete else "reported_failed",
-                            text_events_submitted=count,
-                            post_key_state="reported_failed"
-                            if text_complete and post_key != "none"
-                            else "not_requested",
-                            reason="post_key_failed"
-                            if text_complete and post_key != "none"
-                            else "injection_failed",
-                        )
-                        self._on_error(AppError.INJECTION_FAILED)
         if clipboard_failed:
             attempt = replace(attempt, reason="clipboard_failed")
         self._update_attempt(replace(record, last_delivery=attempt))
+
+    def _inject(
+        self,
+        attempt: DeliveryAttempt,
+        text: str,
+        post_key: str,
+        target: WindowIdentity | None,
+        *,
+        paste: bool,
+        restore,
+    ) -> DeliveryAttempt:
+        """Run ``type_text`` and fold its outcome into *attempt*."""
+        try:
+            try:
+                report = type_text(
+                    text,
+                    None if post_key == "none" else post_key,
+                    expected_target=target,
+                    paste=paste,
+                )
+            finally:
+                if restore is not None:
+                    # The target reads the clipboard asynchronously after Ctrl+V.
+                    QTimer.singleShot(800, restore)
+            post_state = (
+                "skipped"
+                if report.post_key_skipped
+                else "submitted"
+                if report.post_key_events_submitted
+                else "not_requested"
+            )
+            attempt = replace(
+                attempt,
+                text_state="events_submitted",
+                text_events_submitted=report.text_events_submitted,
+                post_key_state=post_state,
+                reason="post_key_skipped" if report.post_key_skipped else attempt.reason,
+            )
+            if report.post_key_skipped:
+                self._on_error(AppError.OUTPUT_WITHHELD)
+        except Exception as error:
+            count = getattr(error, "text_events_submitted", None)
+            expected_count = getattr(error, "text_events_expected", None)
+            if expected_count is None:
+                expected_count = (
+                    4 if paste else len(text.encode("utf-16-le", errors="surrogatepass"))
+                )
+            text_complete = count is not None and count == expected_count
+            attempt = replace(
+                attempt,
+                text_state="events_submitted" if text_complete else "reported_failed",
+                text_events_submitted=count,
+                post_key_state="reported_failed"
+                if text_complete and post_key != "none"
+                else "not_requested",
+                reason="post_key_failed"
+                if text_complete and post_key != "none"
+                else "injection_failed",
+            )
+            self._on_error(AppError.INJECTION_FAILED)
+        return attempt
+
+    @staticmethod
+    def _stage_paste(text: str):
+        """Put *text* on the clipboard; return a callback that restores the old contents."""
+        from PySide6.QtCore import QMimeData
+
+        clipboard = QApplication.clipboard()
+        previous = QMimeData()
+        source = clipboard.mimeData()
+        if source is not None:
+            for fmt in source.formats():
+                previous.setData(fmt, source.data(fmt))
+        clipboard.setText(text)
+        if (
+            platform.system() == "Windows"
+            and QApplication.platformName() == "windows"
+            and not clipboard.ownsClipboard()
+        ):
+            raise ScreamerError(AppError.CLIPBOARD_FAILED)
+
+        def restore() -> None:
+            # Leave the clipboard alone if the user copied something else meanwhile.
+            if clipboard.text() == text:
+                clipboard.setMimeData(previous)
+
+        return restore
 
     def _load_history(self) -> None:
         self._committed = []
@@ -920,7 +1037,7 @@ class _TrayApp(QObject):
             self._recovery_records(),
             history_enabled=self._config.history_enabled,
             pending=self._pending_audio is not None,
-            busy=self._worker is not None or self._recording or self._settings_dlg is not None,
+            busy=self._worker is not None or self._recording,
             enabled=self._enabled and not self._exiting,
             shortcut=hotkey.to_label() if hotkey else "",
             candidate_id=self._candidate.id if self._candidate else None,
@@ -928,7 +1045,7 @@ class _TrayApp(QObject):
         )
 
     def _open_recovery(self) -> None:
-        if self._exiting or self._settings_dlg is not None:
+        if self._exiting:
             return
         if self._recovery_dlg is None:
             dialog = self._recovery_dlg = RecoveryDialog()
@@ -945,13 +1062,7 @@ class _TrayApp(QObject):
         self._recovery_dlg.activateWindow()
 
     def _recovery_allowed(self) -> bool:
-        return (
-            self._enabled
-            and not self._exiting
-            and self._settings_dlg is None
-            and not self._recording
-            and self._worker is None
-        )
+        return self._enabled and not self._exiting and not self._recording and self._worker is None
 
     def _copy_recovery(self, record: DictationRecord, variant: str) -> None:
         if self._recovery_allowed():
@@ -1100,45 +1211,6 @@ class _TrayApp(QObject):
         log.info("Screamer %s", "enabled" if checked else "disabled")
         self._refresh_recovery()
 
-    def _set_recording_mode(self, mode: str, rebuild_menu: bool = True) -> None:
-        self._config.recording_mode = mode
-        save_config(self._config)
-        self._restart_hotkey()
-        if rebuild_menu:
-            self._rebuild_menu()
-        log.info("Recording mode set to %s", mode)
-
-    def _set_hotkey(self, key: str, rebuild_menu: bool = True) -> None:
-        hotkey = Hotkey.parse(key)
-        if hotkey is None or hotkey.validate() is not None:
-            self._rebuild_menu()
-            self._on_error(AppError.HOTKEY_INVALID)
-            return
-        if hotkey == Hotkey.parse(self._config.recovery_hotkey):
-            self._rebuild_menu()
-            self._on_error(AppError.HOTKEY_CONFLICT)
-            return
-        previous = self._config.hotkey
-        self._config.hotkey = hotkey.to_canonical()
-        try:
-            save_config(self._config)
-        except Exception:
-            self._config.hotkey = previous
-            self._rebuild_menu()
-            self._on_error(AppError.KEY_STORAGE_FAILED)
-            return
-        self._restart_hotkey()
-        if rebuild_menu:
-            self._rebuild_menu()
-        log.info("Hotkey set to %s", key)
-
-    def _set_post_key(self, key: str, rebuild_menu: bool = True) -> None:
-        self._config.post_type_key = key
-        save_config(self._config)
-        if rebuild_menu:
-            self._rebuild_menu()
-        log.info("Post-type key set to %s", key)
-
     def _set_language(self, code: str, rebuild_menu: bool = True) -> None:
         previous = self._config.stt_language
         self._config.stt_language = code
@@ -1154,7 +1226,6 @@ class _TrayApp(QObject):
         log.info("STT language set to %s", code or "auto")
 
     def _set_rewrite_profile(self, selection: str, rebuild_menu: bool = True) -> None:
-        self._config.llm_enabled = True
         previous = (self._config.rewrite_selection_mode, self._config.rewrite_manual_profile_id)
         if selection == "__automatic__":
             self._config.rewrite_selection_mode = "automatic"
@@ -1192,12 +1263,38 @@ class _TrayApp(QObject):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self._open_settings()
 
+    def _open_setup(self) -> None:
+        if self._exiting or self._settings_dlg is not None:
+            return
+        if self._setup_dlg is None:
+            hotkey = Hotkey.parse(self._config.hotkey)
+            dialog = self._setup_dlg = SetupWizard(
+                self._config,
+                devices_fn=self._get_device_list,
+                hotkey_label=hotkey.to_label() if hotkey else "",
+            )
+            dialog.saved.connect(self._on_setup_saved)
+            dialog.settings_requested.connect(self._open_settings)
+            dialog.finished.connect(self._on_setup_closed)
+        self._setup_dlg.show()
+        self._setup_dlg.raise_()
+        self._setup_dlg.activateWindow()
+
+    def _on_setup_saved(self) -> None:
+        self._sync_settings_from_disk()
+
+    def _on_setup_closed(self, _result: int = 0) -> None:
+        dialog = self._setup_dlg
+        self._setup_dlg = None
+        if dialog is not None:
+            dialog.stop_preview()
+            dialog.deleteLater()
+
     def _open_settings(self) -> None:
         if self._settings_dlg is not None or self._exiting:
             return  # Already open.
-        if self._recording or self._worker is not None:
-            self._on_error(AppError.DICTATION_ACTIVE)
-            return
+        if self._setup_dlg is not None:
+            self._setup_dlg.close()
 
         devices = self._get_device_list()
         dlg = SettingsDialog(
@@ -1275,8 +1372,11 @@ class _TrayApp(QObject):
         self._exiting = True
         self._disarm()
         self._pending_audio = None
+        self._mute.restore()
         if self._recovery_dlg is not None:
             self._recovery_dlg.close()
+        if self._setup_dlg is not None:
+            self._setup_dlg.close()
         self._recording_timer.stop()
         self._level_timer.stop()
         self._recording = False
@@ -1330,6 +1430,7 @@ class _TrayApp(QObject):
         self._exiting = True
         self._disarm()
         self._pending_audio = None
+        self._mute.restore()
         self._recording_timer.stop()
         self._level_timer.stop()
         self._recording = False
@@ -1350,6 +1451,9 @@ class _TrayApp(QObject):
         except Exception:
             log.error("Could not stop capture during final shutdown")
 
+        if self._setup_dlg is not None:
+            # done() joins a running connection test; finished → _on_setup_closed.
+            self._setup_dlg.done(SetupWizard.DialogCode.Rejected)
         dialog = self._settings_dlg or self._last_settings_dlg
         if dialog is not None:
             dialog.done(SettingsDialog.DialogCode.Rejected)

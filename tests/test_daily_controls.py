@@ -59,7 +59,7 @@ class DailyControlsTests(unittest.TestCase):
             patch("src.main.type_text", return_value=InjectionReport(14, 0, False)) as inject,
         ):
             tray._insert_last()
-        inject.assert_called_once_with("old raw", None, expected_target=target)
+        inject.assert_called_once_with("old raw", None, expected_target=target, paste=False)
 
     def test_history_selection_handles_missing_or_broken_shortcut(self):
         for shortcut in ("", "broken"):
@@ -157,7 +157,7 @@ class DailyControlsTests(unittest.TestCase):
             patch("src.main.type_text", return_value=InjectionReport(10, 0, False)) as inject,
         ):
             tray._insert_last()
-        inject.assert_called_once_with("clean", None, expected_target=target)
+        inject.assert_called_once_with("clean", None, expected_target=target, paste=False)
         tray._copy_last()
         self.assertTrue(tray._latest.last_delivery.copied)
 
@@ -195,8 +195,8 @@ class DailyControlsTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, r"\.exe"):
                 normalize_executable_path(name)
 
-    def test_populate_does_not_change_config_profile_selection_when_rewrite_is_off(self):
-        cfg = AppConfig(llm_enabled=False, rewrite_selection_mode="automatic")
+    def test_populate_does_not_change_config_profile_selection(self):
+        cfg = AppConfig(rewrite_selection_mode="automatic")
         dialog = SettingsDialog(cfg, devices=[])
         self.addCleanup(dialog.deleteLater)
         working = dialog.get_config()
@@ -205,7 +205,8 @@ class DailyControlsTests(unittest.TestCase):
         self.assertEqual(
             (working.rewrite_selection_mode, working.rewrite_manual_profile_id), before
         )
-        self.assertEqual(dialog._rewrite_profile_combo.currentData(), "raw")
+        self.assertEqual(dialog._rewrite_active_combo.currentData(), "__automatic__")
+        self.assertEqual(dialog._rewrite_default_combo.currentData(), "clean")
 
     def test_insert_shortcut_uses_capture_and_survives_collection(self):
         dialog = SettingsDialog(AppConfig(), devices=[])

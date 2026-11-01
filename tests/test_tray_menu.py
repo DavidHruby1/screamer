@@ -22,6 +22,12 @@ def make_tray_app():
     QObject.__init__(tray_app)
     tray_app._menu = QMenu()
     tray_app._settings_dlg = None
+    tray_app._setup_dlg = None
+    tray_app._submit_requested = False
+    tray_app._mute = Mock()
+    tray_app._finalize_started = 0.0
+    tray_app._worker_started = 0.0
+    tray_app._audio_seconds = 0.0
     tray_app._session_config = None
     tray_app._session = None
     tray_app._config = AppConfig()
@@ -127,16 +133,23 @@ class TrayMenuTests(unittest.TestCase):
         self.assertFalse(tray._settings_hotkey_capture_paused)
 
     def test_opening_settings_does_not_interrupt_dictation(self):
-        from src.utils import AppError
-
         tray = make_tray_app()
         tray._recording = True
+        tray._recorder = Mock()
         tray._on_error = Mock()
-        with patch("src.main.SettingsDialog") as dialog:
+        tray._get_device_list = lambda: []
+        seen = []
+        with (
+            patch("src.main.SettingsDialog") as dialog,
+            patch("src.main.load_config", return_value=AppConfig()),
+        ):
+            dialog.return_value.exec.side_effect = lambda: seen.append(tray._recording) or 0
             tray._open_settings()
-        dialog.assert_not_called()
+        dialog.assert_called_once()
+        self.assertEqual(seen, [True])
         self.assertTrue(tray._recording)
-        tray._on_error.assert_called_once_with(AppError.DICTATION_ACTIVE)
+        tray._recorder.stop.assert_not_called()
+        tray._on_error.assert_not_called()
 
     def test_exit_during_initial_settings_stops_outer_event_loop(self):
         from src.config import AppConfig
@@ -145,8 +158,14 @@ class TrayMenuTests(unittest.TestCase):
         previous_quit_policy = app.quitOnLastWindowClosed()
         app.setQuitOnLastWindowClosed(False)
         self.addCleanup(app.setQuitOnLastWindowClosed, previous_quit_policy)
+        # Speech is configured but the selected profile needs a missing LLM.
+        invalid = AppConfig(
+            stt_base_url="http://localhost:8000/v1",
+            stt_model="local",
+            rewrite_manual_profile_id="clean",
+        )
         with (
-            patch("src.main.load_config", return_value=AppConfig()),
+            patch("src.main.load_config", return_value=invalid),
             patch("src.main.import_from_env", side_effect=lambda cfg: cfg),
             patch("src.main.has_plaintext_secrets", return_value=False),
             patch("src.main.save_config"),
@@ -250,7 +269,9 @@ class TrayMenuTests(unittest.TestCase):
         from src.config import AppConfig
 
         tray = make_tray_app()
-        tray._config = AppConfig(stt_language="cs", llm_enabled=True, post_type_key="enter")
+        tray._config = AppConfig(
+            stt_language="cs", rewrite_manual_profile_id="clean", post_type_key="enter"
+        )
         tray._recorder = Mock()
         tray._cancel_event = threading.Event()
         tray._worker = None
@@ -268,7 +289,7 @@ class TrayMenuTests(unittest.TestCase):
         ):
             tray._start_recording()
             tray._config.stt_language = "en"
-            tray._config.llm_enabled = False
+            tray._config.rewrite_manual_profile_id = "raw"
             tray._config.post_type_key = "tab"
             tray._finalize_recording()
 
@@ -285,7 +306,7 @@ class TrayMenuTests(unittest.TestCase):
             self.assertIsNotNone(tray._session_config)
             tray._on_worker_finished()
 
-        type_text.assert_called_once_with("hello", "enter", expected_target=target)
+        type_text.assert_called_once_with("hello", "enter", expected_target=target, paste=False)
         self.assertIsNone(tray._session_config)
         self.assertEqual(tray._config.stt_language, "")
 
@@ -309,7 +330,6 @@ class TrayMenuTests(unittest.TestCase):
             llm_base_url="https://llm.test/v1",
             llm_model="model",
             llm_system_prompt="Clean dictation.",
-            llm_prompt_origin="user_saved",
         )
         session = deepcopy(live)
         live.stt_language = "en"
@@ -366,13 +386,12 @@ class TrayMenuTests(unittest.TestCase):
                 widget = action.defaultWidget() if hasattr(action, "defaultWidget") else None
                 label = widget.text() if widget is not None else action.text()
                 actions["AI Rewrite" if label.startswith("AI Rewrite") else label] = action
+            for removed in ("Record Mode", "Hotkey", "Post-type Key"):
+                self.assertNotIn(removed, actions)
             seen.append(
                 (
-                    actions["Record Mode"].isEnabled(),
-                    actions["Hotkey"].isEnabled(),
                     actions["Language"].isEnabled(),
-                    actions["Post-type Key"].isEnabled(),
-                    actions["Rewrite Profile"].isEnabled(),
+                    actions["Profile"].isEnabled(),
                     actions["Enabled"].defaultWidget().isEnabled(),
                     actions["Exit"].isEnabled(),
                 )
@@ -392,8 +411,8 @@ class TrayMenuTests(unittest.TestCase):
             tray._open_settings()
 
         inspect_menu()
-        self.assertEqual(seen[:2], [(False, False, False, False, False, True, True)] * 2)
-        self.assertEqual(seen[2], (True, True, True, True, True, True, True))
+        self.assertEqual(seen[:2], [(False, False, True, True)] * 2)
+        self.assertEqual(seen[2], (True, True, True, True))
         self.assertEqual(tray._config.post_type_key, "enter")
 
     def test_language_submenu_shows_builtins_favorites_and_old_active_code(self):
@@ -407,7 +426,7 @@ class TrayMenuTests(unittest.TestCase):
         submenu = next(a.menu() for a in tray._menu.actions() if a.text() == "Language")
         radios = [action.defaultWidget() for action in submenu.actions()]
         self.assertEqual(
-            [radio.text() for radio in radios], ["Auto", "Czech", "English", "de", "zz"]
+            [radio.text() for radio in radios], ["Auto", "Czech", "English", "German", "zz"]
         )
         self.assertEqual([radio.isChecked() for radio in radios], [False] * 4 + [True])
 
@@ -494,6 +513,7 @@ class TrayMenuTests(unittest.TestCase):
     def test_result_does_not_type_into_own_settings_dialog(self):
         import threading
         from src.config import AppConfig
+        from src.utils import AppError
 
         tray = make_tray_app()
         tray._settings_dlg = Mock()
@@ -502,13 +522,18 @@ class TrayMenuTests(unittest.TestCase):
         tray._enabled = True
         tray._exiting = False
         tray._apply_state = Mock()
-        tray._session = _Session(
-            tray._config, WindowIdentity(100, 200), "settings", "2026-09-30T12:00:00+00:00"
-        )
-        with patch("src.main.type_text") as type_text:
+        tray._on_error = Mock()
+        own = WindowIdentity(100, os.getpid())
+        tray._session = _Session(tray._config, own, "settings", "2026-09-30T12:00:00+00:00")
+        with (
+            patch("src.main.type_text") as type_text,
+            patch("src.main.get_foreground_target", return_value=own),
+        ):
             tray._on_terminal(_Terminal("settings", "secret", None, "not_requested", ()))
         type_text.assert_not_called()
         self.assertEqual(tray._latest.raw_text, "secret")
+        self.assertEqual(tray._latest.last_delivery.text_state, "withheld")
+        tray._on_error.assert_called_once_with(AppError.OUTPUT_WITHHELD)
 
     def test_hotkey_restart_waits_for_active_hold_recording_release(self):
         tray = make_tray_app()
@@ -546,16 +571,28 @@ class TrayMenuTests(unittest.TestCase):
             patch.object(_TrayApp, "_apply_state"),
             patch("src.main.has_plaintext_secrets", return_value=False),
             patch.object(_TrayApp, "_open_settings"),
+            patch.object(_TrayApp, "_open_setup"),
         ]
 
         started = [p.start() for p in patches]
+        open_settings, open_setup = started[-2:]
         try:
             _TrayApp(startup_mode=True)
-            started[-1].assert_not_called()
+            QApplication.processEvents()
+            open_settings.assert_not_called()
+            open_setup.assert_not_called()
 
+            # No speech provider: a manual launch opens the setup guide instead.
             _TrayApp(startup_mode=False)
             QApplication.processEvents()
-            started[-1].assert_called_once_with()
+            open_setup.assert_called_once_with()
+            open_settings.assert_not_called()
+
+            started[0].return_value = AppConfig(stt_base_url="http://localhost/v1", stt_model="m")
+            _TrayApp(startup_mode=False)
+            QApplication.processEvents()
+            open_settings.assert_called_once_with()
+            open_setup.assert_called_once_with()
         finally:
             for p in reversed(patches):
                 p.stop()
@@ -688,7 +725,7 @@ class TrayMenuTests(unittest.TestCase):
             patch("src.main.get_foreground_target", return_value=target),
         ):
             tray_app._on_terminal(_Terminal("typed", "typed", None, "not_requested", ()))
-        type_text.assert_called_once_with("typed", "enter", expected_target=target)
+        type_text.assert_called_once_with("typed", "enter", expected_target=target, paste=False)
 
     def test_discard_reports_microphone_stop_error(self):
         from src.utils import AppError, ScreamerError
@@ -751,67 +788,6 @@ class TrayMenuTests(unittest.TestCase):
         checkbox.setChecked(True)
 
         self.assertEqual(called, [True])
-
-    def test_set_post_key_rebuilds_by_default_but_can_skip(self):
-        from src.config import AppConfig
-
-        tray_app = make_tray_app()
-        tray_app._config = AppConfig()
-
-        rebuilds = []
-        tray_app._rebuild_menu = lambda: rebuilds.append("rebuilt")
-
-        with patch("src.main.save_config"):
-            tray_app._set_post_key("enter")
-            self.assertEqual(rebuilds, ["rebuilt"])
-
-            rebuilds.clear()
-            tray_app._set_post_key("tab", rebuild_menu=False)
-            self.assertEqual(rebuilds, [])
-
-    def test_set_hotkey_rebuilds_by_default_but_can_skip(self):
-        from src.config import AppConfig
-
-        tray_app = make_tray_app()
-        tray_app._config = AppConfig()
-
-        rebuilds = []
-        restarts = []
-        tray_app._rebuild_menu = lambda: rebuilds.append("rebuilt")
-        tray_app._restart_hotkey = lambda: restarts.append("restarted")
-
-        with patch("src.main.save_config"):
-            tray_app._set_hotkey("ctrl+alt+key:0x20")
-            self.assertEqual(rebuilds, ["rebuilt"])
-            self.assertEqual(restarts, ["restarted"])
-
-            rebuilds.clear()
-            restarts.clear()
-            tray_app._set_hotkey("ctrl+shift+key:0x20", rebuild_menu=False)
-            self.assertEqual(rebuilds, [])
-            self.assertEqual(restarts, ["restarted"])
-
-    def test_set_recording_mode_rebuilds_by_default_but_can_skip(self):
-        from src.config import AppConfig
-
-        tray_app = make_tray_app()
-        tray_app._config = AppConfig()
-
-        rebuilds = []
-        restarts = []
-        tray_app._rebuild_menu = lambda: rebuilds.append("rebuilt")
-        tray_app._restart_hotkey = lambda: restarts.append("restarted")
-
-        with patch("src.main.save_config"):
-            tray_app._set_recording_mode("hold")
-            self.assertEqual(rebuilds, ["rebuilt"])
-            self.assertEqual(restarts, ["restarted"])
-
-            rebuilds.clear()
-            restarts.clear()
-            tray_app._set_recording_mode("toggle", rebuild_menu=False)
-            self.assertEqual(rebuilds, [])
-            self.assertEqual(restarts, ["restarted"])
 
 
 if __name__ == "__main__":

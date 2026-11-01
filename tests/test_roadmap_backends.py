@@ -31,7 +31,7 @@ class VocabularyPersistenceTests(unittest.TestCase):
         self.assertFalse(restored.stt_prompt_primary_enabled)
         self.assertFalse(restored.stt_prompt_fallback_enabled)
 
-    def test_damaged_vocabulary_survives_unrelated_save(self):
+    def test_damaged_vocabulary_is_backed_up_and_reset(self):
         from src.config import _get_qsettings
 
         settings = _get_qsettings()
@@ -40,10 +40,15 @@ class VocabularyPersistenceTests(unittest.TestCase):
         settings.sync()
         cfg = load_config()
         self.assertEqual(cfg.vocabulary_entries, [])
+        self.assertEqual(cfg._damaged_settings, ["vocabulary_entries"])
+        backup = Path(settings.fileName()).parent / "settings-damaged.txt"
+        self.assertIn(f"vocabulary_entries = {damaged}", backup.read_text(encoding="utf-8"))
         cfg.stt_language = "cs"
         save_config(cfg)
-        self.assertEqual(_get_qsettings().value("vocabulary_entries"), damaged)
-        self.assertEqual(load_config().stt_language, "cs")
+        self.assertEqual(_get_qsettings().value("vocabulary_entries"), "[]")
+        restored = load_config()
+        self.assertEqual(restored.stt_language, "cs")
+        self.assertEqual(restored._damaged_settings, [])
 
     def test_invalid_vocabulary_and_output_preferences_cannot_be_applied(self):
         valid = dict(stt_api_key="key", stt_base_url="https://example.test/v1", stt_model="stt")
@@ -130,32 +135,26 @@ class VocabularyRequestTests(unittest.TestCase):
             transcribe(b"wav", cfg)
         self.assertNotIn("prompt", post.call_args.kwargs["data"])
 
-    def test_rewrite_guidance_is_separate_from_literal_transcript_and_shared_by_fallback(self):
+    def test_rewrite_guidance_is_separate_from_literal_transcript(self):
         raw = "Ask ChatGPT to explain this identifier."
         cfg = AppConfig(
             llm_enabled=True,
             llm_api_key="primary",
             llm_base_url="https://primary.test",
             llm_model="model",
-            llm_fallback_enabled=True,
-            llm_fallback_api_key="fallback",
-            llm_fallback_base_url="https://fallback.test",
-            llm_fallback_model="model",
             llm_system_prompt="Keep my exact policy.\r\n",
-            llm_prompt_origin="user_saved",
             vocabulary_entries=["Screamer", "QThread"],
             stt_language="cs",
         )
         with patch(
             "src.http_client.post",
-            side_effect=[
-                httpx.ConnectError("offline"),
-                httpx.Response(200, json={"choices": [{"message": {"content": "candidate"}}]}),
-            ],
+            return_value=httpx.Response(
+                200, json={"choices": [{"message": {"content": "candidate"}}]}
+            ),
         ) as post:
             result = rewrite(raw, cfg)
         prompts = [call.kwargs["json"]["messages"][0]["content"] for call in post.call_args_list]
-        self.assertEqual(prompts[0], prompts[1])
+        self.assertEqual(len(prompts), 1)
         self.assertTrue(prompts[0].startswith(cfg.llm_system_prompt))
         self.assertIn("QThread", prompts[0])
         self.assertIn("preferred", prompts[0].lower())
@@ -195,21 +194,26 @@ class KeylessSttTests(unittest.TestCase):
                         return_value=httpx.Response(200, json={"text": "CLI result"}),
                     ) as post,
                     contextlib.redirect_stdout(output),
+                    self.assertRaises(SystemExit) as exited,
                 ):
                     runpy.run_path(module.__file__, run_name="__main__")
+                self.assertEqual(exited.exception.code, 0)
                 backfill.assert_called_once()
                 self.assertEqual(post.call_count, 1)
                 self.assertNotIn("authorization", post.call_args.kwargs["headers"])
-                self.assertIn("Transcription: CLI result", output.getvalue())
+                self.assertIn("CLI result", output.getvalue())
+                self.assertIn("STT latency: n=1", output.getvalue())
 
-    def test_url_and_model_allow_keyless_stt_but_not_keyless_llm(self):
+    def test_url_and_model_allow_keyless_stt_and_keyless_llm(self):
         cfg = AppConfig(stt_base_url="http://127.0.0.1:8000/v1", stt_model="local")
         self.assertEqual(validate_config(cfg), [])
-        self.assertFalse(ProviderConfig(base_url=cfg.stt_base_url, model="local").is_complete)
-        cfg.llm_enabled = True
+        self.assertTrue(ProviderConfig(base_url=cfg.stt_base_url, model="local").is_complete)
+        self.assertFalse(ProviderConfig(api_key="key", base_url=cfg.stt_base_url).is_complete)
+        cfg.rewrite_manual_profile_id = "clean"
+        self.assertTrue(any(issue.tab_index == 2 for issue in validate_config(cfg)))
         cfg.llm_base_url = "http://127.0.0.1:8001/v1"
         cfg.llm_model = "llm"
-        self.assertTrue(any(issue.tab_index == 2 for issue in validate_config(cfg)))
+        self.assertEqual(validate_config(cfg), [])
 
     def test_keyless_request_has_no_default_authorization_and_keeps_exact_route(self):
         cfg = AppConfig(stt_base_url="http://127.0.0.1:8000/v1/", stt_model="local")

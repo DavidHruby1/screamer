@@ -23,6 +23,9 @@ def _bare_app():
     app._tray = MagicMock()  # _apply_state calls setIcon/setToolTip
     app._snackbar = MagicMock()  # what we assert on
     app._recovery_dlg = None
+    app._setup_dlg = None
+    app._submit_requested = False
+    app._mute = MagicMock()
     app._armed = None
     return app
 
