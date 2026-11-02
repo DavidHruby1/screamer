@@ -47,6 +47,9 @@ class DictationRecord:
         return self.raw_text
 
 
+# Every ``config.OUTPUT_MODES`` key plus the manual "insert last" delivery.
+DELIVERY_MODES = frozenset({"type", "paste", "copy", "copy_and_type", "manual"})
+
 _REASONS = {
     None,
     "target_changed",
@@ -124,7 +127,7 @@ def _decode_record(value: object) -> DictationRecord:
     if attempt is not None:
         attempt = _known_fields(DeliveryAttempt, attempt)
         _timestamp(attempt["attempted_at"])
-        if attempt["mode"] not in {"type", "copy", "copy_and_type", "manual"}:
+        if attempt["mode"] not in DELIVERY_MODES:
             raise ValueError("Invalid output mode")
         if type(attempt["copied"]) is not bool:
             raise ValueError("Invalid copied flag")

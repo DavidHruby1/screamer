@@ -51,8 +51,9 @@ class DailyControlsTests(unittest.TestCase):
         bridge = SignalBridge()
         bridge.recovery_cancelled.connect(tray._on_escape)
         listener = HotkeyListener(Hotkey.parse("key:0x77"), HotkeyMode.HOLD, bridge)
-        for _ in range(3):
-            listener._on_kb_event(0x100, 0x1B)
+        listener._on_kb_event(0x100, 0x1B)
+        listener._on_kb_event(0x100, 0x1B)
+        listener._on_kb_event(0x100, 0x1B)
         target = WindowIdentity(100, 200)
         with (
             patch("src.main.get_foreground_target", return_value=target),
@@ -61,19 +62,23 @@ class DailyControlsTests(unittest.TestCase):
             tray._insert_last()
         inject.assert_called_once_with("old raw", None, expected_target=target, paste=False)
 
-    def test_history_selection_handles_missing_or_broken_shortcut(self):
-        for shortcut in ("", "broken"):
-            with self.subTest(shortcut=shortcut):
-                tray = make_tray_app()
-                tray._config.recovery_hotkey = shortcut
-                tray._latest = DictationRecord("one", "2026-10-31", "raw", "clean", "succeeded")
-                dialog = RecoveryDialog()
-                self.addCleanup(dialog.deleteLater)
-                tray._recovery_dlg = dialog
-                tray._select_history(tray._latest, "raw")
-                self.assertEqual(tray._last_result()[1], "raw")
-                self.assertIn("Raw text selected", dialog._notice.text())
-                self.assertIn("Set the Insert last shortcut in Settings", dialog._notice.text())
+    def assert_history_selection_asks_to_set_shortcut(self, shortcut):
+        tray = make_tray_app()
+        tray._config.recovery_hotkey = shortcut
+        tray._latest = DictationRecord("one", "2026-10-31", "raw", "clean", "succeeded")
+        dialog = RecoveryDialog()
+        self.addCleanup(dialog.deleteLater)
+        tray._recovery_dlg = dialog
+        tray._select_history(tray._latest, "raw")
+        self.assertEqual(tray._last_result()[1], "raw")
+        self.assertIn("Raw text selected", dialog._notice.text())
+        self.assertIn("Set the Insert last shortcut in Settings", dialog._notice.text())
+
+    def test_history_selection_without_shortcut_asks_to_set_one(self):
+        self.assert_history_selection_asks_to_set_shortcut("")
+
+    def test_history_selection_with_broken_shortcut_asks_to_set_one(self):
+        self.assert_history_selection_asks_to_set_shortcut("broken")
 
     def test_history_notice_preserves_selected_variant_after_insertion_and_refresh(self):
         tray = make_tray_app()
@@ -115,38 +120,44 @@ class DailyControlsTests(unittest.TestCase):
         self.assertFalse(tray._recording)
         self.assertIsNone(tray._session)
 
-    def test_escape_discards_audio_in_hold_and_toggle_even_after_trigger_release(self):
-        for mode in HotkeyMode:
-            with self.subTest(mode=mode):
-                tray = make_tray_app()
-                tray._apply_state = Mock()
-                tray._play_sound = Mock()
-                recorder = Mock()
-                bridge = SignalBridge()
-                bridge.hotkey_pressed.connect(tray._on_hotkey_pressed)
-                bridge.hotkey_released.connect(tray._on_hotkey_released)
-                bridge.recovery_cancelled.connect(tray._on_escape)
-                listener = HotkeyListener(Hotkey.parse("key:0x77"), mode, bridge)
-                tray._hotkey = listener
-                with (
-                    patch("src.main.get_foreground_target", return_value=None),
-                    patch("src.main.resolve_device", return_value=None),
-                    patch("src.main.AudioRecorder", return_value=recorder),
-                    patch.object(tray, "_start_worker") as worker,
-                ):
-                    listener._trigger_down()
-                    self.assertTrue(tray._recording)
-                    if mode == HotkeyMode.TOGGLE:
-                        listener._trigger_up()
-                    listener._on_kb_event(0x100, 0x1B)
-                    listener._trigger_up()
-                    self.assertFalse(tray._recording)
-                    self.assertIsNone(tray._session)
-                    worker.assert_not_called()
-                    recorder.stop.assert_called_once()
-                    self.assertEqual(
-                        [c.args[0] for c in tray._play_sound.call_args_list], ["start", "cancel"]
-                    )
+    def start_recording(self, mode):
+        tray = make_tray_app()
+        tray._apply_state = Mock()
+        tray._play_sound = Mock()
+        recorder = Mock()
+        bridge = SignalBridge()
+        bridge.hotkey_pressed.connect(tray._on_hotkey_pressed)
+        bridge.hotkey_released.connect(tray._on_hotkey_released)
+        bridge.recovery_cancelled.connect(tray._on_escape)
+        listener = HotkeyListener(Hotkey.parse("key:0x77"), mode, bridge)
+        tray._hotkey = listener
+        self.enterContext(patch("src.main.get_foreground_target", return_value=None))
+        self.enterContext(patch("src.main.resolve_device", return_value=None))
+        self.enterContext(patch("src.main.AudioRecorder", return_value=recorder))
+        worker = self.enterContext(patch.object(tray, "_start_worker"))
+        listener._trigger_down()
+        self.assertTrue(tray._recording)
+        return tray, listener, recorder, worker
+
+    def assert_recording_discarded(self, tray, recorder, worker):
+        self.assertFalse(tray._recording)
+        self.assertIsNone(tray._session)
+        worker.assert_not_called()
+        recorder.stop.assert_called_once()
+        self.assertEqual([c.args[0] for c in tray._play_sound.call_args_list], ["start", "cancel"])
+
+    def test_escape_discards_audio_in_hold_mode_even_after_trigger_release(self):
+        tray, listener, recorder, worker = self.start_recording(HotkeyMode.HOLD)
+        listener._on_kb_event(0x100, 0x1B)
+        listener._trigger_up()
+        self.assert_recording_discarded(tray, recorder, worker)
+
+    def test_escape_discards_audio_in_toggle_mode_even_after_trigger_release(self):
+        tray, listener, recorder, worker = self.start_recording(HotkeyMode.TOGGLE)
+        listener._trigger_up()
+        listener._on_kb_event(0x100, 0x1B)
+        listener._trigger_up()
+        self.assert_recording_discarded(tray, recorder, worker)
 
     def test_last_result_inserts_without_history_selection_and_can_be_copied(self):
         tray = make_tray_app()
@@ -161,19 +172,25 @@ class DailyControlsTests(unittest.TestCase):
         tray._copy_last()
         self.assertTrue(tray._latest.last_delivery.copied)
 
-    def test_sound_switch_disables_every_cue(self):
+    def play_every_cue(self, sound_enabled):
         tray = make_tray_app()
+        tray._config.sound_enabled = sound_enabled
         sound = Mock(SND_FILENAME=1, SND_ASYNC=2, SND_NODEFAULT=4)
         with (
             patch("src.main.platform.system", return_value="Windows"),
             patch.dict(sys.modules, winsound=sound),
         ):
-            for enabled in (True, False):
-                tray._config.sound_enabled = enabled
-                sound.PlaySound.reset_mock()
-                for cue in ("start", "stop", "cancel", "error"):
-                    tray._play_sound(cue)
-                self.assertEqual(sound.PlaySound.call_count, 4 if enabled else 0)
+            tray._play_sound("start")
+            tray._play_sound("stop")
+            tray._play_sound("cancel")
+            tray._play_sound("error")
+        return sound.PlaySound
+
+    def test_sound_switch_on_plays_every_cue(self):
+        self.assertEqual(self.play_every_cue(True).call_count, 4)
+
+    def test_sound_switch_off_disables_every_cue(self):
+        self.assertEqual(self.play_every_cue(False).call_count, 0)
 
     def test_executable_name_mapping_and_existing_full_path_precedence(self):
         cfg = AppConfig(
@@ -190,10 +207,13 @@ class DailyControlsTests(unittest.TestCase):
         self.assertEqual(resolve_rewrite_profile(cfg, r"D:\Other\EDITOR.exe").id, "raw")
         self.assertEqual(resolve_rewrite_profile(cfg, r"C:\Tools\editor.exe").id, "clean")
 
-    def test_executable_name_requires_name_and_suffix(self):
-        for name in ("notepad", ".exe"):
-            with self.subTest(name=name), self.assertRaisesRegex(ValueError, r"\.exe"):
-                normalize_executable_path(name)
+    def test_executable_name_requires_exe_suffix(self):
+        with self.assertRaisesRegex(ValueError, r"\.exe"):
+            normalize_executable_path("notepad")
+
+    def test_executable_name_requires_name_before_suffix(self):
+        with self.assertRaisesRegex(ValueError, r"\.exe"):
+            normalize_executable_path(".exe")
 
     def test_populate_does_not_change_config_profile_selection(self):
         cfg = AppConfig(rewrite_selection_mode="automatic")

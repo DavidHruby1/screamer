@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QComboBox,
@@ -39,6 +39,7 @@ from src.utils import APP_NAME, ScreamerError
 log = logging.getLogger(__name__)
 
 DeviceItem = tuple[int, str]
+_UNAVAILABLE_NAME = Qt.ItemDataRole.UserRole + 1
 
 
 class SetupWizard(QDialog):
@@ -78,8 +79,7 @@ class SetupWizard(QDialog):
         self._device_combo.addItem("System Default", None)
         for device_id, name in self._devices:
             self._device_combo.addItem(name, device_id)
-        index = self._device_combo.findData(config.audio_device_id)
-        self._device_combo.setCurrentIndex(max(index, 0))
+        self._select_saved_device(config.audio_device_id, config.audio_device_name)
         self._device_combo.currentIndexChanged.connect(self.start_preview)
         form.addRow("Microphone:", self._device_combo)
         self._level = QProgressBar()
@@ -147,6 +147,29 @@ class SetupWizard(QDialog):
     # Microphone preview
     # ------------------------------------------------------------------
 
+    def _select_saved_device(self, device_id: int | None, device_name: str) -> None:
+        """Apply the recorder's ID/name policy; never substitute another input.
+
+        An unresolved saved choice stays selected (and is saved back unchanged)
+        until the user explicitly picks another microphone.
+        """
+        try:
+            resolved = resolve_device(device_id, device_name, devices=self._devices)
+        except ScreamerError:
+            self._device_combo.addItem(f"{device_name} (Unavailable / reselect)", device_id)
+            index = self._device_combo.count() - 1
+            self._device_combo.setItemData(index, device_name, _UNAVAILABLE_NAME)
+            self._device_combo.setCurrentIndex(index)
+            return
+        self._device_combo.setCurrentIndex(max(self._device_combo.findData(resolved), 0))
+
+    def _selected_device(self) -> tuple[int | None, str]:
+        device_id = self._device_combo.currentData()
+        unavailable_name = self._device_combo.currentData(_UNAVAILABLE_NAME)
+        if unavailable_name is not None:
+            return device_id, unavailable_name
+        return device_id, self._device_combo.currentText() if device_id is not None else ""
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.start_preview()
@@ -154,11 +177,7 @@ class SetupWizard(QDialog):
     def start_preview(self, *_args) -> None:
         self.stop_preview()
         try:
-            device_id = resolve_device(
-                self._device_combo.currentData(),
-                self._device_combo.currentText(),
-                devices=self._devices,
-            )
+            device_id = resolve_device(*self._selected_device(), devices=self._devices)
             recorder = AudioRecorder(device_id=device_id)
             recorder.retain_frames = False  # Only the level is needed; never buffer audio.
             recorder.start()
@@ -217,11 +236,7 @@ class SetupWizard(QDialog):
             cfg.stt_model = provider.model
             cfg.stt_custom_headers = provider.custom_headers
             cfg.stt_language = self._language.currentData() or ""
-            device_id = self._device_combo.currentData()
-            cfg.audio_device_id = device_id
-            cfg.audio_device_name = (
-                self._device_combo.currentText() if device_id is not None else ""
-            )
+            cfg.audio_device_id, cfg.audio_device_name = self._selected_device()
             save_config(cfg)
         except (ScreamerError, ValueError) as e:
             self._save_status.setText(f"Could not save: {e}")

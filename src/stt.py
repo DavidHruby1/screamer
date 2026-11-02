@@ -27,7 +27,7 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
     """POST WAV to STT endpoint. Groq uses ``response_format=json``; others keep ``verbose_json``.
 
     Filter: keep if ANY segment no_speech_prob < 0.7 for non-Groq providers. All-above → ScreamerError(AppError.NO_SPEECH).
-    HTTP/network errors → ScreamerError(AppError.STT_FAILED).
+    HTTP/network errors or a malformed response → fallback, else ScreamerError(AppError.STT_FAILED).
     Fallback success → PipelineResult with AppError.STT_FALLBACK_USED in warnings.
 
     *config* supplies primary and fallback providers via ``AppConfig``.
@@ -150,7 +150,12 @@ def _call_stt(
     http_client.raise_for_status(resp)
 
     result = resp.json()
-    segments = result.get("segments", [])
+    # A malformed 200 is a provider failure, not silence: it must reach the fallback.
+    if not isinstance(result, dict) or not isinstance(result.get("text"), str):
+        raise ValueError("STT response has no text field")
+    segments = result.get("segments") or []
+    if not isinstance(segments, list) or not all(isinstance(seg, dict) for seg in segments):
+        raise ValueError("STT response has malformed segments")
 
     # Filter: keep if ANY segment has no_speech_prob < threshold.
     if segments and not provider.is_groq:
@@ -159,7 +164,7 @@ def _call_stt(
             log.debug("All segments above no_speech_prob threshold; filtering out")
             raise ScreamerError(AppError.NO_SPEECH)
 
-    text = (result.get("text") or "").strip()
+    text = result["text"].strip()
     if not text:
         raise ScreamerError(AppError.NO_SPEECH)
 

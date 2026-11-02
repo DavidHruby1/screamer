@@ -50,26 +50,41 @@ class VocabularyPersistenceTests(unittest.TestCase):
         self.assertEqual(restored.stt_language, "cs")
         self.assertEqual(restored._damaged_settings, [])
 
-    def test_invalid_vocabulary_and_output_preferences_cannot_be_applied(self):
-        valid = dict(stt_api_key="key", stt_base_url="https://example.test/v1", stt_model="stt")
-        for entries in (
-            ["line\nbreak"],
-            ["control\x00"],
-            ["x" * 129],
-            [f"term{i}" for i in range(129)],
-        ):
-            with self.subTest(entries=entries):
-                issues = validate_config(AppConfig(**valid, vocabulary_entries=entries))
-                self.assertTrue(any("vocabulary" in issue.message.lower() for issue in issues))
-        for preferences in (
-            {"output_mode": "guess"},
-            {"history_limit": 0},
-            {"history_limit": 101},
-            {"recovery_hotkey": "ctrl+alt+key:0x20"},
-            {"recovery_hotkey": "ctrl+alt+key:0x1B"},
-        ):
-            with self.subTest(preferences=preferences):
-                self.assertTrue(validate_config(AppConfig(**valid, **preferences)))
+    VALID_STT = dict(stt_api_key="key", stt_base_url="https://example.test/v1", stt_model="stt")
+
+    def assert_vocabulary_rejected(self, entries):
+        issues = validate_config(AppConfig(**self.VALID_STT, vocabulary_entries=entries))
+        self.assertTrue(any("vocabulary" in issue.message.lower() for issue in issues))
+
+    def assert_preferences_rejected(self, **preferences):
+        self.assertTrue(validate_config(AppConfig(**self.VALID_STT, **preferences)))
+
+    def test_vocabulary_entry_with_line_break_cannot_be_applied(self):
+        self.assert_vocabulary_rejected(["line\nbreak"])
+
+    def test_vocabulary_entry_with_control_character_cannot_be_applied(self):
+        self.assert_vocabulary_rejected(["control\x00"])
+
+    def test_overlong_vocabulary_entry_cannot_be_applied(self):
+        self.assert_vocabulary_rejected(["x" * 129])
+
+    def test_too_many_vocabulary_entries_cannot_be_applied(self):
+        self.assert_vocabulary_rejected([f"term{i}" for i in range(129)])
+
+    def test_unknown_output_mode_cannot_be_applied(self):
+        self.assert_preferences_rejected(output_mode="guess")
+
+    def test_zero_history_limit_cannot_be_applied(self):
+        self.assert_preferences_rejected(history_limit=0)
+
+    def test_history_limit_above_maximum_cannot_be_applied(self):
+        self.assert_preferences_rejected(history_limit=101)
+
+    def test_recovery_hotkey_equal_to_dictation_hotkey_cannot_be_applied(self):
+        self.assert_preferences_rejected(recovery_hotkey="ctrl+alt+key:0x20")
+
+    def test_recovery_hotkey_on_escape_cannot_be_applied(self):
+        self.assert_preferences_rejected(recovery_hotkey="ctrl+alt+key:0x1B")
 
     def test_privacy_defaults_and_preferences_roundtrip(self):
         self.assertFalse(AppConfig().history_enabled)
@@ -84,43 +99,70 @@ class VocabularyPersistenceTests(unittest.TestCase):
 
 
 class VocabularyRequestTests(unittest.TestCase):
-    def test_each_stt_provider_uses_its_own_prompt_opt_in(self):
-        for primary_enabled, fallback_enabled in (
-            (False, False),
-            (True, False),
-            (False, True),
-            (True, True),
-        ):
-            with self.subTest(primary=primary_enabled, fallback=fallback_enabled):
-                cfg = AppConfig(
-                    stt_api_key="primary",
-                    stt_base_url="https://primary.test/v1",
-                    stt_model="primary",
-                    stt_fallback_enabled=True,
-                    stt_fallback_api_key="fallback",
-                    stt_fallback_base_url="https://fallback.test/v1",
-                    stt_fallback_model="fallback",
-                    stt_language="cs",
-                    vocabulary_entries=["Screamer", "QThread"],
-                    stt_prompt_primary_enabled=primary_enabled,
-                    stt_prompt_fallback_enabled=fallback_enabled,
-                )
-                with patch(
-                    "src.http_client.post",
-                    side_effect=[
-                        httpx.ConnectError("offline"),
-                        httpx.Response(200, json={"text": "raw"}),
-                    ],
-                ) as post:
-                    result = transcribe(b"wav", cfg)
-                self.assertEqual(result.warnings, [AppError.STT_FALLBACK_USED])
-                self.assertEqual(post.call_count, 2)
-                for call, enabled in zip(post.call_args_list, (primary_enabled, fallback_enabled)):
-                    data = call.kwargs["data"]
-                    self.assertEqual(data["language"], "cs")
-                    self.assertEqual("prompt" in data, enabled)
-                    if enabled:
-                        self.assertIn("QThread", data["prompt"])
+    def transcribe_via_fallback(self, *, primary_enabled, fallback_enabled):
+        """Fail the primary, succeed on the fallback; return (primary, fallback) form data."""
+        cfg = AppConfig(
+            stt_api_key="primary",
+            stt_base_url="https://primary.test/v1",
+            stt_model="primary",
+            stt_fallback_enabled=True,
+            stt_fallback_api_key="fallback",
+            stt_fallback_base_url="https://fallback.test/v1",
+            stt_fallback_model="fallback",
+            stt_language="cs",
+            vocabulary_entries=["Screamer", "QThread"],
+            stt_prompt_primary_enabled=primary_enabled,
+            stt_prompt_fallback_enabled=fallback_enabled,
+        )
+        with patch(
+            "src.http_client.post",
+            side_effect=[
+                httpx.ConnectError("offline"),
+                httpx.Response(200, json={"text": "raw"}),
+            ],
+        ) as post:
+            result = transcribe(b"wav", cfg)
+        self.assertEqual(result.warnings, [AppError.STT_FALLBACK_USED])
+        self.assertEqual(post.call_count, 2)
+        primary_call, fallback_call = post.call_args_list
+        return primary_call.kwargs["data"], fallback_call.kwargs["data"]
+
+    def assert_prompted(self, data):
+        self.assertEqual(data["language"], "cs")
+        self.assertIn("prompt", data)
+        self.assertIn("QThread", data["prompt"])
+
+    def assert_not_prompted(self, data):
+        self.assertEqual(data["language"], "cs")
+        self.assertNotIn("prompt", data)
+
+    def test_no_stt_provider_sends_prompt_without_opt_in(self):
+        primary, fallback = self.transcribe_via_fallback(
+            primary_enabled=False, fallback_enabled=False
+        )
+        self.assert_not_prompted(primary)
+        self.assert_not_prompted(fallback)
+
+    def test_primary_prompt_opt_in_does_not_prompt_fallback(self):
+        primary, fallback = self.transcribe_via_fallback(
+            primary_enabled=True, fallback_enabled=False
+        )
+        self.assert_prompted(primary)
+        self.assert_not_prompted(fallback)
+
+    def test_fallback_prompt_opt_in_does_not_prompt_primary(self):
+        primary, fallback = self.transcribe_via_fallback(
+            primary_enabled=False, fallback_enabled=True
+        )
+        self.assert_not_prompted(primary)
+        self.assert_prompted(fallback)
+
+    def test_both_prompt_opt_ins_prompt_both_stt_providers(self):
+        primary, fallback = self.transcribe_via_fallback(
+            primary_enabled=True, fallback_enabled=True
+        )
+        self.assert_prompted(primary)
+        self.assert_prompted(fallback)
 
     def test_empty_vocabulary_omits_prompt_even_when_enabled(self):
         cfg = AppConfig(
@@ -159,50 +201,54 @@ class VocabularyRequestTests(unittest.TestCase):
         self.assertIn("QThread", prompts[0])
         self.assertIn("preferred", prompts[0].lower())
         self.assertIn("The speech language is cs.", prompts[0])
-        for call in post.call_args_list:
-            self.assertEqual(call.kwargs["json"]["messages"][1], {"role": "user", "content": raw})
+        self.assertEqual(
+            post.call_args.kwargs["json"]["messages"][1], {"role": "user", "content": raw}
+        )
         self.assertEqual(result.text, "candidate")
         self.assertEqual(cfg.vocabulary_entries, ["Screamer", "QThread"])
 
 
 class KeylessSttTests(unittest.TestCase):
-    def test_cli_reaches_keyless_primary_or_fallback_after_env_backfill(self):
+    def assert_cli_reaches_keyless_provider_after_env_backfill(self, cfg):
         import src.stt as module
 
-        for cfg in (
-            AppConfig(stt_base_url="http://localhost:8000/v1", stt_model="local"),
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        path = Path(directory, "sample.wav")
+        path.write_bytes(b"known audio bytes")
+        output = io.StringIO()
+        with (
+            patch("sys.argv", ["stt", str(path)]),
+            patch("src.config.setup_logging"),
+            patch("src.config.load_config", return_value=AppConfig()),
+            patch("src.config.import_from_env", return_value=cfg) as backfill,
+            patch(
+                "src.http_client.post",
+                return_value=httpx.Response(200, json={"text": "CLI result"}),
+            ) as post,
+            contextlib.redirect_stdout(output),
+            self.assertRaises(SystemExit) as exited,
+        ):
+            runpy.run_path(module.__file__, run_name="__main__")
+        self.assertEqual(exited.exception.code, 0)
+        backfill.assert_called_once()
+        self.assertEqual(post.call_count, 1)
+        self.assertNotIn("authorization", post.call_args.kwargs["headers"])
+        self.assertIn("CLI result", output.getvalue())
+        self.assertIn("STT latency: n=1", output.getvalue())
+
+    def test_cli_reaches_keyless_primary_after_env_backfill(self):
+        self.assert_cli_reaches_keyless_provider_after_env_backfill(
+            AppConfig(stt_base_url="http://localhost:8000/v1", stt_model="local")
+        )
+
+    def test_cli_reaches_keyless_fallback_after_env_backfill(self):
+        self.assert_cli_reaches_keyless_provider_after_env_backfill(
             AppConfig(
                 stt_fallback_enabled=True,
                 stt_fallback_base_url="http://localhost:8000/v1",
                 stt_fallback_model="local",
-            ),
-        ):
-            with (
-                self.subTest(fallback=cfg.stt_fallback_enabled),
-                tempfile.TemporaryDirectory() as directory,
-            ):
-                path = Path(directory, "sample.wav")
-                path.write_bytes(b"known audio bytes")
-                output = io.StringIO()
-                with (
-                    patch("sys.argv", ["stt", str(path)]),
-                    patch("src.config.setup_logging"),
-                    patch("src.config.load_config", return_value=AppConfig()),
-                    patch("src.config.import_from_env", return_value=cfg) as backfill,
-                    patch(
-                        "src.http_client.post",
-                        return_value=httpx.Response(200, json={"text": "CLI result"}),
-                    ) as post,
-                    contextlib.redirect_stdout(output),
-                    self.assertRaises(SystemExit) as exited,
-                ):
-                    runpy.run_path(module.__file__, run_name="__main__")
-                self.assertEqual(exited.exception.code, 0)
-                backfill.assert_called_once()
-                self.assertEqual(post.call_count, 1)
-                self.assertNotIn("authorization", post.call_args.kwargs["headers"])
-                self.assertIn("CLI result", output.getvalue())
-                self.assertIn("STT latency: n=1", output.getvalue())
+            )
+        )
 
     def test_url_and_model_allow_keyless_stt_and_keyless_llm(self):
         cfg = AppConfig(stt_base_url="http://127.0.0.1:8000/v1", stt_model="local")

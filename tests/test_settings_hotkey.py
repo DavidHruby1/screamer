@@ -34,22 +34,18 @@ class PopulateCollectTests(unittest.TestCase):
     def test_roundtrip_preset(self):
         cfg = AppConfig()  # ctrl+alt+key:0x20
         dlg = SettingsDialog(cfg, devices=[], calibrate_fn=lambda *a, **k: None)
-        try:
-            dlg._collect()
-            self.assertEqual(dlg.get_config().hotkey, "ctrl+alt+key:0x20")
-        finally:
-            dlg.deleteLater()
+        self.addCleanup(dlg.deleteLater)
+        dlg._collect()
+        self.assertEqual(dlg.get_config().hotkey, "ctrl+alt+key:0x20")
 
     def test_roundtrip_custom(self):
         cfg = AppConfig()
         cfg.hotkey = "ctrl+mouse:x1"
         dlg = SettingsDialog(cfg, devices=[], calibrate_fn=lambda *a, **k: None)
-        try:
-            self.assertEqual(dlg._captured_hotkey, Hotkey(frozenset({"ctrl"}), "mouse", MOUSE_X1))
-            dlg._collect()
-            self.assertEqual(dlg.get_config().hotkey, "ctrl+mouse:x1")
-        finally:
-            dlg.deleteLater()
+        self.addCleanup(dlg.deleteLater)
+        self.assertEqual(dlg._captured_hotkey, Hotkey(frozenset({"ctrl"}), "mouse", MOUSE_X1))
+        dlg._collect()
+        self.assertEqual(dlg.get_config().hotkey, "ctrl+mouse:x1")
 
 
 class _SpyCapture(HotkeyCaptureEdit):

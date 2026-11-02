@@ -56,29 +56,36 @@ class ProfileContractsTests(unittest.TestCase):
         self.assertEqual(restored.rewrite_selection_mode, "automatic")
         self.assertEqual(resolve_rewrite_profile(restored, "C:\\Tools\\Editor.exe"), custom)
 
-    def test_every_non_default_legacy_prompt_migrates_once_even_identical_or_empty(self):
+    def assert_disabled_legacy_prompt_migrates_once(self, prompt):
         from src.config import _get_qsettings
 
-        for prompt in (LEGACY_LLM_SYSTEM_PROMPT, "", " \tCustom\r\n\r\n"):
-            with self.subTest(prompt=prompt):
-                settings = _get_qsettings()
-                settings.clear()
-                settings.setValue("llm_system_prompt", prompt)
-                settings.setValue("llm_enabled", False)
-                settings.sync()
-                cfg = load_config()
-                profiles, mappings = decode_rewrite_catalog(cfg.rewrite_catalog)
-                self.assertEqual(len(profiles), 1)
-                self.assertEqual(profiles[0].id, "legacy")
-                self.assertEqual(profiles[0].prompt, prompt)
-                self.assertEqual(profiles[0].kind, "custom")
-                # Rewrite was off: Raw stays selected; the old prompt remains available.
-                self.assertEqual(cfg.rewrite_manual_profile_id, "raw")
-                self.assertEqual(mappings, [])
-                save_config(cfg)
-                restored = load_config()
-                self.assertEqual(decode_rewrite_catalog(restored.rewrite_catalog)[0], profiles)
-                self.assertEqual(restored.rewrite_manual_profile_id, "raw")
+        settings = _get_qsettings()
+        settings.clear()
+        settings.setValue("llm_system_prompt", prompt)
+        settings.setValue("llm_enabled", False)
+        settings.sync()
+        cfg = load_config()
+        profiles, mappings = decode_rewrite_catalog(cfg.rewrite_catalog)
+        self.assertEqual(len(profiles), 1)
+        self.assertEqual(profiles[0].id, "legacy")
+        self.assertEqual(profiles[0].prompt, prompt)
+        self.assertEqual(profiles[0].kind, "custom")
+        # Rewrite was off: Raw stays selected; the old prompt remains available.
+        self.assertEqual(cfg.rewrite_manual_profile_id, "raw")
+        self.assertEqual(mappings, [])
+        save_config(cfg)
+        restored = load_config()
+        self.assertEqual(decode_rewrite_catalog(restored.rewrite_catalog)[0], profiles)
+        self.assertEqual(restored.rewrite_manual_profile_id, "raw")
+
+    def test_legacy_prompt_identical_to_old_default_migrates_once(self):
+        self.assert_disabled_legacy_prompt_migrates_once(LEGACY_LLM_SYSTEM_PROMPT)
+
+    def test_empty_legacy_prompt_migrates_once(self):
+        self.assert_disabled_legacy_prompt_migrates_once("")
+
+    def test_whitespace_padded_legacy_prompt_migrates_once_verbatim(self):
+        self.assert_disabled_legacy_prompt_migrates_once(" \tCustom\r\n\r\n")
 
     def test_saved_current_default_prompt_needs_no_custom_profile(self):
         from src.config import _get_qsettings
@@ -116,21 +123,34 @@ class ProfileContractsTests(unittest.TestCase):
         save_config(cfg)
         self.assertEqual(decode_rewrite_catalog(load_config().rewrite_catalog), ([], []))
 
-    def test_catalog_rejects_reserved_ids_duplicate_paths_and_dangling_mappings(self):
+    def test_catalog_rejects_custom_profile_with_reserved_id(self):
+        with self.assertRaises(ValueError):
+            encode_rewrite_catalog(
+                [RewriteProfile("clean", "Changed clean", "custom", "Prompt")], []
+            )
+
+    def test_catalog_rejects_duplicate_profile_ids(self):
         custom = RewriteProfile("custom", "Custom", "custom", "Prompt")
-        cases = (
-            ([RewriteProfile("clean", "Changed clean", "custom", "Prompt")], []),
-            ([custom, custom], []),
-            ([custom], [AppMapping("editor", "custom")]),
-            ([custom], [AppMapping("C:\\Editor.exe", "missing")]),
-            (
-                [custom],
-                [AppMapping("C:\\Editor.exe", "custom"), AppMapping("c:/EDITOR.exe", "clean")],
-            ),
-        )
-        for profiles, mappings in cases:
-            with self.subTest(profiles=profiles, mappings=mappings), self.assertRaises(ValueError):
-                encode_rewrite_catalog(profiles, mappings)
+        with self.assertRaises(ValueError):
+            encode_rewrite_catalog([custom, custom], [])
+
+    def test_catalog_rejects_mapping_without_exe_suffix(self):
+        custom = RewriteProfile("custom", "Custom", "custom", "Prompt")
+        with self.assertRaises(ValueError):
+            encode_rewrite_catalog([custom], [AppMapping("editor", "custom")])
+
+    def test_catalog_rejects_dangling_mapping(self):
+        custom = RewriteProfile("custom", "Custom", "custom", "Prompt")
+        with self.assertRaises(ValueError):
+            encode_rewrite_catalog([custom], [AppMapping("C:\\Editor.exe", "missing")])
+
+    def test_catalog_rejects_duplicate_paths_differing_only_in_case_and_separators(self):
+        custom = RewriteProfile("custom", "Custom", "custom", "Prompt")
+        mappings = [AppMapping("C:\\Editor.exe", "custom"), AppMapping("c:/EDITOR.exe", "clean")]
+        with self.assertRaises(ValueError):
+            encode_rewrite_catalog([custom], mappings)
+
+    def test_catalog_decode_rejects_duplicate_json_keys(self):
         with self.assertRaises(ValueError):
             decode_rewrite_catalog('{"version":1,"version":1,"profiles":[],"mappings":[]}')
 
@@ -216,14 +236,21 @@ class ProfileSettingsTests(unittest.TestCase):
             "Keep technical identifiers.",
         )
 
-    def test_builtin_profiles_are_read_only_and_cannot_be_deleted(self):
-        for profile_id in ("raw", "clean", "polished"):
-            with self.subTest(profile_id=profile_id):
-                combo = self.dialog._rewrite_profile_combo
-                combo.setCurrentIndex(combo.findData(profile_id))
-                self.assertTrue(self.dialog._llm_prompt.isReadOnly())
-                self.assertTrue(self.dialog._rewrite_name_input.isReadOnly())
-                self.assertFalse(self.dialog._rewrite_delete_btn.isEnabled())
+    def assert_builtin_profile_is_read_only_and_undeletable(self, profile_id):
+        combo = self.dialog._rewrite_profile_combo
+        combo.setCurrentIndex(combo.findData(profile_id))
+        self.assertTrue(self.dialog._llm_prompt.isReadOnly())
+        self.assertTrue(self.dialog._rewrite_name_input.isReadOnly())
+        self.assertFalse(self.dialog._rewrite_delete_btn.isEnabled())
+
+    def test_raw_profile_is_read_only_and_cannot_be_deleted(self):
+        self.assert_builtin_profile_is_read_only_and_undeletable("raw")
+
+    def test_clean_profile_is_read_only_and_cannot_be_deleted(self):
+        self.assert_builtin_profile_is_read_only_and_undeletable("clean")
+
+    def test_polished_profile_is_read_only_and_cannot_be_deleted(self):
+        self.assert_builtin_profile_is_read_only_and_undeletable("polished")
 
     def test_default_combo_is_visible_only_for_auto(self):
         self.dialog.show()

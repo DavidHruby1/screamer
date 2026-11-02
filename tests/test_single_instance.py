@@ -42,19 +42,19 @@ class SingleInstanceTests(unittest.TestCase):
         )
 
     def test_second_process_cannot_load_settings_or_install_hooks(self):
-        with tempfile.TemporaryDirectory() as directory:
-            lock = QLockFile(str(Path(directory, "screamer.lock")))
-            lock.setStaleLockTime(0)
-            self.assertTrue(lock.tryLock(0))
-            try:
-                blocked = self.run_child(ENTRY_CHECK, directory)
-                self.assertEqual(blocked.stdout.strip(), "blocked-before-config")
-                self.assertTrue(Path(directory, "screamer.lock").exists())
-            finally:
-                lock.unlock()
-            started = self.run_child(ENTRY_CHECK, directory)
-            self.assertEqual(started.stdout.strip(), "logging,started")
-            self.assertFalse(Path(directory, "screamer.lock").exists())
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        lock = QLockFile(str(Path(directory, "screamer.lock")))
+        lock.setStaleLockTime(0)
+        self.assertTrue(lock.tryLock(0))
+        # Released explicitly below; the cleanup only matters if an assertion fails first.
+        self.addCleanup(lock.unlock)
+        blocked = self.run_child(ENTRY_CHECK, directory)
+        self.assertEqual(blocked.stdout.strip(), "blocked-before-config")
+        self.assertTrue(Path(directory, "screamer.lock").exists())
+        lock.unlock()
+        started = self.run_child(ENTRY_CHECK, directory)
+        self.assertEqual(started.stdout.strip(), "logging,started")
+        self.assertFalse(Path(directory, "screamer.lock").exists())
 
     def test_lock_from_dead_process_can_be_recovered_without_expiring_live_lock(self):
         owner = """
