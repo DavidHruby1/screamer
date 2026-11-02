@@ -31,11 +31,13 @@ class TrimSilenceTests(unittest.TestCase):
         out = trim_silence(audio, RATE, min_threshold=50.0, pad_seconds=0.1)
         self.assertEqual(len(out), int((0.1 + 0.3 + 2.0 + 0.3 + 0.1) * RATE))
 
-    def test_all_silent_or_quiet_input_unchanged(self) -> None:
-        for amp in (0, 20):
-            with self.subTest(amp=amp):
-                audio = _clip((1.0, amp))
-                self.assertIs(trim_silence(audio, RATE, min_threshold=50.0), audio)
+    def test_all_silent_input_unchanged(self) -> None:
+        audio = _clip((1.0, 0))
+        self.assertIs(trim_silence(audio, RATE, min_threshold=50.0), audio)
+
+    def test_all_quiet_input_unchanged(self) -> None:
+        audio = _clip((1.0, 20))
+        self.assertIs(trim_silence(audio, RATE, min_threshold=50.0), audio)
 
     def test_one_dimensional_shape_supported(self) -> None:
         audio = _clip((1.0, 0), (0.5, 3000), (1.0, 0)).reshape(-1)
@@ -121,21 +123,53 @@ class SystemAudioMuteTests(unittest.TestCase):
             mute.mute()
         mute.restore()
 
-    def test_restore_only_unmutes_what_we_muted(self) -> None:
-        calls = []
+    def _fake_endpoints(self, muted: dict[str, bool], default: str) -> dict:
+        """Stateful stand-in for the Windows render endpoints; the mute logic stays real."""
+        system = {"muted": muted, "default": default}
+
+        def with_endpoint(action, device_id=None):
+            chosen = device_id or system["default"]
+            return chosen, action(chosen)
+
+        def set_mute(endpoint, value):
+            system["muted"][endpoint] = value
+
+        def get_mute(endpoint):
+            return system["muted"][endpoint]
+
+        self.enterContext(
+            patch.object(SystemAudioMute, "_with_endpoint", staticmethod(with_endpoint))
+        )
+        self.enterContext(patch.object(SystemAudioMute, "_get_mute", staticmethod(get_mute)))
+        self.enterContext(patch.object(SystemAudioMute, "_set_mute", staticmethod(set_mute)))
+        self.enterContext(patch("src.audio.platform.system", return_value="Windows"))
+        return system
+
+    def test_mute_silences_output_and_restore_unmutes_it_once(self) -> None:
+        system = self._fake_endpoints({"A": False}, default="A")
         mute = SystemAudioMute()
-        with (
-            patch("src.audio.platform.system", return_value="Windows"),
-            patch(
-                "src.audio.SystemAudioMute._with_endpoint",
-                side_effect=lambda action: calls.append(action) or True,
-            ),
-        ):
-            mute.mute()
-            mute.mute()  # already muted by us: no second call
-            mute.restore()
-            mute.restore()  # idempotent
-        self.assertEqual(len(calls), 2)
+        mute.mute()
+        self.assertEqual(system["muted"], {"A": True})
+        mute.restore()
+        self.assertEqual(system["muted"], {"A": False})
+        system["muted"]["A"] = True  # The user mutes it afterwards.
+        mute.restore()
+        self.assertEqual(system["muted"], {"A": True})
+
+    def test_output_muted_before_recording_stays_muted(self) -> None:
+        system = self._fake_endpoints({"A": True}, default="A")
+        mute = SystemAudioMute()
+        mute.mute()
+        mute.restore()
+        self.assertEqual(system["muted"], {"A": True})
+
+    def test_restore_unmutes_the_muted_device_after_default_output_changes(self) -> None:
+        system = self._fake_endpoints({"A": False, "B": True}, default="A")
+        mute = SystemAudioMute()
+        mute.mute()
+        system["default"] = "B"
+        mute.restore()
+        self.assertEqual(system["muted"], {"A": False, "B": True})
 
 
 if __name__ == "__main__":

@@ -30,22 +30,20 @@ class AcceptValidationTests(unittest.TestCase):
             events.append("registry")
             raise ScreamerError(AppError.STARTUP_REGISTRATION_FAILED)
 
-        try:
-            with (
-                patch(
-                    "src.settings_dialog.save_config",
-                    side_effect=lambda _cfg: events.append("save"),
-                ),
-                patch("src.settings_dialog.is_supported", return_value=True),
-                patch("src.startup.sync_enabled", side_effect=fail_registration),
-                patch("src.settings_dialog.QMessageBox") as message,
-            ):
-                dlg.accept()
-            self.assertEqual(events, ["save", "applied", "registry"])
-            self.assertEqual(dlg.result(), 0)
-            self.assertIn("Settings were saved", message.warning.call_args.args[2])
-        finally:
-            dlg.deleteLater()
+        self.addCleanup(dlg.deleteLater)
+        with (
+            patch(
+                "src.settings_dialog.save_config",
+                side_effect=lambda _cfg: events.append("save"),
+            ),
+            patch("src.settings_dialog.is_supported", return_value=True),
+            patch("src.startup.sync_enabled", side_effect=fail_registration),
+            patch("src.settings_dialog.QMessageBox") as message,
+        ):
+            dlg.accept()
+        self.assertEqual(events, ["save", "applied", "registry"])
+        self.assertEqual(dlg.result(), 0)
+        self.assertIn("Settings were saved", message.warning.call_args.args[2])
 
     def test_standalone_dialog_does_not_print_credentials(self) -> None:
         import src.settings_dialog as module
@@ -80,21 +78,19 @@ class AcceptValidationTests(unittest.TestCase):
             start_with_windows=True,
         )
         dlg = SettingsDialog(cfg, devices=[], calibrate_fn=None)
-        try:
-            with (
-                patch(
-                    "src.settings_dialog.save_config",
-                    side_effect=ScreamerError(AppError.KEY_STORAGE_FAILED),
-                ),
-                patch.object(dlg, "_sync_startup_or_warn") as sync,
-                patch("src.settings_dialog.QMessageBox") as message,
-            ):
-                dlg.accept()
-                sync.assert_not_called()
-                message.warning.assert_called_once()
-                self.assertEqual(dlg.result(), 0)
-        finally:
-            dlg.deleteLater()
+        self.addCleanup(dlg.deleteLater)
+        with (
+            patch(
+                "src.settings_dialog.save_config",
+                side_effect=ScreamerError(AppError.KEY_STORAGE_FAILED),
+            ),
+            patch.object(dlg, "_sync_startup_or_warn") as sync,
+            patch("src.settings_dialog.QMessageBox") as message,
+        ):
+            dlg.accept()
+            sync.assert_not_called()
+            message.warning.assert_called_once()
+            self.assertEqual(dlg.result(), 0)
 
     def test_unavailable_device_is_preserved_on_apply(self) -> None:
         cfg = AppConfig(
@@ -105,46 +101,40 @@ class AcceptValidationTests(unittest.TestCase):
             audio_device_name="Unplugged microphone",
         )
         dlg = SettingsDialog(cfg, devices=[(1, "Built-in microphone")], calibrate_fn=None)
-        try:
-            self.assertIn("Unavailable", dlg._device_combo.currentText())
-            with (
-                patch("src.settings_dialog.save_config") as save,
-                patch.object(dlg, "_sync_startup_or_warn", return_value=True),
-            ):
-                dlg._on_apply()
-            saved = save.call_args.args[0]
-            self.assertEqual(
-                (saved.audio_device_id, saved.audio_device_name), (42, "Unplugged microphone")
-            )
-        finally:
-            dlg.deleteLater()
+        self.addCleanup(dlg.deleteLater)
+        self.assertIn("Unavailable", dlg._device_combo.currentText())
+        with (
+            patch("src.settings_dialog.save_config") as save,
+            patch.object(dlg, "_sync_startup_or_warn", return_value=True),
+        ):
+            dlg._on_apply()
+        saved = save.call_args.args[0]
+        self.assertEqual(
+            (saved.audio_device_id, saved.audio_device_name), (42, "Unplugged microphone")
+        )
 
     def test_accept_blocks_on_invalid_config(self) -> None:
         dlg = SettingsDialog(AppConfig(), devices=[], calibrate_fn=None)
-        try:
-            with (
-                patch("src.settings_dialog.QMessageBox"),
-                patch("src.settings_dialog.is_supported", return_value=False),
-                patch("src.settings_dialog.save_config"),
-            ):
-                dlg.accept()
-            self.assertEqual(dlg.result(), 0)
-        finally:
-            dlg.deleteLater()
+        self.addCleanup(dlg.deleteLater)
+        with (
+            patch("src.settings_dialog.QMessageBox"),
+            patch("src.settings_dialog.is_supported", return_value=False),
+            patch("src.settings_dialog.save_config"),
+        ):
+            dlg.accept()
+        self.assertEqual(dlg.result(), 0)
 
     def test_accept_passes_with_valid_config(self) -> None:
         cfg = AppConfig(stt_api_key="k", stt_base_url="https://example.test/v1", stt_model="m")
         dlg = SettingsDialog(cfg, devices=[], calibrate_fn=None)
-        try:
-            with (
-                patch("src.settings_dialog.QMessageBox"),
-                patch("src.settings_dialog.is_supported", return_value=False),
-                patch("src.settings_dialog.save_config"),
-            ):
-                dlg.accept()
-            self.assertEqual(dlg.result(), 1)
-        finally:
-            dlg.deleteLater()
+        self.addCleanup(dlg.deleteLater)
+        with (
+            patch("src.settings_dialog.QMessageBox"),
+            patch("src.settings_dialog.is_supported", return_value=False),
+            patch("src.settings_dialog.save_config"),
+        ):
+            dlg.accept()
+        self.assertEqual(dlg.result(), 1)
 
 
 class PromptSettingsTests(unittest.TestCase):
@@ -192,30 +182,62 @@ class PromptSettingsTests(unittest.TestCase):
         self.dlg.reject()
         self.assertEqual(self._saved_prompt(), self.prompt)
 
-    def test_failed_apply_keeps_saved_prompt_and_undo_drops_the_edit(self) -> None:
-        for failure in ("validation", "save"):
-            with self.subTest(failure=failure):
-                save_config(self.cfg)
-                dlg = SettingsDialog(self.cfg, devices=[])
-                self.addCleanup(dlg.deleteLater)
-                dlg._llm_prompt.insertPlainText("Temporary edit. ")
-                if failure == "validation":
-                    dlg._stt_model.clear()
-                with (
-                    patch(
-                        "src.config.os.replace", side_effect=OSError("read-only disk")
-                    ) as replace,
-                    patch("src.settings_dialog.QMessageBox.warning") as warning,
-                ):
-                    dlg._on_apply()
-                warning.assert_called_once()
-                self.assertEqual(replace.call_count, 0 if failure == "validation" else 1)
-                self.assertEqual(self._saved_prompt(), self.prompt)
-                dlg._llm_prompt.undo()
-                dlg._stt_model.setText("stt")
-                dlg._on_apply()
-                # Undo restores the text; Qt normalizes line endings once it was edited.
-                self.assertEqual(self._saved_prompt(), self.prompt.replace("\r\n", "\n"))
+    def test_apply_with_oversized_prompt_warns_and_keeps_saved_prompt(self) -> None:
+        self.dlg._llm_prompt.setPlainText("x" * (32 * 1024 + 1))
+        with patch("src.settings_dialog.QMessageBox.warning") as warning:
+            self.dlg._on_apply()
+        warning.assert_called_once()
+        self.assertIn("32 KiB", warning.call_args.args[2])
+        self.assertEqual(self._saved_prompt(), self.prompt)
+
+    def test_ok_with_oversized_prompt_warns_keeps_saved_prompt_and_stays_open(self) -> None:
+        self.dlg._llm_prompt.setPlainText("x" * (32 * 1024 + 1))
+        with patch("src.settings_dialog.QMessageBox.warning") as warning:
+            self.dlg.accept()
+        warning.assert_called_once()
+        self.assertEqual(self.dlg.result(), QDialog.DialogCode.Rejected)
+        self.assertEqual(self._saved_prompt(), self.prompt)
+
+    def _dialog_with_temporary_prompt_edit(self) -> SettingsDialog:
+        save_config(self.cfg)
+        dlg = SettingsDialog(self.cfg, devices=[])
+        self.addCleanup(dlg.deleteLater)
+        dlg._llm_prompt.insertPlainText("Temporary edit. ")
+        return dlg
+
+    def _apply_on_read_only_disk(self, dlg: SettingsDialog) -> tuple[Mock, Mock]:
+        with (
+            patch("src.config.os.replace", side_effect=OSError("read-only disk")) as replace,
+            patch("src.settings_dialog.QMessageBox.warning") as warning,
+        ):
+            dlg._on_apply()
+        return replace, warning
+
+    def _undo_and_apply(self, dlg: SettingsDialog) -> None:
+        dlg._llm_prompt.undo()
+        dlg._stt_model.setText("stt")
+        dlg._on_apply()
+
+    def test_failed_validation_keeps_saved_prompt_and_undo_drops_the_edit(self) -> None:
+        dlg = self._dialog_with_temporary_prompt_edit()
+        dlg._stt_model.clear()
+        replace, warning = self._apply_on_read_only_disk(dlg)
+        warning.assert_called_once()
+        self.assertEqual(replace.call_count, 0)
+        self.assertEqual(self._saved_prompt(), self.prompt)
+        self._undo_and_apply(dlg)
+        # Undo restores the text; Qt normalizes line endings once it was edited.
+        self.assertEqual(self._saved_prompt(), self.prompt.replace("\r\n", "\n"))
+
+    def test_failed_save_keeps_saved_prompt_and_undo_drops_the_edit(self) -> None:
+        dlg = self._dialog_with_temporary_prompt_edit()
+        replace, warning = self._apply_on_read_only_disk(dlg)
+        warning.assert_called_once()
+        self.assertEqual(replace.call_count, 1)
+        self.assertEqual(self._saved_prompt(), self.prompt)
+        self._undo_and_apply(dlg)
+        # Undo restores the text; Qt normalizes line endings once it was edited.
+        self.assertEqual(self._saved_prompt(), self.prompt.replace("\r\n", "\n"))
 
 
 class MicrophoneSettingsTests(unittest.TestCase):
@@ -264,48 +286,49 @@ class MicrophoneSettingsTests(unittest.TestCase):
         dlg._collect()
         self.assertEqual(dlg.get_config().audio_device_name, "USB mic")
 
-    def test_refresh_failure_keeps_current_choice_and_reports_failure(self) -> None:
-        for outcome in ([], OSError("enumeration failed")):
-            with self.subTest(outcome=outcome):
-                refresh = (
-                    Mock(side_effect=outcome)
-                    if isinstance(outcome, Exception)
-                    else Mock(return_value=outcome)
-                )
-                dlg = SettingsDialog(
-                    AppConfig(audio_device_id=2, audio_device_name="USB mic"),
-                    devices=[(2, "USB mic")],
-                    refresh_devices_fn=refresh,
-                )
-                try:
-                    with patch("src.settings_dialog.QMessageBox.warning") as warning:
-                        dlg.refresh_devices()
-                    warning.assert_called_once()
-                    dlg._collect()
-                    self.assertEqual(
-                        (dlg.get_config().audio_device_id, dlg.get_config().audio_device_name),
-                        (2, "USB mic"),
-                    )
-                finally:
-                    dlg.deleteLater()
+    def _assert_failed_refresh_keeps_choice_and_warns(self, refresh: Mock) -> None:
+        dlg = SettingsDialog(
+            AppConfig(audio_device_id=2, audio_device_name="USB mic"),
+            devices=[(2, "USB mic")],
+            refresh_devices_fn=refresh,
+        )
+        self.addCleanup(dlg.deleteLater)
+        with patch("src.settings_dialog.QMessageBox.warning") as warning:
+            dlg.refresh_devices()
+        warning.assert_called_once()
+        dlg._collect()
+        self.assertEqual(
+            (dlg.get_config().audio_device_id, dlg.get_config().audio_device_name),
+            (2, "USB mic"),
+        )
 
-    def test_conflicting_or_duplicate_names_are_not_silently_selected(self) -> None:
-        for devices in ([(2, "Other mic"), (3, "USB mic")], [(2, "USB mic"), (3, "USB mic")]):
-            with self.subTest(devices=devices):
-                dlg = SettingsDialog(
-                    AppConfig(audio_device_id=2, audio_device_name="USB mic"), devices=devices
-                )
-                try:
-                    self.assertIn("Unavailable", dlg._device_combo.currentText())
-                    self.assertTrue(dlg._device_combo.itemText(1).startswith("[2]"))
-                    self.assertTrue(dlg._device_combo.itemText(2).startswith("[3]"))
-                    dlg._collect()
-                    self.assertEqual(
-                        (dlg.get_config().audio_device_id, dlg.get_config().audio_device_name),
-                        (2, "USB mic"),
-                    )
-                finally:
-                    dlg.deleteLater()
+    def test_empty_refresh_keeps_current_choice_and_reports_failure(self) -> None:
+        self._assert_failed_refresh_keeps_choice_and_warns(Mock(return_value=[]))
+
+    def test_refresh_error_keeps_current_choice_and_reports_failure(self) -> None:
+        self._assert_failed_refresh_keeps_choice_and_warns(
+            Mock(side_effect=OSError("enumeration failed"))
+        )
+
+    def _assert_saved_device_stays_unavailable(self, devices: list[tuple[int, str]]) -> None:
+        dlg = SettingsDialog(
+            AppConfig(audio_device_id=2, audio_device_name="USB mic"), devices=devices
+        )
+        self.addCleanup(dlg.deleteLater)
+        self.assertIn("Unavailable", dlg._device_combo.currentText())
+        self.assertTrue(dlg._device_combo.itemText(1).startswith("[2]"))
+        self.assertTrue(dlg._device_combo.itemText(2).startswith("[3]"))
+        dlg._collect()
+        self.assertEqual(
+            (dlg.get_config().audio_device_id, dlg.get_config().audio_device_name),
+            (2, "USB mic"),
+        )
+
+    def test_conflicting_name_for_saved_id_is_not_silently_selected(self) -> None:
+        self._assert_saved_device_stays_unavailable([(2, "Other mic"), (3, "USB mic")])
+
+    def test_duplicate_names_are_not_silently_selected(self) -> None:
+        self._assert_saved_device_stays_unavailable([(2, "USB mic"), (3, "USB mic")])
 
     def test_unavailable_input_cannot_calibrate_another_default(self) -> None:
         calibrate = Mock()
@@ -321,33 +344,36 @@ class MicrophoneSettingsTests(unittest.TestCase):
         calibrate.assert_not_called()
         self.assertIsNone(dlg._calib_thread)
 
-    def test_calibration_revalidates_current_identity_before_using_selected_id(self) -> None:
+    def _calibrate_when_saved_id_is_named(
+        self, current_name: str
+    ) -> tuple[SettingsDialog, Mock, Mock]:
         from src.audio import AudioDevice
 
-        for name in ("USB mic", "Reassigned mic"):
-            with self.subTest(current_name=name):
-                calibrate = Mock(return_value=7.5)
-                dlg = SettingsDialog(
-                    AppConfig(audio_device_id=2, audio_device_name="USB mic"),
-                    devices=[(2, "USB mic")],
-                    calibrate_fn=calibrate,
-                )
-                try:
-                    with (
-                        patch("src.audio.list_devices", return_value=[AudioDevice(2, name, 1)]),
-                        patch("src.settings_dialog.QMessageBox") as message,
-                    ):
-                        dlg._on_calibrate()
-                        self.assertTrue(dlg._calib_thread.wait(5000))
-                        QApplication.processEvents()
-                    if name == "USB mic":
-                        calibrate.assert_called_once_with(2)
-                        self.assertEqual(dlg._rms_spin.value(), 7.5)
-                    else:
-                        calibrate.assert_not_called()
-                        message.warning.assert_called_once()
-                finally:
-                    dlg.deleteLater()
+        calibrate = Mock(return_value=7.5)
+        dlg = SettingsDialog(
+            AppConfig(audio_device_id=2, audio_device_name="USB mic"),
+            devices=[(2, "USB mic")],
+            calibrate_fn=calibrate,
+        )
+        self.addCleanup(dlg.deleteLater)
+        with (
+            patch("src.audio.list_devices", return_value=[AudioDevice(2, current_name, 1)]),
+            patch("src.settings_dialog.QMessageBox") as message,
+        ):
+            dlg._on_calibrate()
+            self.assertTrue(dlg._calib_thread.wait(5000))
+            QApplication.processEvents()
+        return dlg, calibrate, message
+
+    def test_calibration_uses_selected_id_when_current_identity_matches(self) -> None:
+        dlg, calibrate, _message = self._calibrate_when_saved_id_is_named("USB mic")
+        calibrate.assert_called_once_with(2)
+        self.assertEqual(dlg._rms_spin.value(), 7.5)
+
+    def test_calibration_refuses_selected_id_reassigned_to_another_device(self) -> None:
+        _dlg, calibrate, message = self._calibrate_when_saved_id_is_named("Reassigned mic")
+        calibrate.assert_not_called()
+        message.warning.assert_called_once()
 
 
 def _check_favorite(dlg, code: str, checked: bool = True) -> None:
@@ -380,25 +406,23 @@ class LanguageSettingsTests(unittest.TestCase):
             patch("src.settings_dialog.is_supported", return_value=False),
         ):
             dlg = SettingsDialog(cfg, devices=[], calibrate_fn=None)
-            try:
-                self.assertEqual(dlg._stt_lang.currentData(), "")
-                self.assertEqual([dlg._stt_lang.itemData(i) for i in range(3)], ["", "cs", "en"])
-                self.assertEqual(dlg._stt_lang.count(), 3)
-                self.assertFalse(any(_favorite_items(dlg).values()))
-                _check_favorite(dlg, "de")
-                dlg._stt_lang.setCurrentIndex(dlg._stt_lang.findData("de"))
-                dlg._on_apply()
-                self.assertEqual(load_config().stt_language, "de")
-                self.assertEqual(load_config().stt_language_favorites, ["de"])
+            self.addCleanup(dlg.deleteLater)
+            self.assertEqual(dlg._stt_lang.currentData(), "")
+            self.assertEqual([dlg._stt_lang.itemData(i) for i in range(3)], ["", "cs", "en"])
+            self.assertEqual(dlg._stt_lang.count(), 3)
+            self.assertFalse(any(_favorite_items(dlg).values()))
+            _check_favorite(dlg, "de")
+            dlg._stt_lang.setCurrentIndex(dlg._stt_lang.findData("de"))
+            dlg._on_apply()
+            self.assertEqual(load_config().stt_language, "de")
+            self.assertEqual(load_config().stt_language_favorites, ["de"])
 
-                _check_favorite(dlg, "fr")
-                dlg._stt_lang.setCurrentIndex(dlg._stt_lang.findData("fr"))
-                dlg.reject()
-                self.assertEqual(load_config().stt_language, "de")
-                self.assertEqual(load_config().stt_language_favorites, ["de"])
-                self.assertEqual(cfg.stt_language_favorites, [])
-            finally:
-                dlg.deleteLater()
+            _check_favorite(dlg, "fr")
+            dlg._stt_lang.setCurrentIndex(dlg._stt_lang.findData("fr"))
+            dlg.reject()
+            self.assertEqual(load_config().stt_language, "de")
+            self.assertEqual(load_config().stt_language_favorites, ["de"])
+            self.assertEqual(cfg.stt_language_favorites, [])
 
     def test_saved_custom_favorite_is_offered_and_round_trips(self) -> None:
         from src.config import COMMON_LANGUAGES, load_config
@@ -417,34 +441,28 @@ class LanguageSettingsTests(unittest.TestCase):
             patch("src.settings_dialog.is_supported", return_value=False),
         ):
             dlg = SettingsDialog(cfg, devices=[], calibrate_fn=None)
-            try:
-                items = _favorite_items(dlg)
-                self.assertEqual(
-                    list(items), [code for code, _label in COMMON_LANGUAGES] + ["pt-br"]
-                )
-                self.assertEqual([code for code, on in items.items() if on], ["pt-br"])
-                dlg.accept()
-                self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted)
-                self.assertEqual(load_config().stt_language, "pt-br")
-                self.assertEqual(load_config().stt_language_favorites, ["pt-br"])
-            finally:
-                dlg.deleteLater()
+            self.addCleanup(dlg.deleteLater)
+            items = _favorite_items(dlg)
+            self.assertEqual(list(items), [code for code, _label in COMMON_LANGUAGES] + ["pt-br"])
+            self.assertEqual([code for code, on in items.items() if on], ["pt-br"])
+            dlg.accept()
+            self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted)
+            self.assertEqual(load_config().stt_language, "pt-br")
+            self.assertEqual(load_config().stt_language_favorites, ["pt-br"])
 
     def test_unchecking_favorites_updates_choices_but_keeps_active_code(self) -> None:
         cfg = AppConfig(stt_language="de", stt_language_favorites=["de", "fr"])
         dlg = SettingsDialog(cfg, devices=[], calibrate_fn=None)
-        try:
-            self.assertNotEqual(dlg._stt_lang.findData("fr"), -1)
-            _check_favorite(dlg, "fr", False)
-            self.assertEqual(dlg._stt_lang.findData("fr"), -1)
-            _check_favorite(dlg, "de", False)
-            # The active language stays selectable even when it is no longer a favorite.
-            self.assertEqual(dlg._stt_lang.currentData(), "de")
-            dlg._collect()
-            self.assertEqual(dlg.get_config().stt_language_favorites, [])
-            self.assertEqual(dlg.get_config().stt_language, "de")
-        finally:
-            dlg.deleteLater()
+        self.addCleanup(dlg.deleteLater)
+        self.assertNotEqual(dlg._stt_lang.findData("fr"), -1)
+        _check_favorite(dlg, "fr", False)
+        self.assertEqual(dlg._stt_lang.findData("fr"), -1)
+        _check_favorite(dlg, "de", False)
+        # The active language stays selectable even when it is no longer a favorite.
+        self.assertEqual(dlg._stt_lang.currentData(), "de")
+        dlg._collect()
+        self.assertEqual(dlg.get_config().stt_language_favorites, [])
+        self.assertEqual(dlg.get_config().stt_language, "de")
 
     def test_unknown_saved_active_code_is_visible_without_becoming_a_favorite(self) -> None:
         dlg = SettingsDialog(
@@ -452,15 +470,13 @@ class LanguageSettingsTests(unittest.TestCase):
             devices=[],
             calibrate_fn=None,
         )
-        try:
-            self.assertEqual(dlg._stt_lang.currentText(), "zh_CN")
-            self.assertEqual([c for c, on in _favorite_items(dlg).items() if on], ["de"])
-            self.assertNotIn("zh_CN", _favorite_items(dlg))
-            dlg._collect()
-            self.assertEqual(dlg.get_config().stt_language, "zh_CN")
-            self.assertEqual(dlg.get_config().stt_language_favorites, ["de"])
-        finally:
-            dlg.deleteLater()
+        self.addCleanup(dlg.deleteLater)
+        self.assertEqual(dlg._stt_lang.currentText(), "zh_CN")
+        self.assertEqual([c for c, on in _favorite_items(dlg).items() if on], ["de"])
+        self.assertNotIn("zh_CN", _favorite_items(dlg))
+        dlg._collect()
+        self.assertEqual(dlg.get_config().stt_language, "zh_CN")
+        self.assertEqual(dlg.get_config().stt_language_favorites, ["de"])
 
 
 class CalibrateThreadTests(unittest.TestCase):
@@ -476,22 +492,20 @@ class CalibrateThreadTests(unittest.TestCase):
             return 7.5
 
         dlg = SettingsDialog(AppConfig(), devices=[], calibrate_fn=calibrate)
-        try:
-            with patch("src.settings_dialog.QMessageBox"):
-                dlg._on_calibrate()
-                self.assertFalse(dlg._calibrate_btn.isEnabled())
-                thread = dlg._calib_thread
-                self.assertIsNotNone(thread)
-                self.assertTrue(started.wait(5))
-                release.set()
-                self.assertTrue(thread.wait(5000))
-                QApplication.processEvents()
-            self.assertIsNone(dlg._calib_thread)
-            self.assertEqual(dlg._rms_spin.value(), 7.5)
-            self.assertTrue(dlg._calibrate_btn.isEnabled())
-        finally:
+        self.addCleanup(dlg.deleteLater)
+        self.addCleanup(release.set)
+        with patch("src.settings_dialog.QMessageBox"):
+            dlg._on_calibrate()
+            self.assertFalse(dlg._calibrate_btn.isEnabled())
+            thread = dlg._calib_thread
+            self.assertIsNotNone(thread)
+            self.assertTrue(started.wait(5))
             release.set()
-            dlg.deleteLater()
+            self.assertTrue(thread.wait(5000))
+            QApplication.processEvents()
+        self.assertIsNone(dlg._calib_thread)
+        self.assertEqual(dlg._rms_spin.value(), 7.5)
+        self.assertTrue(dlg._calibrate_btn.isEnabled())
 
     def test_close_during_calibration_drops_late_result(self) -> None:
         import threading
@@ -503,19 +517,17 @@ class CalibrateThreadTests(unittest.TestCase):
             return 9.9
 
         dlg = SettingsDialog(AppConfig(), devices=[], calibrate_fn=slow_calibrate)
-        try:
-            with patch("src.settings_dialog.QMessageBox"):
-                dlg._on_calibrate()
-                thread = dlg._calib_thread
-                before = dlg._rms_spin.value()
-                dlg.reject()
-                release.set()
-                self.assertTrue(thread.wait(5000))
-            QApplication.processEvents()
-            self.assertEqual(dlg._rms_spin.value(), before)
-        finally:
+        self.addCleanup(dlg.deleteLater)
+        self.addCleanup(release.set)
+        with patch("src.settings_dialog.QMessageBox"):
+            dlg._on_calibrate()
+            thread = dlg._calib_thread
+            before = dlg._rms_spin.value()
+            dlg.reject()
             release.set()
-            dlg.deleteLater()
+            self.assertTrue(thread.wait(5000))
+        QApplication.processEvents()
+        self.assertEqual(dlg._rms_spin.value(), before)
 
     def test_close_during_stalled_calibration_waits_without_blocking_ui(self) -> None:
         import threading
@@ -529,24 +541,22 @@ class CalibrateThreadTests(unittest.TestCase):
             return 9.9
 
         dlg = SettingsDialog(AppConfig(), devices=[], calibrate_fn=calibrate)
-        try:
-            with patch("src.settings_dialog.QMessageBox"):
-                dlg._on_calibrate()
-                self.assertTrue(started.wait(5))
-                thread = dlg._calib_thread
-                before = dlg._rms_spin.value()
-                dlg.reject()
-                self.assertIsNotNone(dlg._calib_thread)
-                self.assertEqual(dlg.result(), 0)
-                self.assertFalse(dlg._button_box.isEnabled())
-                release.set()
-                self.assertTrue(thread.wait(5000))
-                QApplication.processEvents()
-            self.assertIsNone(dlg._calib_thread)
-            self.assertEqual(dlg._rms_spin.value(), before)
-        finally:
+        self.addCleanup(dlg.deleteLater)
+        self.addCleanup(release.set)
+        with patch("src.settings_dialog.QMessageBox"):
+            dlg._on_calibrate()
+            self.assertTrue(started.wait(5))
+            thread = dlg._calib_thread
+            before = dlg._rms_spin.value()
+            dlg.reject()
+            self.assertIsNotNone(dlg._calib_thread)
+            self.assertEqual(dlg.result(), 0)
+            self.assertFalse(dlg._button_box.isEnabled())
             release.set()
-            dlg.deleteLater()
+            self.assertTrue(thread.wait(5000))
+            QApplication.processEvents()
+        self.assertIsNone(dlg._calib_thread)
+        self.assertEqual(dlg._rms_spin.value(), before)
 
 
 class PasswordFieldTests(unittest.TestCase):

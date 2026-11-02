@@ -2,7 +2,6 @@ import os
 import threading
 import unittest
 from copy import deepcopy
-from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -61,67 +60,72 @@ def make_tray_app():
 
 class TrayMenuTests(unittest.TestCase):
     def test_five_minute_limit_processes_recorded_audio_once(self):
-        with ExitStack() as stack:
-            for patcher in self._startup_patches(lambda cfg: cfg):
-                stack.enter_context(patcher)
-            stack.enter_context(patch("src.main.resolve_device", return_value=None))
-            worker = stack.enter_context(patch("src.main._WorkerThread"))
-            tray = _TrayApp(startup_mode=True)
-            tray._on_hotkey_pressed()
-            tray._recorder.stop.return_value = b"recorded audio"
+        self._start_patches(self._startup_patches(lambda cfg: cfg))
+        self.enterContext(patch("src.main.resolve_device", return_value=None))
+        worker = self.enterContext(patch("src.main._WorkerThread"))
+        tray = _TrayApp(startup_mode=True)
+        tray._on_hotkey_pressed()
+        tray._recorder.stop.return_value = b"recorded audio"
 
-            self.assertTrue(tray._recording_timer.isActive())
-            self.assertTrue(tray._level_timer.isActive())
-            self.assertEqual(tray._level_timer.interval(), 33)
-            self.assertEqual(tray._recording_timer.interval(), 300_000)
-            self.assertTrue(tray._recording_timer.isSingleShot())
-            tray._recording_timer.start(0)
-            QApplication.processEvents()
+        self.assertTrue(tray._recording_timer.isActive())
+        self.assertTrue(tray._level_timer.isActive())
+        self.assertEqual(tray._level_timer.interval(), 33)
+        self.assertEqual(tray._recording_timer.interval(), 300_000)
+        self.assertTrue(tray._recording_timer.isSingleShot())
+        tray._recording_timer.start(0)
+        QApplication.processEvents()
 
-            self.assertFalse(tray._recording)
-            self.assertFalse(tray._recording_timer.isActive())
-            self.assertFalse(tray._level_timer.isActive())
-            tray._recorder.stop.assert_called_once()
-            worker.assert_called_once_with(
-                b"recorded audio",
-                tray._session_config,
-                tray._cancel_event,
-                tray,
-                session_id=tray._session.id,
-                raw_text=None,
-                stt_only=False,
-            )
-            self.assertIsNot(tray._session_config, tray._config)
-            worker.return_value.start.assert_called_once()
-            tray._on_hotkey_released()
-            tray._recorder.stop.assert_called_once()
+        self.assertFalse(tray._recording)
+        self.assertFalse(tray._recording_timer.isActive())
+        self.assertFalse(tray._level_timer.isActive())
+        tray._recorder.stop.assert_called_once()
+        worker.assert_called_once_with(
+            b"recorded audio",
+            tray._session_config,
+            tray._cancel_event,
+            tray,
+            session_id=tray._session.id,
+            raw_text=None,
+            stt_only=False,
+        )
+        self.assertIsNot(tray._session_config, tray._config)
+        worker.return_value.start.assert_called_once()
+        tray._on_hotkey_released()
+        tray._recorder.stop.assert_called_once()
 
-    def test_recording_limit_is_cancelled_on_manual_stop_disable_and_exit(self):
-        for action in ("release", "disable", "exit"):
-            with self.subTest(action=action), ExitStack() as stack:
-                for patcher in self._startup_patches(lambda cfg: cfg):
-                    stack.enter_context(patcher)
-                stack.enter_context(patch("src.main.resolve_device", return_value=None))
-                worker = stack.enter_context(patch("src.main._WorkerThread"))
-                tray = _TrayApp(startup_mode=True)
-                tray._hotkey = Mock()
-                tray._finish_exit = Mock()
-                tray._on_hotkey_pressed()
-                tray._recorder.stop.return_value = b""
-                tray._recording_timer.start(0)
+    def _start_limited_recording(self):
+        self._start_patches(self._startup_patches(lambda cfg: cfg))
+        self.enterContext(patch("src.main.resolve_device", return_value=None))
+        worker = self.enterContext(patch("src.main._WorkerThread"))
+        tray = _TrayApp(startup_mode=True)
+        tray._hotkey = Mock()
+        tray._finish_exit = Mock()
+        tray._on_hotkey_pressed()
+        tray._recorder.stop.return_value = b""
+        tray._recording_timer.start(0)
+        return tray, worker
 
-                if action == "release":
-                    tray._on_hotkey_released()
-                elif action == "disable":
-                    tray._toggle_enabled(False)
-                else:
-                    tray._exit()
-                QApplication.processEvents()
+    def _assert_recording_limit_cancelled(self, tray, worker):
+        QApplication.processEvents()
+        self.assertFalse(tray._recording_timer.isActive())
+        self.assertFalse(tray._level_timer.isActive())
+        tray._recorder.stop.assert_called_once()
+        worker.assert_not_called()
 
-                self.assertFalse(tray._recording_timer.isActive())
-                self.assertFalse(tray._level_timer.isActive())
-                tray._recorder.stop.assert_called_once()
-                worker.assert_not_called()
+    def test_recording_limit_is_cancelled_on_manual_stop(self):
+        tray, worker = self._start_limited_recording()
+        tray._on_hotkey_released()
+        self._assert_recording_limit_cancelled(tray, worker)
+
+    def test_recording_limit_is_cancelled_on_disable(self):
+        tray, worker = self._start_limited_recording()
+        tray._toggle_enabled(False)
+        self._assert_recording_limit_cancelled(tray, worker)
+
+    def test_recording_limit_is_cancelled_on_exit(self):
+        tray, worker = self._start_limited_recording()
+        tray._exit()
+        self._assert_recording_limit_cancelled(tray, worker)
 
     def test_capture_finishing_during_exit_does_not_restart_listener(self):
         tray = make_tray_app()
@@ -226,44 +230,38 @@ class TrayMenuTests(unittest.TestCase):
     def test_stream_start_failure_never_starts_meter_or_keeps_session(self):
         from src.utils import AppError, ScreamerError
 
-        with ExitStack() as stack:
-            for patcher in self._startup_patches(lambda cfg: cfg):
-                stack.enter_context(patcher)
-            stack.enter_context(patch("src.main.resolve_device", return_value=None))
-            tray = _TrayApp(startup_mode=True)
-            tray._on_error = Mock()
-            tray._recorder.start.side_effect = ScreamerError(
-                AppError.MIC_UNAVAILABLE, "device busy"
-            )
-            tray._start_recording()
-            self.assertFalse(tray._level_timer.isActive())
-            self.assertFalse(tray._recording_timer.isActive())
-            self.assertFalse(tray._recording)
-            self.assertIsNone(tray._session_config)
-            tray._on_error.assert_called_once_with(AppError.MIC_UNAVAILABLE, "device busy")
+        self._start_patches(self._startup_patches(lambda cfg: cfg))
+        self.enterContext(patch("src.main.resolve_device", return_value=None))
+        tray = _TrayApp(startup_mode=True)
+        tray._on_error = Mock()
+        tray._recorder.start.side_effect = ScreamerError(AppError.MIC_UNAVAILABLE, "device busy")
+        tray._start_recording()
+        self.assertFalse(tray._level_timer.isActive())
+        self.assertFalse(tray._recording_timer.isActive())
+        self.assertFalse(tray._recording)
+        self.assertIsNone(tray._session_config)
+        tray._on_error.assert_called_once_with(AppError.MIC_UNAVAILABLE, "device busy")
 
     def test_no_input_capture_error_never_starts_stt_and_stops_meter(self):
         from src.utils import AppError, ScreamerError
 
-        with ExitStack() as stack:
-            for patcher in self._startup_patches(lambda cfg: cfg):
-                stack.enter_context(patcher)
-            stack.enter_context(patch("src.main.resolve_device", return_value=None))
-            worker = stack.enter_context(patch("src.main._WorkerThread"))
-            tray = _TrayApp(startup_mode=True)
-            tray._on_error = Mock()
-            tray._start_recording()
-            tray._recorder.stop.side_effect = ScreamerError(
-                AppError.MIC_DISCONNECTED, "No microphone samples were received."
-            )
-            tray._finalize_recording()
-            self.assertFalse(tray._recording)
-            self.assertFalse(tray._level_timer.isActive())
-            self.assertIsNone(tray._session_config)
-            worker.assert_not_called()
-            tray._on_error.assert_called_once_with(
-                AppError.MIC_DISCONNECTED, "No microphone samples were received."
-            )
+        self._start_patches(self._startup_patches(lambda cfg: cfg))
+        self.enterContext(patch("src.main.resolve_device", return_value=None))
+        worker = self.enterContext(patch("src.main._WorkerThread"))
+        tray = _TrayApp(startup_mode=True)
+        tray._on_error = Mock()
+        tray._start_recording()
+        tray._recorder.stop.side_effect = ScreamerError(
+            AppError.MIC_DISCONNECTED, "No microphone samples were received."
+        )
+        tray._finalize_recording()
+        self.assertFalse(tray._recording)
+        self.assertFalse(tray._level_timer.isActive())
+        self.assertIsNone(tray._session_config)
+        worker.assert_not_called()
+        tray._on_error.assert_called_once_with(
+            AppError.MIC_DISCONNECTED, "No microphone samples were received."
+        )
 
     def test_session_freezes_language_rewrite_and_post_key_at_recording_start(self):
         from src.config import AppConfig
@@ -574,28 +572,27 @@ class TrayMenuTests(unittest.TestCase):
             patch.object(_TrayApp, "_open_setup"),
         ]
 
-        started = [p.start() for p in patches]
+        started = self._start_patches(patches)
         open_settings, open_setup = started[-2:]
-        try:
-            _TrayApp(startup_mode=True)
-            QApplication.processEvents()
-            open_settings.assert_not_called()
-            open_setup.assert_not_called()
+        _TrayApp(startup_mode=True)
+        QApplication.processEvents()
+        open_settings.assert_not_called()
+        open_setup.assert_not_called()
 
-            # No speech provider: a manual launch opens the setup guide instead.
-            _TrayApp(startup_mode=False)
-            QApplication.processEvents()
-            open_setup.assert_called_once_with()
-            open_settings.assert_not_called()
+        # No speech provider: a manual launch opens the setup guide instead.
+        _TrayApp(startup_mode=False)
+        QApplication.processEvents()
+        open_setup.assert_called_once_with()
+        open_settings.assert_not_called()
 
-            started[0].return_value = AppConfig(stt_base_url="http://localhost/v1", stt_model="m")
-            _TrayApp(startup_mode=False)
-            QApplication.processEvents()
-            open_settings.assert_called_once_with()
-            open_setup.assert_called_once_with()
-        finally:
-            for p in reversed(patches):
-                p.stop()
+        started[0].return_value = AppConfig(stt_base_url="http://localhost/v1", stt_model="m")
+        _TrayApp(startup_mode=False)
+        QApplication.processEvents()
+        open_settings.assert_called_once_with()
+        open_setup.assert_called_once_with()
+
+    def _start_patches(self, patches):
+        return [self.enterContext(p) for p in patches]
 
     def _startup_patches(self, import_side_effect):
         from src.config import AppConfig
@@ -615,14 +612,10 @@ class TrayMenuTests(unittest.TestCase):
 
     def test_startup_save_skipped_when_env_adds_nothing(self):
         patches = self._startup_patches(lambda cfg: cfg)
-        started = [p.start() for p in patches]
-        try:
-            _TrayApp(startup_mode=True)
-            save_config_mock = started[2]
-            save_config_mock.assert_not_called()
-        finally:
-            for p in reversed(patches):
-                p.stop()
+        started = self._start_patches(patches)
+        _TrayApp(startup_mode=True)
+        save_config_mock = started[2]
+        save_config_mock.assert_not_called()
 
     def test_startup_save_runs_when_env_imports_values(self):
         def fake_import(cfg):
@@ -630,26 +623,18 @@ class TrayMenuTests(unittest.TestCase):
             return cfg
 
         patches = self._startup_patches(fake_import)
-        started = [p.start() for p in patches]
-        try:
-            _TrayApp(startup_mode=True)
-            save_config_mock = started[2]
-            save_config_mock.assert_called_once()
-        finally:
-            for p in reversed(patches):
-                p.stop()
+        started = self._start_patches(patches)
+        _TrayApp(startup_mode=True)
+        save_config_mock = started[2]
+        save_config_mock.assert_called_once()
 
     def test_startup_save_runs_when_plaintext_secrets_linger(self):
         patches = self._startup_patches(lambda cfg: cfg)
         patches[-1] = patch("src.main.has_plaintext_secrets", return_value=True)
-        started = [p.start() for p in patches]
-        try:
-            _TrayApp(startup_mode=True)
-            save_config_mock = started[2]
-            save_config_mock.assert_called_once()
-        finally:
-            for p in reversed(patches):
-                p.stop()
+        started = self._start_patches(patches)
+        _TrayApp(startup_mode=True)
+        save_config_mock = started[2]
+        save_config_mock.assert_called_once()
 
     def test_disable_while_recording_discards_audio(self):
         from src.icons import TrayState

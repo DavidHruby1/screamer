@@ -24,10 +24,13 @@ class RoadmapSettingsTests(unittest.TestCase):
         self.dialog = SettingsDialog(self.cfg, devices=[])
         self.addCleanup(self.dialog.deleteLater)
 
+    def _add_vocabulary_term(self, term):
+        self.dialog._vocabulary_input.setText(term)
+        self.dialog._vocabulary_add_btn.click()
+
     def test_vocabulary_and_provider_flags_apply_without_mutating_live_config(self):
-        for term in ("Screamer", "QThread"):
-            self.dialog._vocabulary_input.setText(term)
-            self.dialog._vocabulary_add_btn.click()
+        self._add_vocabulary_term("Screamer")
+        self._add_vocabulary_term("QThread")
         self.dialog._stt_prompt_primary_check.setChecked(True)
         self.dialog._stt_prompt_fallback_check.setChecked(False)
         self.dialog._on_apply()

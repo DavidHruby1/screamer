@@ -76,8 +76,9 @@ class HoldKeyTests(unittest.TestCase):
     def test_releasing_left_ctrl_keeps_right_ctrl_held(self):
         hk = Hotkey(frozenset({"ctrl", "alt"}), "key", 0x20)
         listener, pressed, _ = _listener(hk, HotkeyMode.HOLD)
-        for vk in (VK_LCTRL, VK_RCTRL, VK_LALT):
-            listener._on_kb_event(WM_KEYDOWN, vk)
+        listener._on_kb_event(WM_KEYDOWN, VK_LCTRL)
+        listener._on_kb_event(WM_KEYDOWN, VK_RCTRL)
+        listener._on_kb_event(WM_KEYDOWN, VK_LALT)
         listener._on_kb_event(WM_KEYUP, VK_LCTRL)
         self.assertTrue(listener._on_kb_event(WM_KEYDOWN, 0x20))
         self.assertEqual(pressed, [1])
@@ -125,6 +126,11 @@ class MouseTests(unittest.TestCase):
 
 
 class LifecycleTests(unittest.TestCase):
+    def assert_start_stop_cycle_clears_thread(self, listener):
+        listener.start()
+        listener.stop()
+        self.assertIsNone(listener._thread)
+
     def test_stop_without_start_is_safe(self):
         hk = Hotkey(frozenset(), "key", 0x91)
         listener, _p, _r = _listener(hk, HotkeyMode.HOLD)
@@ -148,10 +154,9 @@ class LifecycleTests(unittest.TestCase):
     def test_repeated_start_stop(self):
         hk = Hotkey(frozenset(), "key", 0x91)
         listener, _p, _r = _listener(hk, HotkeyMode.HOLD)
-        for _ in range(3):
-            listener.start()
-            listener.stop()
-            self.assertIsNone(listener._thread)
+        self.assert_start_stop_cycle_clears_thread(listener)
+        self.assert_start_stop_cycle_clears_thread(listener)
+        self.assert_start_stop_cycle_clears_thread(listener)
 
 
 if __name__ == "__main__":

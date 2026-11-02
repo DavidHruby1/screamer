@@ -27,15 +27,20 @@ class GuardedInjectionTests(unittest.TestCase):
         self.enterContext(patch.object(ctypes, "set_last_error", create=True))
         self.enterContext(patch("src.injector.time.sleep"))
 
-    def test_missing_target_or_reused_hwnd_with_other_pid_sends_nothing(self):
-        for current in (None, WindowIdentity(100, 201, None), WindowIdentity(101, 200, None)):
-            with (
-                self.subTest(current=current),
-                patch("src.injector.get_foreground_target", return_value=current),
-            ):
-                with self.assertRaises(InjectionError):
-                    type_text("text", "enter", expected_target=self.target)
+    def assert_foreground_mismatch_sends_nothing(self, current):
+        with patch("src.injector.get_foreground_target", return_value=current):
+            with self.assertRaises(InjectionError):
+                type_text("text", "enter", expected_target=self.target)
         self.user32.SendInput.assert_not_called()
+
+    def test_missing_target_sends_nothing(self):
+        self.assert_foreground_mismatch_sends_nothing(None)
+
+    def test_reused_hwnd_with_other_pid_sends_nothing(self):
+        self.assert_foreground_mismatch_sends_nothing(WindowIdentity(100, 201, None))
+
+    def test_other_hwnd_with_same_pid_sends_nothing(self):
+        self.assert_foreground_mismatch_sends_nothing(WindowIdentity(101, 200, None))
 
     def test_executable_metadata_does_not_change_verified_target(self):
         current = WindowIdentity(100, 200, "C:\\Editor\\editor.exe")
@@ -109,9 +114,10 @@ class RecoveryChordTests(unittest.TestCase):
     def test_trigger_first_release_waits_for_all_modifiers(self):
         self.press_chord()
         self.assertTrue(self.listener._on_kb_event(WM_KEYUP, 0x56))
-        for key in (0xA2, 0xA4):
-            self.listener._on_kb_event(WM_KEYUP, key)
-            self.assertEqual(self.recovered, [])
+        self.listener._on_kb_event(WM_KEYUP, 0xA2)
+        self.assertEqual(self.recovered, [])
+        self.listener._on_kb_event(WM_KEYUP, 0xA4)
+        self.assertEqual(self.recovered, [])
         self.listener._on_kb_event(WM_KEYUP, 0xA0)
         self.assertEqual(self.recovered, [True])
         self.listener._on_kb_event(WM_KEYUP, 0xA0)
@@ -120,8 +126,9 @@ class RecoveryChordTests(unittest.TestCase):
 
     def test_modifiers_first_release_waits_for_trigger(self):
         self.press_chord()
-        for key in (0xA0, 0xA4, 0xA2):
-            self.listener._on_kb_event(WM_KEYUP, key)
+        self.listener._on_kb_event(WM_KEYUP, 0xA0)
+        self.listener._on_kb_event(WM_KEYUP, 0xA4)
+        self.listener._on_kb_event(WM_KEYUP, 0xA2)
         self.assertEqual(self.recovered, [])
         self.assertTrue(self.listener._on_kb_event(WM_KEYUP, 0x56))
         self.assertEqual(self.recovered, [True])

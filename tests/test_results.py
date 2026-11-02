@@ -7,7 +7,8 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import patch
 
-from src.results import DeliveryAttempt, DictationRecord, HistoryStore
+from src.config import OUTPUT_MODES
+from src.results import DELIVERY_MODES, DeliveryAttempt, DictationRecord, HistoryStore
 from src.utils import AppError, ScreamerError
 
 
@@ -53,11 +54,25 @@ class HistoryStoreTests(unittest.TestCase):
         self.assertNotIn("audio", payload["entries"][0])
         self.assertNotIn("config", payload["entries"][0])
 
+    def test_paste_delivery_attempt_persists_and_reloads_from_a_new_store(self):
+        attempt = DeliveryAttempt(
+            "2026-09-30T12:01:00+00:00",
+            "paste",
+            text_state="events_submitted",
+            text_events_submitted=4,
+        )
+        entry = record(last_delivery=attempt)
+        self.assertEqual(self.store.upsert(entry, 100), [entry])
+        self.assertEqual(HistoryStore(self.path).load(), [entry])
+
+    def test_every_configurable_output_mode_and_manual_insert_can_be_stored(self):
+        configurable = {key for key, _label in OUTPUT_MODES}
+        self.assertEqual(DELIVERY_MODES, configurable | {"manual"})
+
     def test_records_from_before_a_field_was_added_still_load(self):
         attempt = DeliveryAttempt("2026-09-30T12:01:00+00:00", "copy")
         stored = asdict(record(last_delivery=attempt))
-        for key in ("profile_id", "language", "warnings"):
-            del stored[key]
+        del stored["profile_id"], stored["language"], stored["warnings"]
         del stored["last_delivery"]["reason"]
         self.path.write_bytes(
             base64.b64encode(json.dumps({"version": 1, "entries": [stored]}).encode())
@@ -84,9 +99,12 @@ class HistoryStoreTests(unittest.TestCase):
         self.assertEqual(self.store.upsert(third, 2), [second, third])
         self.assertEqual(self.store.upsert(third, 1), [third])
 
+    def upsert_numbered_entries(self, count, limit):
+        for index in range(count):
+            self.store.upsert(record(f"entry-{index:03d}"), limit)
+
     def test_one_hundred_and_first_entry_never_grows_store_beyond_one_hundred(self):
-        for index in range(101):
-            self.store.upsert(record(f"entry-{index:03d}"), 100)
+        self.upsert_numbered_entries(101, 100)
         entries = self.store.load()
         self.assertEqual(len(entries), 100)
         self.assertEqual(entries[0].id, "entry-001")
@@ -101,23 +119,43 @@ class HistoryStoreTests(unittest.TestCase):
         self.store.clear()
         self.assertEqual(self.store.load(), [])
 
-    def test_unknown_version_bad_record_and_duplicate_ids_fail_closed(self):
+    def stored_record(self):
         data = asdict(record())
         data["warnings"] = []
-        for payload in (
-            {"version": 2, "entries": []},
-            {"version": True, "entries": []},
-            {"version": 1, "entries": [dict(data, raw_text="")]},
-            {"version": 1, "entries": [dict(data, warnings=["UNKNOWN"])]},
-            {"version": 1, "entries": [data, data]},
-            {"version": 1, "entries": [dict(data, audio="must never be accepted")]},
-        ):
-            with self.subTest(payload=payload):
-                original = base64.b64encode(json.dumps(payload).encode())
-                self.path.write_bytes(original)
-                with self.assertRaises(ScreamerError):
-                    self.store.upsert(record("new"), 100)
-                self.assertEqual(self.path.read_bytes(), original)
+        return data
+
+    def assert_payload_fails_closed(self, payload):
+        original = base64.b64encode(json.dumps(payload).encode())
+        self.path.write_bytes(original)
+        with self.assertRaises(ScreamerError):
+            self.store.upsert(record("new"), 100)
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_unknown_version_fails_closed(self):
+        self.assert_payload_fails_closed({"version": 2, "entries": []})
+
+    def test_boolean_version_fails_closed(self):
+        self.assert_payload_fails_closed({"version": True, "entries": []})
+
+    def test_record_with_empty_raw_text_fails_closed(self):
+        data = self.stored_record()
+        self.assert_payload_fails_closed({"version": 1, "entries": [dict(data, raw_text="")]})
+
+    def test_record_with_unknown_warning_fails_closed(self):
+        data = self.stored_record()
+        self.assert_payload_fails_closed(
+            {"version": 1, "entries": [dict(data, warnings=["UNKNOWN"])]}
+        )
+
+    def test_duplicate_ids_fail_closed(self):
+        data = self.stored_record()
+        self.assert_payload_fails_closed({"version": 1, "entries": [data, data]})
+
+    def test_record_with_audio_field_fails_closed(self):
+        data = self.stored_record()
+        self.assert_payload_fails_closed(
+            {"version": 1, "entries": [dict(data, audio="must never be accepted")]}
+        )
 
     def test_failed_atomic_replace_preserves_prior_committed_entries_and_removes_temp(self):
         self.store.upsert(record(), 100)
@@ -143,18 +181,14 @@ class HistoryStoreTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
 
     def test_failed_or_cancelled_rewrite_final_is_raw(self):
-        for status in ("not_requested", "pending", "failed", "cancelled"):
-            with self.subTest(status=status):
-                self.assertEqual(
-                    record(rewrite_status=status).final_text, "Sensitive raw transcript"
-                )
+        statuses = ("not_requested", "pending", "failed", "cancelled")
+        self.assertEqual(
+            {status: record(rewrite_status=status).final_text for status in statuses},
+            dict.fromkeys(statuses, "Sensitive raw transcript"),
+        )
 
     def test_valid_oversized_file_is_read_only_until_bounded_explicit_commit(self):
-        entries = []
-        for index in range(101):
-            entry = asdict(record(f"entry-{index:03d}"))
-            entry["warnings"] = []
-            entries.append(entry)
+        entries = [dict(asdict(record(f"entry-{index:03d}")), warnings=[]) for index in range(101)]
         original = base64.b64encode(json.dumps({"version": 1, "entries": entries}).encode())
         self.path.write_bytes(original)
         self.assertEqual(len(self.store.load()), 100)

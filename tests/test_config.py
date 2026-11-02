@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import platform
@@ -154,19 +155,15 @@ class ConfigValidationTests(unittest.TestCase):
             parse_custom_headers('{"X-Test": "line\\nfeed"}')
 
     def test_import_from_env_backfills_empty_fields_only(self) -> None:
-        cwd = os.getcwd()
-        with tempfile.TemporaryDirectory() as tmp:
-            os.chdir(tmp)
-            try:
-                Path(".env").write_text(
-                    "STT_API_KEY=from-env\nSTT_BASE_URL=https://env.test/v1\nSTT_MODEL=env-model\n",
-                    encoding="utf-8",
-                )
-                cfg = AppConfig(stt_api_key="existing")
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(contextlib.chdir(tmp))
+        Path(".env").write_text(
+            "STT_API_KEY=from-env\nSTT_BASE_URL=https://env.test/v1\nSTT_MODEL=env-model\n",
+            encoding="utf-8",
+        )
+        cfg = AppConfig(stt_api_key="existing")
 
-                imported = import_from_env(cfg)
-            finally:
-                os.chdir(cwd)
+        imported = import_from_env(cfg)
 
         self.assertEqual(imported.stt_api_key, "existing")
         self.assertEqual(imported.stt_base_url, "https://env.test/v1")
@@ -206,11 +203,24 @@ class LanguageFavoritesTests(unittest.TestCase):
             normalize_language_favorites([" CS ", "pt-BR", "cs", "DE"]),
             ["cs", "pt-br", "de"],
         )
-        for value in ("", "c!", "a" * 33, "en--us"):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                normalize_language_code(value)
         with self.assertRaises(ValueError):
             normalize_language_favorites(["de"] * 33)
+
+    def test_rejects_empty_language_code(self) -> None:
+        with self.assertRaises(ValueError):
+            normalize_language_code("")
+
+    def test_rejects_language_code_with_punctuation(self) -> None:
+        with self.assertRaises(ValueError):
+            normalize_language_code("c!")
+
+    def test_rejects_overlong_language_code(self) -> None:
+        with self.assertRaises(ValueError):
+            normalize_language_code("a" * 33)
+
+    def test_rejects_language_code_with_empty_subtag(self) -> None:
+        with self.assertRaises(ValueError):
+            normalize_language_code("en--us")
 
     def test_old_ini_and_malformed_list_preserve_active_language(self) -> None:
         from src.config import _get_qsettings
@@ -226,13 +236,31 @@ class LanguageFavoritesTests(unittest.TestCase):
             settings.sync()
             self.assertEqual(load_config().stt_language, "zh_CN")
 
-            for stored in ('{"wrong":"type"}', '["cs", 12]', "not-json"):
-                with self.subTest(stored=stored):
-                    settings.setValue("stt_language_favorites", stored)
-                    settings.sync()
-                    loaded = load_config()
-                    self.assertEqual(loaded.stt_language, "zh_CN")
-                    self.assertEqual(loaded.stt_language_favorites, [])
+    def load_with_stored_favorites(self, stored):
+        from src.config import _get_qsettings
+
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch("src.config.APP_DIR", tmp))
+        settings = _get_qsettings()
+        settings.setValue("stt_language", "zh_CN")
+        settings.setValue("stt_language_favorites", stored)
+        settings.sync()
+        return load_config()
+
+    def test_favorites_of_wrong_json_type_load_empty_and_keep_active_language(self) -> None:
+        loaded = self.load_with_stored_favorites('{"wrong":"type"}')
+        self.assertEqual(loaded.stt_language, "zh_CN")
+        self.assertEqual(loaded.stt_language_favorites, [])
+
+    def test_favorites_with_non_string_entry_load_empty_and_keep_active_language(self) -> None:
+        loaded = self.load_with_stored_favorites('["cs", 12]')
+        self.assertEqual(loaded.stt_language, "zh_CN")
+        self.assertEqual(loaded.stt_language_favorites, [])
+
+    def test_favorites_that_are_not_json_load_empty_and_keep_active_language(self) -> None:
+        loaded = self.load_with_stored_favorites("not-json")
+        self.assertEqual(loaded.stt_language, "zh_CN")
+        self.assertEqual(loaded.stt_language_favorites, [])
 
     def test_favorites_and_active_language_round_trip_together(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch("src.config.APP_DIR", tmp):
@@ -298,42 +326,48 @@ class PromptPersistenceTests(unittest.TestCase):
             self.assertFalse(restored.llm_enabled)
             self.assertEqual(restored.llm_system_prompt, DEFAULT_LLM_SYSTEM_PROMPT)
 
-    def test_every_non_default_legacy_prompt_migrates_exactly_to_a_custom_profile(self) -> None:
+    def assert_legacy_prompt_migrates_exactly_to_a_custom_profile(self, prompt) -> None:
         from src.config import _get_qsettings, decode_rewrite_catalog, resolve_rewrite_profile
 
-        for prompt in (
-            LEGACY_LLM_SYSTEM_PROMPT,
-            "",
-            " \tCustom prompt\r\nKeep this line.  \r\n\r\n",
-        ):
-            with (
-                self.subTest(prompt=prompt),
-                tempfile.TemporaryDirectory() as tmp,
-                patch("src.config.APP_DIR", tmp),
-            ):
-                settings = _get_qsettings()
-                settings.setValue("llm_system_prompt", prompt)
-                settings.setValue("llm_prompt_origin", "legacy_saved")
-                settings.setValue("llm_enabled", True)
-                settings.sync()
-                cfg = load_config()
-                custom, mappings = decode_rewrite_catalog(cfg.rewrite_catalog)
-                self.assertEqual(
-                    [(p.id, p.name, p.kind) for p in custom],
-                    [("legacy", "Saved rewrite prompt", "custom")],
-                )
-                self.assertEqual(custom[0].prompt, prompt)
-                self.assertEqual(mappings, [])
-                self.assertEqual(
-                    (cfg.rewrite_selection_mode, cfg.rewrite_manual_profile_id),
-                    ("manual", "legacy"),
-                )
-                cfg.stt_language = "cs"
-                save_config(cfg)
-                restored = load_config()
-                self.assertEqual(resolve_rewrite_profile(restored, None).prompt, prompt)
-                for key in ("llm_system_prompt", "llm_prompt_origin", "llm_enabled"):
-                    self.assertFalse(_get_qsettings().contains(key))
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch("src.config.APP_DIR", tmp))
+        settings = _get_qsettings()
+        settings.setValue("llm_system_prompt", prompt)
+        settings.setValue("llm_prompt_origin", "legacy_saved")
+        settings.setValue("llm_enabled", True)
+        settings.sync()
+        cfg = load_config()
+        custom, mappings = decode_rewrite_catalog(cfg.rewrite_catalog)
+        self.assertEqual(
+            [(p.id, p.name, p.kind) for p in custom],
+            [("legacy", "Saved rewrite prompt", "custom")],
+        )
+        self.assertEqual(custom[0].prompt, prompt)
+        self.assertEqual(mappings, [])
+        self.assertEqual(
+            (cfg.rewrite_selection_mode, cfg.rewrite_manual_profile_id),
+            ("manual", "legacy"),
+        )
+        cfg.stt_language = "cs"
+        save_config(cfg)
+        restored = load_config()
+        self.assertEqual(resolve_rewrite_profile(restored, None).prompt, prompt)
+        legacy_keys = ("llm_system_prompt", "llm_prompt_origin", "llm_enabled")
+        self.assertEqual(
+            {key: _get_qsettings().contains(key) for key in legacy_keys},
+            dict.fromkeys(legacy_keys, False),
+        )
+
+    def test_legacy_prompt_identical_to_old_default_migrates_to_a_custom_profile(self) -> None:
+        self.assert_legacy_prompt_migrates_exactly_to_a_custom_profile(LEGACY_LLM_SYSTEM_PROMPT)
+
+    def test_empty_legacy_prompt_migrates_to_a_custom_profile(self) -> None:
+        self.assert_legacy_prompt_migrates_exactly_to_a_custom_profile("")
+
+    def test_whitespace_padded_legacy_prompt_migrates_verbatim_to_a_custom_profile(self) -> None:
+        self.assert_legacy_prompt_migrates_exactly_to_a_custom_profile(
+            " \tCustom prompt\r\nKeep this line.  \r\n\r\n"
+        )
 
     def test_default_legacy_prompt_does_not_create_a_profile(self) -> None:
         from src.config import EMPTY_REWRITE_CATALOG, _get_qsettings

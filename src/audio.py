@@ -402,13 +402,15 @@ _E_CONSOLE = 0
 
 # COM vtable slots. Every interface starts with IUnknown:
 #   0 QueryInterface, 1 AddRef, 2 Release
-# IMMDeviceEnumerator: 3 EnumAudioEndpoints, 4 GetDefaultAudioEndpoint
-# IMMDevice: 3 Activate
+# IMMDeviceEnumerator: 3 EnumAudioEndpoints, 4 GetDefaultAudioEndpoint, 5 GetDevice
+# IMMDevice: 3 Activate, 4 OpenPropertyStore, 5 GetId
 # IAudioEndpointVolume: 3 RegisterControlChangeNotify, 4 Unregister..., 5 GetChannelCount,
 #   6-13 master/channel volume get/set, 14 SetMute, 15 GetMute
 _RELEASE = 2
 _GET_DEFAULT_AUDIO_ENDPOINT = 4
+_GET_DEVICE = 5
 _ACTIVATE = 3
+_GET_ID = 5
 _SET_MUTE = 14
 _GET_MUTE = 15
 
@@ -433,31 +435,40 @@ class SystemAudioMute:
     """Best-effort mute of the default render endpoint while recording.
 
     ``mute()`` mutes only if output was not already muted; ``restore()`` unmutes
-    only what we muted and is idempotent. Failures are logged, never raised.
-    No-op off Windows.
+    only the device we muted (even if the default output changed meanwhile) and
+    is idempotent. Failures are logged, never raised. No-op off Windows.
     """
 
     def __init__(self) -> None:
-        self._muted_by_us = False
+        self._muted_device: str | None = None
 
     def mute(self) -> None:
-        if self._muted_by_us or platform.system() != "Windows":
+        if self._muted_device is not None or platform.system() != "Windows":
             return
         try:
-            self._muted_by_us = self._with_endpoint(self._mute_if_unmuted)
+            device_id, muted = self._with_endpoint(self._mute_if_unmuted)
         except Exception as e:  # noqa: BLE001 - best effort; never break recording
             log.warning("Could not mute system audio: %s", e)
+            return
+        if muted:
+            self._muted_device = device_id
 
     def restore(self) -> None:
-        if not self._muted_by_us:
-            return
-        self._muted_by_us = False
-        if platform.system() != "Windows":
+        device_id, self._muted_device = self._muted_device, None
+        if device_id is None or platform.system() != "Windows":
             return
         try:
-            self._with_endpoint(lambda ep: self._set_mute(ep, False))
+            self._with_endpoint(lambda ep: self._set_mute(ep, False), device_id)
         except Exception as e:  # noqa: BLE001 - best effort; never break recording
             log.warning("Could not restore system audio: %s", e)
+
+    @staticmethod
+    def _get_mute(endpoint: ctypes.c_void_p) -> bool:
+        # HRESULT GetMute(BOOL *pbMute)
+        muted = ctypes.c_int(0)
+        get_mute = _vtable_fn(endpoint, _GET_MUTE, _HRESULT, ctypes.POINTER(ctypes.c_int))
+        _check(get_mute(endpoint, ctypes.byref(muted)), "GetMute")
+        return bool(muted.value)
 
     @staticmethod
     def _set_mute(endpoint: ctypes.c_void_p, muted: bool) -> None:
@@ -467,18 +478,15 @@ class SystemAudioMute:
 
     @classmethod
     def _mute_if_unmuted(cls, endpoint: ctypes.c_void_p) -> bool:
-        # HRESULT GetMute(BOOL *pbMute)
-        muted = ctypes.c_int(0)
-        get_mute = _vtable_fn(endpoint, _GET_MUTE, _HRESULT, ctypes.POINTER(ctypes.c_int))
-        _check(get_mute(endpoint, ctypes.byref(muted)), "GetMute")
-        if muted.value:
+        if cls._get_mute(endpoint):
             return False
         cls._set_mute(endpoint, True)
         return True
 
     @staticmethod
-    def _with_endpoint(action: Any) -> Any:
-        """Run ``action(IAudioEndpointVolume*)`` on the default console render device."""
+    def _with_endpoint(action: Any, device_id: str | None = None) -> tuple[str, Any]:
+        """Run ``action(IAudioEndpointVolume*)`` on *device_id*, else the default console
+        render device; return ``(endpoint id string, action result)``."""
         ole32 = ctypes.windll.ole32  # type: ignore[attr-defined]
         ole32.CoInitializeEx.restype = _HRESULT
         ole32.CoInitializeEx.argtypes = [_PTR, ctypes.c_uint32]
@@ -500,16 +508,36 @@ class SystemAudioMute:
             _check(hr, "CoCreateInstance(MMDeviceEnumerator)")
             acquired.append(enumerator)
 
-            # HRESULT GetDefaultAudioEndpoint(EDataFlow, ERole, IMMDevice **)
             device = ctypes.c_void_p()
-            get_default = _vtable_fn(
-                enumerator, _GET_DEFAULT_AUDIO_ENDPOINT, _HRESULT, ctypes.c_int, ctypes.c_int, _PTR
-            )
-            _check(
-                get_default(enumerator, _E_RENDER, _E_CONSOLE, ctypes.byref(device)),
-                "GetDefaultAudioEndpoint",
-            )
+            if device_id is None:
+                # HRESULT GetDefaultAudioEndpoint(EDataFlow, ERole, IMMDevice **)
+                get_default = _vtable_fn(
+                    enumerator,
+                    _GET_DEFAULT_AUDIO_ENDPOINT,
+                    _HRESULT,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    _PTR,
+                )
+                _check(
+                    get_default(enumerator, _E_RENDER, _E_CONSOLE, ctypes.byref(device)),
+                    "GetDefaultAudioEndpoint",
+                )
+            else:
+                # HRESULT GetDevice(LPCWSTR pwstrId, IMMDevice **ppDevice)
+                get_device = _vtable_fn(enumerator, _GET_DEVICE, _HRESULT, ctypes.c_wchar_p, _PTR)
+                _check(get_device(enumerator, device_id, ctypes.byref(device)), "GetDevice")
             acquired.append(device)
+
+            # HRESULT GetId(LPWSTR *ppstrId); the string is CoTaskMemAlloc'ed.
+            raw_id = ctypes.c_void_p()
+            get_id = _vtable_fn(device, _GET_ID, _HRESULT, _PTR)
+            _check(get_id(device, ctypes.byref(raw_id)), "IMMDevice::GetId")
+            try:
+                resolved_id = ctypes.wstring_at(raw_id.value)
+            finally:
+                ole32.CoTaskMemFree.argtypes = [_PTR]
+                ole32.CoTaskMemFree(raw_id)
 
             # HRESULT Activate(REFIID, DWORD dwClsCtx, PROPVARIANT *pActivationParams, void **)
             endpoint = ctypes.c_void_p()
@@ -523,7 +551,7 @@ class SystemAudioMute:
             )
             _check(hr, "IMMDevice::Activate(IAudioEndpointVolume)")
             acquired.append(endpoint)
-            return action(endpoint)
+            return resolved_id, action(endpoint)
         finally:
             for obj in reversed(acquired):
                 if obj.value:

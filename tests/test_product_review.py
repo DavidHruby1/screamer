@@ -85,18 +85,30 @@ class ReplacementTests(unittest.TestCase):
             [("Foo", "Bar"), ("a", "")],
         )
 
-    def test_normalize_rejects_invalid_values(self):
-        for value in (
-            "not a list",
-            [("only one",)],
-            [("a", 1)],
-            [("line\nbreak", "x")],
-            [("a", "tab\tinside")],
-            [("x" * 257, "y")],
-            [(f"w{i}", "y") for i in range(257)],
-        ):
-            with self.subTest(value=str(value)[:40]), self.assertRaises(ValueError):
-                normalize_replacements(value)
+    def _assert_normalize_rejects(self, value):
+        with self.assertRaises(ValueError):
+            normalize_replacements(value)
+
+    def test_normalize_rejects_non_list(self):
+        self._assert_normalize_rejects("not a list")
+
+    def test_normalize_rejects_pair_without_replacement(self):
+        self._assert_normalize_rejects([("only one",)])
+
+    def test_normalize_rejects_non_string_replacement(self):
+        self._assert_normalize_rejects([("a", 1)])
+
+    def test_normalize_rejects_line_break_in_source(self):
+        self._assert_normalize_rejects([("line\nbreak", "x")])
+
+    def test_normalize_rejects_tab_in_replacement(self):
+        self._assert_normalize_rejects([("a", "tab\tinside")])
+
+    def test_normalize_rejects_overlong_source(self):
+        self._assert_normalize_rejects([("x" * 257, "y")])
+
+    def test_normalize_rejects_more_than_256_pairs(self):
+        self._assert_normalize_rejects([(f"w{i}", "y") for i in range(257)])
 
     def test_encode_decode_and_save_load_roundtrip(self):
         pairs = [("Straße", "Strasse"), ("q thread", "QThread")]
@@ -136,8 +148,8 @@ class DamagedSettingsTests(unittest.TestCase):
         self.assertEqual(decode_rewrite_catalog(cfg.rewrite_catalog), ([], []))
         self.assertEqual(cfg.stt_language, "cs")
         backup = Path(self.tmp, "settings-damaged.txt").read_text(encoding="utf-8")
-        for line in ('replacements = [["a"]]', "vocabulary_entries = not json"):
-            self.assertIn(line, backup)
+        self.assertIn('replacements = [["a"]]', backup)
+        self.assertIn("vocabulary_entries = not json", backup)
         save_config(cfg)
         self.assertEqual(load_config()._damaged_settings, [])
 
@@ -161,6 +173,11 @@ class DamagedSettingsTests(unittest.TestCase):
             _TrayApp(startup_mode=True)
         save.assert_called_once()
         on_error.assert_any_call(AppError.SETTINGS_DAMAGED)
+
+
+def _set_values(settings, values):
+    for key, value in values.items():
+        settings.setValue(key, value)
 
 
 class LegacyAndObsoleteKeyTests(unittest.TestCase):
@@ -207,14 +224,15 @@ class LegacyAndObsoleteKeyTests(unittest.TestCase):
         from src.config import _OBSOLETE_KEYS, _get_qsettings
 
         settings = _get_qsettings()
-        for key in _OBSOLETE_KEYS:
-            settings.setValue(key, "old")
+        _set_values(settings, dict.fromkeys(_OBSOLETE_KEYS, "old"))
         settings.setValue("unrelated_future_key", "kept")
         settings.sync()
         save_config(load_config())
         saved = _get_qsettings()
-        for key in _OBSOLETE_KEYS:
-            self.assertFalse(saved.contains(key), key)
+        self.assertEqual(
+            {key: saved.contains(key) for key in _OBSOLETE_KEYS},
+            dict.fromkeys(_OBSOLETE_KEYS, False),
+        )
         self.assertEqual(saved.value("unrelated_future_key"), "kept")
         self.assertEqual(int(saved.value("rewrite_controls_version")), 2)
 
@@ -290,13 +308,17 @@ def _listener(hotkey, mode):
     return HotkeyListener(hotkey, mode, bridge), events
 
 
+def _key_down(listener, *vks):
+    for vk in vks:
+        listener._on_kb_event(WM_KEYDOWN, vk)
+
+
 class ShiftSubmitListenerTests(unittest.TestCase):
     hotkey = Hotkey(frozenset({"ctrl", "alt"}), "key", VK_SPACE)
 
     def test_hold_release_with_extra_shift_requests_submit(self):
         listener, events = _listener(self.hotkey, HotkeyMode.HOLD)
-        for vk in (VK_LCTRL, VK_LALT):
-            listener._on_kb_event(WM_KEYDOWN, vk)
+        _key_down(listener, VK_LCTRL, VK_LALT)
         self.assertTrue(listener._on_kb_event(WM_KEYDOWN, VK_SPACE))
         listener._on_kb_event(WM_KEYDOWN, VK_LSHIFT)
         self.assertTrue(listener._on_kb_event(WM_KEYUP, VK_SPACE))
@@ -304,15 +326,13 @@ class ShiftSubmitListenerTests(unittest.TestCase):
 
     def test_hold_release_without_shift_does_not_submit(self):
         listener, events = _listener(self.hotkey, HotkeyMode.HOLD)
-        for vk in (VK_LCTRL, VK_LALT, VK_SPACE):
-            listener._on_kb_event(WM_KEYDOWN, vk)
+        _key_down(listener, VK_LCTRL, VK_LALT, VK_SPACE)
         listener._on_kb_event(WM_KEYUP, VK_SPACE)
         self.assertEqual(events, ["pressed", "released"])
 
     def test_toggle_stop_with_extra_shift_matches_and_requests_submit(self):
         listener, events = _listener(self.hotkey, HotkeyMode.TOGGLE)
-        for vk in (VK_LCTRL, VK_LALT, VK_SPACE):
-            listener._on_kb_event(WM_KEYDOWN, vk)
+        _key_down(listener, VK_LCTRL, VK_LALT, VK_SPACE)
         listener._on_kb_event(WM_KEYUP, VK_SPACE)
         listener.set_recording(True)
         listener._on_kb_event(WM_KEYDOWN, VK_LSHIFT)
@@ -321,22 +341,21 @@ class ShiftSubmitListenerTests(unittest.TestCase):
 
     def test_toggle_start_with_extra_shift_does_not_match(self):
         listener, events = _listener(self.hotkey, HotkeyMode.TOGGLE)
-        for vk in (VK_LCTRL, VK_LALT, VK_LSHIFT):
-            listener._on_kb_event(WM_KEYDOWN, vk)
+        _key_down(listener, VK_LCTRL, VK_LALT, VK_LSHIFT)
         self.assertFalse(listener._on_kb_event(WM_KEYDOWN, VK_SPACE))
         self.assertEqual(events, [])
 
-    def test_shift_that_is_part_of_the_chord_never_submits(self):
-        hotkey = Hotkey(frozenset({"ctrl", "shift"}), "key", VK_SPACE)
-        listener, events = _listener(hotkey, HotkeyMode.HOLD)
-        for vk in (VK_LCTRL, VK_LSHIFT, VK_SPACE):
-            listener._on_kb_event(WM_KEYDOWN, vk)
+    shift_hotkey = Hotkey(frozenset({"ctrl", "shift"}), "key", VK_SPACE)
+
+    def test_shift_that_is_part_of_the_chord_never_submits_in_hold_mode(self):
+        listener, events = _listener(self.shift_hotkey, HotkeyMode.HOLD)
+        _key_down(listener, VK_LCTRL, VK_LSHIFT, VK_SPACE)
         listener._on_kb_event(WM_KEYUP, VK_SPACE)
         self.assertEqual(events, ["pressed", "released"])
 
-        listener, events = _listener(hotkey, HotkeyMode.TOGGLE)
-        for vk in (VK_LCTRL, VK_LSHIFT, VK_SPACE):
-            listener._on_kb_event(WM_KEYDOWN, vk)
+    def test_shift_that_is_part_of_the_chord_never_submits_in_toggle_mode(self):
+        listener, events = _listener(self.shift_hotkey, HotkeyMode.TOGGLE)
+        _key_down(listener, VK_LCTRL, VK_LSHIFT, VK_SPACE)
         listener._on_kb_event(WM_KEYUP, VK_SPACE)
         listener.set_recording(True)
         listener._on_kb_event(WM_KEYDOWN, VK_SPACE)
@@ -410,18 +429,22 @@ class _TrayTestBase(unittest.TestCase):
 
 
 class PracticeSessionTests(_TrayTestBase):
+    def _assert_dictation_goes_to_practice_field(self, target):
+        self.tray._setup_dlg = Mock()
+        with patch("src.main.get_foreground_target", return_value=target):
+            self.tray._start_recording()
+        self.assertTrue(self.tray._session.practice)
+        self.tray._setup_dlg.stop_preview.assert_called_once()
+        self.tray._finalize_recording()
+        inject = self.run_worker("practice text", target)
+        inject.assert_not_called()
+        self.tray._setup_dlg.show_practice_result.assert_called_once_with("practice text")
+
     def test_dictation_into_own_guide_goes_to_practice_field(self):
-        for target in (None, WindowIdentity(1, os.getpid())):
-            with self.subTest(target=target):
-                self.tray._setup_dlg = Mock()
-                with patch("src.main.get_foreground_target", return_value=target):
-                    self.tray._start_recording()
-                self.assertTrue(self.tray._session.practice)
-                self.tray._setup_dlg.stop_preview.assert_called_once()
-                self.tray._finalize_recording()
-                inject = self.run_worker("practice text", target)
-                inject.assert_not_called()
-                self.tray._setup_dlg.show_practice_result.assert_called_once_with("practice text")
+        self._assert_dictation_goes_to_practice_field(WindowIdentity(1, os.getpid()))
+
+    def test_dictation_with_unknown_foreground_goes_to_practice_field(self):
+        self._assert_dictation_goes_to_practice_field(None)
 
     def test_other_screamer_window_focused_is_not_practice(self):
         # History or Settings in front, guide in the background: deliver normally.
@@ -440,8 +463,8 @@ class PracticeSessionTests(_TrayTestBase):
         tray._tray = Mock()
         tray._snackbar = Mock()
         tray._setup_dlg = Mock()
-        for state in (TrayState.RECORDING, TrayState.PROCESSING):
-            tray._apply_state(state)
+        tray._apply_state(TrayState.RECORDING)
+        tray._apply_state(TrayState.PROCESSING)
         tray._setup_dlg.ensure_preview.assert_not_called()
         tray._apply_state(TrayState.IDLE)
         tray._setup_dlg.ensure_preview.assert_called_once()
@@ -506,6 +529,44 @@ class ConnectionTestLifecycleTests(unittest.TestCase):
         QApplication.processEvents()
         self.assertEqual(results, [])
 
+    def _finish_test_after(self, fields, edit):
+        release = threading.Event()
+
+        def check(*_args, **_kwargs):
+            release.wait(5)
+            return "Connected."
+
+        with patch("src.http_client.check_connection", side_effect=check):
+            fields.test()
+            thread = fields._thread
+            edit()
+            release.set()
+            thread.wait(5000)
+            QApplication.processEvents()
+
+    def test_result_for_values_edited_during_the_test_is_not_shown(self):
+        dialog = SettingsDialog(AppConfig(llm_base_url="https://a.test/v1", llm_model="m"))
+        self.addCleanup(dialog.deleteLater)
+        fields = dialog._llm_provider
+        self._finish_test_after(fields, lambda: fields.url.setText("https://b.test/v1"))
+        self.assertEqual(fields.status.text(), "")
+        self.assertEqual(fields.url.text(), "https://b.test/v1")
+
+    def test_result_for_unchanged_values_is_shown(self):
+        dialog = SettingsDialog(AppConfig(llm_base_url="https://a.test/v1", llm_model="m"))
+        self.addCleanup(dialog.deleteLater)
+        fields = dialog._llm_provider
+        self._finish_test_after(fields, lambda: None)
+        self.assertEqual(fields.status.text(), "✓ Connected.")
+
+    def test_editing_a_tested_provider_clears_its_shown_result(self):
+        dialog = SettingsDialog(AppConfig(llm_base_url="https://a.test/v1", llm_model="m"))
+        self.addCleanup(dialog.deleteLater)
+        fields = dialog._llm_provider
+        self._finish_test_after(fields, lambda: None)
+        fields.key.setText("new-key")
+        self.assertEqual(fields.status.text(), "")
+
     def test_setup_guide_done_joins_its_connection_test(self):
         cfg = AppConfig(stt_base_url="https://x.test/v1", stt_model="m")
         with patch("src.setup_wizard.AudioRecorder"):
@@ -534,6 +595,56 @@ class ConnectionTestLifecycleTests(unittest.TestCase):
         self.assertLess(perf_counter() - started, 2.0)
         self.assertFalse(thread.isRunning())
         self.assertIsNone(dialog._llm_provider._thread)
+
+
+class SetupGuideMicrophoneTests(unittest.TestCase):
+    """The guide uses the recorder's ID/name policy and never substitutes an input."""
+
+    def _wizard(self, saved_id, saved_name, devices):
+        cfg = AppConfig(
+            stt_base_url="https://x.test/v1",
+            stt_model="m",
+            audio_device_id=saved_id,
+            audio_device_name=saved_name,
+        )
+        recorder = self.enterContext(patch("src.setup_wizard.AudioRecorder"))
+        wizard = SetupWizard(cfg, devices_fn=lambda: devices)
+        self.addCleanup(wizard.deleteLater)
+        return wizard, recorder
+
+    def _save(self, wizard):
+        saved = []
+        with (
+            patch("src.setup_wizard.load_config", return_value=AppConfig()),
+            patch("src.setup_wizard.save_config", side_effect=saved.append),
+        ):
+            wizard._on_save()
+        return saved[0].audio_device_id, saved[0].audio_device_name
+
+    def test_saved_id_now_naming_another_mic_is_not_opened_or_replaced(self):
+        wizard, recorder = self._wizard(7, "Private headset", [(7, "Public room mic")])
+        wizard.start_preview()
+        recorder.assert_not_called()
+        self.assertIn("Unavailable", wizard._device_combo.currentText())
+        self.assertEqual(self._save(wizard), (7, "Private headset"))
+
+    def test_missing_saved_mic_is_kept_instead_of_falling_back_to_default(self):
+        wizard, recorder = self._wizard(7, "Private headset", [(3, "Other mic")])
+        wizard.start_preview()
+        recorder.assert_not_called()
+        self.assertEqual(self._save(wizard), (7, "Private headset"))
+
+    def test_matching_saved_mic_is_previewed_and_saved(self):
+        wizard, recorder = self._wizard(7, "Private headset", [(7, "Private headset")])
+        wizard.start_preview()
+        recorder.assert_called_once_with(device_id=7)
+        self.assertEqual(self._save(wizard), (7, "Private headset"))
+
+    def test_explicit_reselection_replaces_an_unavailable_saved_mic(self):
+        wizard, recorder = self._wizard(7, "Private headset", [(3, "Other mic")])
+        wizard._device_combo.setCurrentIndex(wizard._device_combo.findData(3))
+        recorder.assert_called_once_with(device_id=3)
+        self.assertEqual(self._save(wizard), (3, "Other mic"))
 
 
 class AutoModeStaleManualProfileTests(unittest.TestCase):
@@ -621,16 +732,11 @@ class TrayMenuShapeTests(unittest.TestCase):
             )
         )
         tray._rebuild_menu()
-        labels = []
-        for action in tray._menu.actions():
-            if action.isSeparator():
-                continue
-            widget = action.defaultWidget() if hasattr(action, "defaultWidget") else None
-            labels.append(widget.text() if widget is not None else action.text())
+        actions = [a for a in tray._menu.actions() if not a.isSeparator()]
+        self.assertEqual(actions[0].defaultWidget().text(), "Enabled")
         self.assertEqual(
-            labels,
+            [a.text() for a in actions[1:]],
             [
-                "Enabled",
                 "Language",
                 "Profile",
                 "Copy last",
@@ -645,8 +751,13 @@ class TrayMenuShapeTests(unittest.TestCase):
             [a.defaultWidget().text() for a in profile_menu.actions()],
             ["Auto (by app)", "Raw transcription", "Clean", "Polished", "Coding"],
         )
-        for removed in ("_set_recording_mode", "_set_hotkey", "_set_post_key"):
-            self.assertFalse(hasattr(tray, removed))
+        self.assertEqual(
+            {
+                name: hasattr(tray, name)
+                for name in ("_set_recording_mode", "_set_hotkey", "_set_post_key")
+            },
+            {"_set_recording_mode": False, "_set_hotkey": False, "_set_post_key": False},
+        )
 
 
 class LatencySummaryTests(unittest.TestCase):

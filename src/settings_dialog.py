@@ -550,6 +550,7 @@ class ProviderFields(QObject):
         super().__init__(form.parentWidget())
         self._presets = presets
         self._thread: ConnectionTestThread | None = None
+        self._tested: ProviderConfig | None = None
         self.preset = QComboBox()
         self.preset.addItem("Custom", None)
         for index, (label, _url, _model) in enumerate(presets):
@@ -576,6 +577,12 @@ class ProviderFields(QObject):
         (advanced or form).addRow("Custom headers:", self.headers)
         _mono(self.key, self.url, self.model, self.headers)
         self.url.textEdited.connect(self._sync_preset)
+        for field in (self.key, self.url, self.model, self.headers):
+            # A shown result describes the tested values only; any edit invalidates it.
+            field.textChanged.connect(self._invalidate_status)
+
+    def _invalidate_status(self) -> None:
+        self.status.setText("")
 
     def _on_preset(self, index: int) -> None:
         preset = self.preset.itemData(index)
@@ -619,6 +626,7 @@ class ProviderFields(QObject):
             return
         self.test_btn.setEnabled(False)
         self.status.setText("Testing…")
+        self._tested = provider
         thread = ConnectionTestThread(provider, self)
         thread.done.connect(self._on_result)
         thread.finished.connect(self._on_finished)
@@ -626,6 +634,8 @@ class ProviderFields(QObject):
         thread.start()
 
     def _on_result(self, ok: bool, message: str) -> None:
+        if self.provider() != self._tested:
+            return  # The form changed while testing; the result is for other values.
         self.status.setText(("✓ " if ok else "✗ ") + message)
 
     def _on_finished(self) -> None:
@@ -1877,7 +1887,8 @@ class SettingsDialog(QDialog):
     def _on_import_env(self) -> None:
         """Import .env into the working copy (empty fields only)."""
         with log_duration(log, "Settings import from .env"):
-            self._collect()
+            if not self._collect_or_warn():
+                return
             self._working = import_from_env(self._working)
             self._populate(self._working)
             log.info("Imported .env values into settings")
@@ -1895,7 +1906,8 @@ class SettingsDialog(QDialog):
             return
         with log_duration(log, "Settings apply"):
             self._stop_hotkey_recording()
-            self._collect()
+            if not self._collect_or_warn():
+                return
             if not self._show_validation_issue():
                 return
             if not self._save_or_warn():
@@ -1911,7 +1923,8 @@ class SettingsDialog(QDialog):
         if self._pending_result is not None:
             return
         self._stop_hotkey_recording()
-        self._collect()
+        if not self._collect_or_warn():
+            return
         if not self._show_validation_issue():
             return
         if not self._save_or_warn():
@@ -1969,6 +1982,15 @@ class SettingsDialog(QDialog):
             f"headers and transcripts are sent unencrypted:\n\n{lines}\n\n"
             "Use https:// unless the server is on a network you trust.",
         )
+
+    def _collect_or_warn(self) -> bool:
+        """Collect the form; a draft that cannot be serialized warns instead of raising."""
+        try:
+            self._collect()
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid Rewrite Profiles", str(e))
+            return False
+        return True
 
     def _save_or_warn(self) -> bool:
         from src.utils import ScreamerError
