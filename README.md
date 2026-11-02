@@ -19,7 +19,7 @@ Works with OpenAI, Groq, or any OpenAI-compatible `/audio/transcriptions` endpoi
 ## Quick start
 
 1. On first launch, the **Setup guide** opens. (Later: right-click the tray icon, three bars at the bottom right, → **Setup guide...**)
-2. Pick your microphone and check that the level bar moves when you talk.
+2. Pick your microphone and check that the level bar moves when you talk. A saved microphone that is unplugged or renamed shows as **Unavailable / reselect** and is never swapped for another one; pick one yourself.
 3. Pick a speech provider (OpenAI, Groq or a local server), paste your API key, click **Test connection**, then **Save**.
 4. With the guide still focused, hold `Ctrl+Alt+Space`, say a sentence and release. The text appears in the guide's practice box.
 5. Close the guide. From now on the text is typed into whatever app you dictate into.
@@ -85,9 +85,9 @@ Changes made during dictation apply to the next recording.
 
 ### Speech
 
-- **Provider**: a preset or Custom, then **API key** (optional for local servers), **Base URL** and **Model**. **Test connection** checks the server and whether it lists the model.
+- **Provider**: a preset or Custom, then **API key** (optional for local servers), **Base URL** and **Model**. **Test connection** checks the server and whether it lists the model. Editing any field clears the result, so a ✓ always refers to the values currently shown.
 - **Language**: Auto, or a specific language (often more accurate). Tick the languages you want in the tray menu under **Also show in tray**.
-- **Advanced**: custom HTTP headers, sending your vocabulary to the provider, and a fallback provider used when the main one fails.
+- **Advanced**: custom HTTP headers, sending your vocabulary to the provider, and a fallback provider used when the main one fails or returns an invalid response.
 
 ### Rewrite
 
@@ -98,7 +98,7 @@ The language model used by the Clean, Polished and custom profiles: preset, **AP
 ### Audio
 
 - **Microphone**: **System Default** follows the Windows default. **Refresh** after plugging a device in or out; an unavailable microphone is never silently swapped for another.
-- **Mute speakers while recording**: silences music and calls while you talk, then restores them.
+- **Mute speakers while recording**: silences music and calls while you talk, then unmutes the same device, even if you switch the default output while recording. Output that was already muted stays muted.
 - **Cut silence at the start and end**: sends less audio, which is faster and avoids made-up words in silent parts.
 - **Advanced: silence threshold**: recordings quieter than the threshold are dropped. **Calibrate** measures your room.
 
@@ -111,7 +111,7 @@ The language model used by the Clean, Polished and custom profiles: preset, **AP
 
 - **Use**: Raw (no AI), **Clean** (conservative fixes), **Polished** (also removes filler words and keeps only the final version when you correct yourself), your own profiles, or **Auto**.
 - **Auto** picks a profile by the app you dictate into; otherwise the **When no app matches** profile.
-- **Edit profiles**: built-ins are read-only; **Duplicate** one or click **New profile**, then edit its name and prompt in place.
+- **Edit profiles**: built-ins are read-only; **Duplicate** one or click **New profile**, then edit its name and prompt in place. A prompt can be at most 32 KiB; a longer one is refused with a warning on **Apply**/**OK**.
 - **Apps**: type an `.exe` name (e.g. `slack.exe`) or **Choose running app...**, pick a profile, **Add / update**.
 
 Example: Polished for Slack, Raw for the terminal, a custom "formal" profile for email.
