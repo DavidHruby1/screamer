@@ -6,7 +6,7 @@ This plan tracks the seven roadmap items in priority order; their product requir
 
 The owner accepted the whole [product review](PRODUCT-REVIEW-2026-10.md) except the
 owner-decision items (edit mode on selected text, URL-based profiles) and the
-"not recommended" list. Its status table lists each item. This supersedes earlier
+"not recommended" list. Implemented items were later removed from the review (see git history). This supersedes earlier
 statements here about prompt provenance, retained damaged values with explicit repair,
 the LLM fallback, the tray Hotkey/Record Mode/Post-type submenus and Settings blocking
 dictation. The integration rules below (session snapshot, target check, raw retention,
