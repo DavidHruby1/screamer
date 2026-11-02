@@ -13,6 +13,7 @@
 | 3.1 Edit mode | Rozhodnutí vlastníka, mimo rozsah. |
 | 3.2 Profily podle URL | Rozhodnutí vlastníka, mimo rozsah. |
 | 4 Slovník podle jazyka | Specifikováno, neimplementováno. |
+| 5 Oříznuté přepínače | Neopraveno. |
 
 ---
 
@@ -155,6 +156,17 @@ přepis táhnout do jiného jazyka.
   Whisper promptu, ořez nad limitem.
 - Ruční test na Windows: stejná česká věta s `PySide6` v Raw (s promptem) a v Clean.
 - Aktualizovat `docs/IMPLEMENTATION.md` (formát slovníku, chování promptu).
+
+---
+
+## 5. Přepínače oříznuté scrollbarem (2026-11-02)
+
+**Problém:** Přepínače (`ToggleSwitch` v `src/settings_dialog.py`) u pravého okraje
+stránky nastavení kolidují se svislým scrollbarem. Jejich pravá část vypadá uříznutá.
+
+**Oprava:** dát přepínačům vpravo odsazení o 2–4 px větší, aby celý přepínač byl
+vidět i při zobrazeném scrollbaru. Výsledek ověřit vizuálně na Windows (se
+scrollbarem i bez něj, světlé i tmavé téma, různé DPI).
 
 ---
 
