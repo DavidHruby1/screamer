@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-import json
+import math
 from time import perf_counter
 
 import httpx
@@ -12,6 +12,7 @@ from src import http_client
 from src.config import (
     AppConfig,
     ProviderConfig,
+    VocabularyTerm,
     parse_custom_headers,
     select_vocabulary,
     stt_provider_is_configured,
@@ -21,6 +22,40 @@ from src.utils import AppError, PipelineResult, ScreamerError, log_duration
 log = logging.getLogger(__name__)
 
 _NO_SPEECH_THRESHOLD = 0.7
+
+# Whisper keeps only the last ~224 prompt tokens and silently drops the rest.
+WHISPER_PROMPT_TOKEN_BUDGET = 224
+
+
+def estimate_prompt_tokens(text: str) -> int:
+    """Conservative Whisper token estimate without a tokenizer: UTF-8 bytes / 2, rounded up.
+
+    Bytes over-count accented text (Czech letters with diacritics are two bytes), and
+    two bytes per token over-counts plain identifiers too. Over-estimating is the safe
+    side: Whisper drops the *start* of an over-long prompt, where the language's own
+    terms are.
+    """
+    return math.ceil(len(text.encode("utf-8")) / 2)
+
+
+def _join_prompt(terms: list[str]) -> str:
+    return ", ".join(terms) + "." if terms else ""
+
+
+def build_whisper_prompt(terms: list[VocabularyTerm]) -> tuple[str, int]:
+    """Render *terms* as a bare list of prior transcript text: ``PySide6, Qt, httpx.``.
+
+    Returns ``(prompt, omitted)``. Terms are taken in order (``select_vocabulary`` puts
+    the language's own terms first) and added whole while the estimate fits
+    ``WHISPER_PROMPT_TOKEN_BUDGET``; the first term that does not fit stops the list, so
+    the result never depends on the lengths of later terms.
+    """
+    kept: list[str] = []
+    for index, item in enumerate(terms):
+        if estimate_prompt_tokens(_join_prompt([*kept, item.term])) > WHISPER_PROMPT_TOKEN_BUDGET:
+            return _join_prompt(kept), len(terms) - index
+        kept.append(item.term)
+    return _join_prompt(kept), 0
 
 
 def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
@@ -47,8 +82,12 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
         if config.stt_prompt_primary_enabled or config.stt_prompt_fallback_enabled:
             terms = select_vocabulary(config.vocabulary_entries, config.stt_language)
             if terms:
-                vocabulary_prompt = "Preferred spellings: " + ", ".join(
-                    json.dumps(item.term, ensure_ascii=False) for item in terms
+                vocabulary_prompt, omitted = build_whisper_prompt(terms)
+                # Counts only: the terms themselves may be private.
+                log.info(
+                    "STT prompt: %d terms sent, %d omitted (token budget)",
+                    len(terms) - omitted,
+                    omitted,
                 )
 
         for is_fallback, provider, language in (

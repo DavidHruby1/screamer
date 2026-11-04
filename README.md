@@ -104,7 +104,7 @@ The language model used by the Clean, Polished and custom profiles: preset, **AP
 
 ### Vocabulary
 
-- **Preferred spellings**: names and terms (e.g. `PySide6`). The AI rewrite uses them as hints; transcription gets them only if you enable it under Speech → Advanced.
+- **Preferred spellings**: names and terms (e.g. `PySide6`). The AI rewrite uses them as hints; transcription gets them as a Whisper prompt only if you enable it under Speech → Advanced (choosing the OpenAI or Groq preset turns it on). Whisper keeps about 224 tokens of that prompt, so very long lists are cut; Speech → Advanced shows how much fits.
 - **Replacements**: exact fixes applied to every result, whole words only, ignoring case. Example: heard `pajsajd` → write `PySide6`. They work even with the Raw profile.
 
 ### Profiles

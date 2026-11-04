@@ -459,6 +459,16 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult: ...
     → fallback if enabled, else ScreamerError(AppError.STT_FAILED). `text: ""` is silence.
     Fallback success → PipelineResult with AppError.STT_FALLBACK_USED in warnings."""
 
+WHISPER_PROMPT_TOKEN_BUDGET = 224
+
+def estimate_prompt_tokens(text: str) -> int: ...
+    """Conservative estimate without a tokenizer: ceil(UTF-8 bytes / 2)."""
+
+def build_whisper_prompt(terms: list[VocabularyTerm]) -> tuple[str, int]: ...
+    """(prompt, omitted). Bare list of prior transcript text, `PySide6, Qt, httpx.`, with
+    no header or quotes. Whole terms are added in order while the estimate fits the
+    budget; the first term that does not fit stops the list. Empty terms → ("", 0)."""
+
 def latency_summary(samples: list[float]) -> dict[str, float]: ...  # count, median, p95
 # CLI benchmark: python -m src.stt [--repeat N] a.wav b.wav ...
 ```
@@ -815,6 +825,19 @@ ruff format --check src/ tests/ .github/scripts/
   `rewrite()` adds quoted spelling guidance; STT adds multipart `prompt` only when that
   provider's own opt-in is enabled and the selection is nonempty. These are hints, not
   guarantees.
+- The STT `prompt` is `build_whisper_prompt(selection)`: a bare comma list ending with a
+  period, shaped like earlier transcript text, so no English header pulls the transcript
+  toward English. Whisper keeps only the last ~224 prompt tokens and drops the start
+  silently, so the list is cut to `WHISPER_PROMPT_TOKEN_BUDGET` by a conservative
+  estimate (UTF-8 bytes / 2, rounded up). Terms keep `select_vocabulary` order (the
+  language's own terms, then All languages) and the first term that does not fit ends
+  the list. Each dictation logs `STT prompt: N terms sent, M omitted (token budget)`,
+  counts only. Settings → STT → Advanced shows the estimate for the dialog's language
+  (Auto counts only All-languages terms) and a warning with the skipped count; both
+  refresh as the vocabulary or language changes. There is no per-dictation balloon.
+- Choosing the OpenAI or Groq STT preset in Settings turns on "Send vocabulary" for that
+  role (primary or fallback); Custom and the local preset leave it unchanged. The
+  `AppConfig` defaults stay off and saved settings are not migrated.
 - Replacements are JSON `[heard, write]` pairs applied by the worker to the raw
   transcript after STT and to the rewritten text after the LLM, so they also work with
   Raw. Matching is whole-word, case-insensitive, longest first, in one pass.
