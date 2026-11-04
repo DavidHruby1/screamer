@@ -12,6 +12,7 @@ from src.config import (
     AppMapping,
     DEFAULT_LLM_SYSTEM_PROMPT,
     RewriteProfile,
+    VocabularyTerm,
     decode_rewrite_catalog,
     encode_rewrite_catalog,
     load_config,
@@ -332,7 +333,7 @@ class ProfileSessionTests(unittest.TestCase):
                 [custom], [AppMapping("C:\\Tools\\editor.exe", custom.id)]
             ),
             post_type_key="enter",
-            vocabulary_entries=["QThread"],
+            vocabulary_entries=[VocabularyTerm("QThread", "cs")],
         )
         target = WindowIdentity(100, 200, "C:\\Tools\\editor.exe")
         with patch("src.main.get_foreground_target", return_value=target):
@@ -348,7 +349,7 @@ class ProfileSessionTests(unittest.TestCase):
         self.tray._finalize_recording()
         self.assertIs(self.tray._worker._config, snapshot)
         self.assertEqual(snapshot.stt_language, "cs")
-        self.assertEqual(snapshot.vocabulary_entries, ["QThread"])
+        self.assertEqual(snapshot.vocabulary_entries, [VocabularyTerm("QThread", "cs")])
         with (
             patch("src.main.transcribe", return_value=PipelineResult("raw")),
             patch("src.main.rewrite", return_value=PipelineResult("clean")) as cleanup,

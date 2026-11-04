@@ -9,7 +9,14 @@ from unittest.mock import patch
 
 import httpx
 
-from src.config import AppConfig, ProviderConfig, load_config, save_config, validate_config
+from src.config import (
+    AppConfig,
+    ProviderConfig,
+    VocabularyTerm,
+    load_config,
+    save_config,
+    validate_config,
+)
 from src.rewrite import rewrite
 from src.stt import transcribe
 from src.utils import AppError, ScreamerError
@@ -27,7 +34,10 @@ class VocabularyPersistenceTests(unittest.TestCase):
         )
         save_config(cfg)
         restored = load_config()
-        self.assertEqual(restored.vocabulary_entries, ["Screamer", "QThread", "Stra\u00dfe"])
+        self.assertEqual(
+            restored.vocabulary_entries,
+            [VocabularyTerm("Screamer"), VocabularyTerm("QThread"), VocabularyTerm("Stra\u00dfe")],
+        )
         self.assertFalse(restored.stt_prompt_primary_enabled)
         self.assertFalse(restored.stt_prompt_fallback_enabled)
 
@@ -110,7 +120,7 @@ class VocabularyRequestTests(unittest.TestCase):
             stt_fallback_base_url="https://fallback.test/v1",
             stt_fallback_model="fallback",
             stt_language="cs",
-            vocabulary_entries=["Screamer", "QThread"],
+            vocabulary_entries=[VocabularyTerm("Screamer"), VocabularyTerm("QThread")],
             stt_prompt_primary_enabled=primary_enabled,
             stt_prompt_fallback_enabled=fallback_enabled,
         )
@@ -185,7 +195,7 @@ class VocabularyRequestTests(unittest.TestCase):
             llm_base_url="https://primary.test",
             llm_model="model",
             llm_system_prompt="Keep my exact policy.\r\n",
-            vocabulary_entries=["Screamer", "QThread"],
+            vocabulary_entries=[VocabularyTerm("Screamer"), VocabularyTerm("QThread")],
             stt_language="cs",
         )
         with patch(
@@ -205,7 +215,9 @@ class VocabularyRequestTests(unittest.TestCase):
             post.call_args.kwargs["json"]["messages"][1], {"role": "user", "content": raw}
         )
         self.assertEqual(result.text, "candidate")
-        self.assertEqual(cfg.vocabulary_entries, ["Screamer", "QThread"])
+        self.assertEqual(
+            cfg.vocabulary_entries, [VocabularyTerm("Screamer"), VocabularyTerm("QThread")]
+        )
 
 
 class KeylessSttTests(unittest.TestCase):

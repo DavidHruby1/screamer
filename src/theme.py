@@ -317,6 +317,16 @@ QListWidget::item:selected, QListView::item:selected {
     background: rgba(255, 122, 77, 0.14); color: $text;
 }
 QListWidget:disabled { color: $text_3; }
+QTableWidget {
+    background: $surface; color: $text; border: 1px solid $line; border-radius: 10px;
+    gridline-color: $line; outline: 0;
+}
+QTableWidget::item { padding: 4px 8px; }
+QTableWidget::item:selected { background: rgba(255, 122, 77, 0.14); color: $text; }
+QHeaderView::section {
+    background: $surface; color: $text_2; border: none;
+    border-bottom: 1px solid $line; padding: 4px 8px;
+}
 QListWidget#hushNav { background: transparent; border: none; padding: 0; }
 QListWidget#hushNav::item {
     padding: 8px 12px; margin: 1px 0; color: $text_2; border-radius: 8px;

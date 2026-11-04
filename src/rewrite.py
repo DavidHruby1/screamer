@@ -14,7 +14,9 @@ from src.config import (
     AppConfig,
     ProviderConfig,
     parse_custom_headers,
+    VocabularyTerm,
     normalize_vocabulary_entries,
+    select_vocabulary,
     VOCABULARY_CONTEXT_PREFIX,
     VOCABULARY_CONTEXT_SUFFIX,
 )
@@ -23,14 +25,18 @@ from src.utils import AppError, PipelineResult, ScreamerError, log_duration
 log = logging.getLogger(__name__)
 
 
-def format_vocabulary_context(entries: list[str]) -> str:
-    """Render bounded, quoted spelling guidance without touching transcript data."""
+def format_vocabulary_context(entries: list[VocabularyTerm | str]) -> str:
+    """Render bounded, quoted spelling guidance without touching transcript data.
+
+    *entries* is rendered as given (after normalization); callers pick the dictation's
+    terms with ``select_vocabulary`` first.
+    """
     terms = normalize_vocabulary_entries(entries)
     if not terms:
         return ""
     return (
         VOCABULARY_CONTEXT_PREFIX
-        + "\n".join("- " + json.dumps(term, ensure_ascii=False) for term in terms)
+        + "\n".join("- " + json.dumps(item.term, ensure_ascii=False) for item in terms)
         + VOCABULARY_CONTEXT_SUFFIX
     )
 
@@ -46,7 +52,9 @@ def rewrite(text: str, config: AppConfig) -> PipelineResult:
             return PipelineResult(text=text)
 
         system_prompt = config.llm_system_prompt or ""
-        vocabulary_context = format_vocabulary_context(config.vocabulary_entries)
+        vocabulary_context = format_vocabulary_context(
+            select_vocabulary(config.vocabulary_entries, config.stt_language)
+        )
         if vocabulary_context:
             system_prompt += "\n\n" + vocabulary_context
         language = config.stt_language

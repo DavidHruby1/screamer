@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from src.config import AppConfig, load_config, save_config
+from src.config import AppConfig, VocabularyTerm, load_config, save_config
 from src.settings_dialog import SettingsDialog
 
 _app = QApplication.instance() or QApplication([])
@@ -35,7 +35,10 @@ class RoadmapSettingsTests(unittest.TestCase):
         self.dialog._stt_prompt_fallback_check.setChecked(False)
         self.dialog._on_apply()
         restored = load_config()
-        self.assertEqual(restored.vocabulary_entries, ["Screamer", "QThread"])
+        self.assertEqual(
+            restored.vocabulary_entries,
+            [VocabularyTerm("Screamer"), VocabularyTerm("QThread")],
+        )
         self.assertTrue(restored.stt_prompt_primary_enabled)
         self.assertFalse(restored.stt_prompt_fallback_enabled)
         self.assertEqual(self.cfg.vocabulary_entries, [])
