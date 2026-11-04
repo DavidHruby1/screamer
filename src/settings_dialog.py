@@ -104,10 +104,12 @@ from src.config import (
     parse_custom_headers,
     reset_config,
     save_config,
+    select_vocabulary,
     validate_config,
 )
 from src import http_client, theme
 from src.audio import resolve_device
+from src.stt import WHISPER_PROMPT_TOKEN_BUDGET, build_whisper_prompt, estimate_prompt_tokens
 from src.utils import APP_NAME, AppError, ScreamerError, log_duration
 from src.startup import is_supported
 
@@ -482,6 +484,9 @@ STT_PRESETS: list[tuple[str, str, str]] = [
     ("Groq (fast)", "https://api.groq.com/openai/v1", "whisper-large-v3-turbo"),
     ("Local server (Speaches)", "http://127.0.0.1:18000/v1", "Systran/faster-whisper-small"),
 ]
+# Hosted presets whose API accepts the Whisper ``prompt`` field. Choosing one turns on
+# "Send vocabulary" for that role; custom and local servers may not support the field.
+STT_PROMPT_PRESET_URLS = frozenset({"https://api.openai.com/v1", "https://api.groq.com/openai/v1"})
 LLM_PRESETS: list[tuple[str, str, str]] = [
     ("OpenAI", "https://api.openai.com/v1", "gpt-4.1-mini"),
     ("Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
@@ -543,6 +548,8 @@ class ConnectionTestThread(QThread):
 class ProviderFields(QObject):
     """Preset picker, API key, base URL, model, Test button and (advanced) custom headers."""
 
+    preset_applied = Signal(str)  # base URL of a preset the user just chose
+
     def __init__(
         self,
         form: QFormLayout,
@@ -597,6 +604,7 @@ class ProviderFields(QObject):
         if model:
             self.model.setText(model)
         self.status.setText("")
+        self.preset_applied.emit(url)
 
     def _sync_preset(self) -> None:
         url = self.url.text().strip().rstrip("/")
@@ -1048,6 +1056,17 @@ class SettingsDialog(QDialog):
             "Only for providers that accept the Whisper 'prompt' field."
         )
         advanced.form.addRow(self._stt_prompt_primary_check)
+        self._stt_prompt_estimate = _hint(QLabel(""), "meta")
+        self._stt_prompt_estimate.setWordWrap(True)
+        advanced.form.addRow(self._stt_prompt_estimate)
+        self._stt_prompt_overflow = _hint(QLabel(""), "warning")
+        self._stt_prompt_overflow.setWordWrap(True)
+        self._stt_prompt_overflow.setVisible(False)
+        advanced.form.addRow(self._stt_prompt_overflow)
+        self._stt_lang.currentIndexChanged.connect(self._refresh_prompt_estimate)
+        self._stt_provider.preset_applied.connect(
+            lambda url: self._enable_prompt_for_preset(self._stt_prompt_primary_check, url)
+        )
 
         self._stt_fb_check = ToggleSwitch("Use a fallback provider when this one fails")
         advanced.form.addRow(self._stt_fb_check)
@@ -1061,6 +1080,9 @@ class SettingsDialog(QDialog):
         self._stt_prompt_fallback_check = ToggleSwitch("Send vocabulary to the fallback")
         self._stt_prompt_fallback_check.setToolTip(self._stt_prompt_primary_check.toolTip())
         fb_form.addRow(self._stt_prompt_fallback_check)
+        self._stt_fb_provider.preset_applied.connect(
+            lambda url: self._enable_prompt_for_preset(self._stt_prompt_fallback_check, url)
+        )
         _style_form(fb_form)
         self._stt_fb_group.setVisible(False)
         self._stt_fb_check.toggled.connect(self._stt_fb_group.setVisible)
@@ -1069,6 +1091,39 @@ class SettingsDialog(QDialog):
 
         _style_form(form)
         self._tabs.addTab(tab, "STT")
+
+    @staticmethod
+    def _enable_prompt_for_preset(toggle: ToggleSwitch, url: str) -> None:
+        if url in STT_PROMPT_PRESET_URLS:
+            toggle.setChecked(True)
+
+    def _refresh_prompt_estimate(self, *_args) -> None:
+        """Show the Whisper prompt size for the dialog's language and vocabulary."""
+        if not hasattr(self, "_vocabulary_table"):
+            return  # The STT tab is built before the Vocabulary tab.
+        language = self._stt_lang.currentData() or ""
+        try:
+            terms = select_vocabulary(self._vocabulary_values(), language)
+        except ValueError:
+            terms = []
+        prompt, omitted = build_whisper_prompt(terms)
+        scope = language_label(language) if language else "all languages (Auto)"
+        if terms:
+            self._stt_prompt_estimate.setText(
+                f"Prompt for {scope}: ~{estimate_prompt_tokens(prompt)} / "
+                f"{WHISPER_PROMPT_TOKEN_BUDGET} tokens"
+            )
+        else:
+            self._stt_prompt_estimate.setText(
+                f"No vocabulary terms for {scope}; no prompt is sent."
+            )
+        if omitted:
+            noun = "term won't" if omitted == 1 else "terms won't"
+            self._stt_prompt_overflow.setText(
+                f"{omitted} {noun} fit into the Whisper prompt and will be skipped. "
+                "Language-specific terms are sent first."
+            )
+        self._stt_prompt_overflow.setVisible(bool(omitted))
 
     def _favorite_codes(self) -> list[str]:
         return [
@@ -1632,7 +1687,9 @@ class SettingsDialog(QDialog):
             table.setItem(row, 0, QTableWidgetItem(entry.term))
             combo = QComboBox()
             self._fill_vocabulary_language_combo(combo, entry.language)
+            combo.currentIndexChanged.connect(self._refresh_prompt_estimate)
             table.setCellWidget(row, 1, combo)
+        self._refresh_prompt_estimate()
 
     def _on_vocabulary_selected(self) -> None:
         row = self._vocabulary_table.currentRow()
@@ -1672,6 +1729,7 @@ class SettingsDialog(QDialog):
         if row >= 0:
             self._vocabulary_table.removeRow(row)
             self._vocabulary_input.clear()
+            self._refresh_prompt_estimate()
 
     def _refresh_vocabulary_language_combos(self) -> None:
         """Offer newly checked favorites without changing any chosen language."""
