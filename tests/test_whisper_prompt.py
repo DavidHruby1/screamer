@@ -123,6 +123,16 @@ class SettingsPromptEstimateTests(unittest.TestCase):
         dlg._on_vocabulary_add()
         self.assertIn("tokens", dlg._stt_prompt_estimate.text())
 
+    def test_estimate_refreshes_when_a_term_is_edited_in_place(self):
+        dlg = self._dialog(stt_language="cs", vocabulary_entries=[T("ahoj", "cs")])
+        before = dlg._stt_prompt_estimate.text()
+        dlg._vocabulary_table.item(0, 0).setText("a much longer vocabulary term")
+        self.assertNotEqual(dlg._stt_prompt_estimate.text(), before)
+        self.assertIn(
+            f"~{estimate_prompt_tokens('a much longer vocabulary term.')} /",
+            dlg._stt_prompt_estimate.text(),
+        )
+
 
 class PresetEnablesPromptTests(unittest.TestCase):
     def _dialog(self):

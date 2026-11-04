@@ -1598,6 +1598,8 @@ class SettingsDialog(QDialog):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self._vocabulary_table.itemSelectionChanged.connect(self._on_vocabulary_selected)
+        # Terms are also editable in place, so the Whisper prompt estimate follows them.
+        self._vocabulary_table.itemChanged.connect(self._refresh_prompt_estimate)
         form.addRow("Terms:", self._vocabulary_table)
         self._vocabulary_input = QLineEdit()
         self._vocabulary_input.setPlaceholderText("e.g. PySide6")
