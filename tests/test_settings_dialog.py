@@ -611,3 +611,42 @@ class SidebarNavigationTests(unittest.TestCase):
         dlg._sound_check.click()
         self.assertTrue(dlg._sound_check.isChecked())
         self.assertFalse(dlg._llm_group.isHidden())
+
+
+class ToggleSwitchEdgeTests(unittest.TestCase):
+    def _switch(self, width: int):
+        from src.settings_dialog import ToggleSwitch
+
+        switch = ToggleSwitch("Start with Windows")
+        self.addCleanup(switch.deleteLater)
+        switch.resize(width, switch.sizeHint().height())
+        return switch
+
+    def test_size_hint_reserves_edge_padding(self) -> None:
+        from src.settings_dialog import ToggleSwitch
+
+        switch = self._switch(300)
+        fm = switch.fontMetrics()
+        expected = (
+            fm.horizontalAdvance(switch.text()) + 24 + ToggleSwitch._TRACK_W + ToggleSwitch._EDGE_PAD
+        )
+        self.assertEqual(switch.sizeHint().width(), expected)
+        self.assertEqual(switch.minimumSizeHint(), switch.sizeHint())
+
+    def test_track_and_focus_ring_stay_inside_widget(self) -> None:
+        from PySide6.QtCore import QRectF
+
+        for width in (120, 300, 641):
+            with self.subTest(width=width):
+                switch = self._switch(width)
+                ring = switch._FOCUS_RING + 0.75  # ring offset + half of the 1.5 px pen
+                outer = switch._track_rect().adjusted(-ring, -ring, ring, ring)
+                bounds = QRectF(switch.rect())
+                self.assertTrue(bounds.contains(outer), f"{outer} outside {bounds}")
+                # Pixel coverage: the ring's right edge must stay left of the widget edge.
+                self.assertLess(outer.right(), switch.width())
+
+    def test_whole_row_remains_clickable(self) -> None:
+        switch = self._switch(300)
+        self.assertTrue(switch.hitButton(switch.rect().topLeft()))
+        self.assertTrue(switch.hitButton(switch.rect().bottomRight()))

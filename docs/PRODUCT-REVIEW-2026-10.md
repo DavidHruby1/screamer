@@ -13,7 +13,7 @@
 | 3.1 Edit mode | Rozhodnutí vlastníka, mimo rozsah. |
 | 3.2 Profily podle URL | Rozhodnutí vlastníka, mimo rozsah. |
 | 4 Slovník podle jazyka | Specifikováno, neimplementováno. |
-| 5 Oříznuté přepínače | Neopraveno. |
+| 5 Oříznuté přepínače | Opraveno v kódu (#51), čeká na ruční ověření na Windows. |
 
 ---
 

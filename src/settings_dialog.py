@@ -169,6 +169,11 @@ class ToggleSwitch(QCheckBox):
 
     _TRACK_W = 34
     _TRACK_H = 20
+    # Right inset so the focus ring (track + 3 px, 1.5 px pen) and the
+    # antialiased track edge stay inside the widget instead of being clipped
+    # against the page edge / scrollbar.
+    _EDGE_PAD = 4
+    _FOCUS_RING = 3
 
     def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
         super().__init__(text, parent)
@@ -196,7 +201,7 @@ class ToggleSwitch(QCheckBox):
     def sizeHint(self) -> QSize:
         fm = self.fontMetrics()
         return QSize(
-            fm.horizontalAdvance(self.text()) + 24 + self._TRACK_W,
+            fm.horizontalAdvance(self.text()) + 24 + self._TRACK_W + self._EDGE_PAD,
             max(fm.height(), self._TRACK_H) + 10,
         )
 
@@ -206,6 +211,16 @@ class ToggleSwitch(QCheckBox):
     def hitButton(self, pos) -> bool:
         return self.rect().contains(pos)
 
+    def _track_rect(self) -> QRectF:
+        """Switch track geometry, inset from the right edge by ``_EDGE_PAD``."""
+        rect = self.rect()
+        return QRectF(
+            rect.right() - self._EDGE_PAD - self._TRACK_W,
+            (rect.height() - self._TRACK_H) / 2,
+            self._TRACK_W,
+            self._TRACK_H,
+        )
+
     def paintEvent(self, event) -> None:
         animating = self._anim.state() == QAbstractAnimation.State.Running
         knob = self._knob if animating else (1.0 if self.isChecked() else 0.0)
@@ -214,15 +229,10 @@ class ToggleSwitch(QCheckBox):
         if not self.isEnabled():
             painter.setOpacity(0.4)
         rect = self.rect()
-        track = QRectF(
-            rect.right() - self._TRACK_W - 1,
-            (rect.height() - self._TRACK_H) / 2,
-            self._TRACK_W,
-            self._TRACK_H,
-        )
+        track = self._track_rect()
         painter.setPen(QColor(theme.TEXT))
         painter.drawText(
-            rect.adjusted(0, 0, -(self._TRACK_W + 16), 0),
+            rect.adjusted(0, 0, -(self._TRACK_W + 16 + self._EDGE_PAD), 0),
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
             self.text(),
         )
@@ -236,7 +246,10 @@ class ToggleSwitch(QCheckBox):
         if self.hasFocus():
             painter.setPen(QPen(theme.qcolor(theme.EMBER, 0.55), 1.5))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(track.adjusted(-3, -3, 3, 3), radius + 3, radius + 3)
+            ring = self._FOCUS_RING
+            painter.drawRoundedRect(
+                track.adjusted(-ring, -ring, ring, ring), radius + ring, radius + ring
+            )
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(track_color)
         painter.drawRoundedRect(track, radius, radius)
