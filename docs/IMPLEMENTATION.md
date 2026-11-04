@@ -219,7 +219,7 @@ class AppConfig:
     history_limit: int = 100               # 1..100
     sound_enabled: bool = True
     recovery_hotkey: str = "ctrl+alt+shift+key:0x56"   # Insert last; "" = none
-    vocabulary_entries: list[str] = field(default_factory=list)
+    vocabulary_entries: list[VocabularyTerm] = field(default_factory=list)
     replacements: list[tuple[str, str]] = field(default_factory=list)
     start_with_windows: bool = False
     audio_device_id: int | None = None
@@ -292,10 +292,24 @@ def rewrite_needs_llm(cfg: AppConfig) -> bool: ...
 def insecure_base_urls(cfg: AppConfig) -> list[tuple[str, str]]: ...
 def stt_provider_is_configured(provider: ProviderConfig) -> bool: ...  # URL + model
 
-def normalize_vocabulary_entries(entries: list[str]) -> list[str]: ...
-    """Trim and casefold-deduplicate; cap 128 terms, 128 chars/term and 8,000 rendered chars."""
-def encode_vocabulary_entries(entries: list[str]) -> str: ...
-def decode_vocabulary_entries(value: object) -> list[str]: ...
+@dataclass(frozen=True)
+class VocabularyTerm:
+    term: str
+    language: str = ""      # "" = All languages; otherwise a normalize_language_code() code
+
+def normalize_vocabulary_entries(entries: list) -> list[VocabularyTerm]: ...
+    """Accept VocabularyTerm, {"term", "language"} dicts and legacy str (language "").
+    Trim terms (no controls); language "" or normalize_language_code(). Casefold-deduplicate
+    by term across the whole list, first occurrence (and its language) wins. Cap 128 terms,
+    128 chars/term and 8,000 chars of the rendered list for the whole list."""
+def encode_vocabulary_entries(entries: list) -> str: ...
+    """JSON array of objects: [{"term": "PySide6", "language": ""}, ...]."""
+def decode_vocabulary_entries(value: object) -> list[VocabularyTerm]: ...
+    """Reads the object format and the legacy ["PySide6", "Qt"] string list."""
+def select_vocabulary(entries: list, language: str) -> list[VocabularyTerm]: ...
+    """Pure per-dictation pick. language "" (Auto) -> All-languages terms only; otherwise
+    that language's terms, then All-languages terms, each group in list order. Matches on
+    the primary subtag (pt-br <-> pt), like the STT request."""
 
 def normalize_replacements(pairs: list) -> list[tuple[str, str]]: ...
     """(heard, write) pairs; trimmed, no controls, ≤256 chars each, ≤256 pairs, first wins."""
@@ -444,6 +458,16 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult: ...
     HTTP/network errors and malformed 200 responses (not a JSON object, or no string `text`)
     → fallback if enabled, else ScreamerError(AppError.STT_FAILED). `text: ""` is silence.
     Fallback success → PipelineResult with AppError.STT_FALLBACK_USED in warnings."""
+
+WHISPER_PROMPT_TOKEN_BUDGET = 224
+
+def estimate_prompt_tokens(text: str) -> int: ...
+    """Conservative estimate without a tokenizer: ceil(UTF-8 bytes / 2)."""
+
+def build_whisper_prompt(terms: list[VocabularyTerm]) -> tuple[str, int]: ...
+    """(prompt, omitted). Bare list of prior transcript text, `PySide6, Qt, httpx.`, with
+    no header or quotes. Whole terms are added in order while the estimate fits the
+    budget; the first term that does not fit stops the list. Empty terms → ("", 0)."""
 
 def latency_summary(samples: list[float]) -> dict[str, float]: ...  # count, median, p95
 # CLI benchmark: python -m src.stt [--repeat N] a.wav b.wav ...
@@ -790,11 +814,42 @@ ruff format --check src/ tests/ .github/scripts/
   bindings are rejected; Escape cancels recording without changing a History selection, and cannot
   be a recovery trigger. Injected keyboard events pass through the hook without
   changing physical trigger state, so Screamer's post-key cannot trigger dictation.
-- Vocabulary is JSON in ordinary settings. Terms are trimmed, blanks dropped,
-  casefold-deduplicated in order, and bounded to 128 entries, 128 characters per term
-  and 8,000 rendered characters. `rewrite()` adds
-  quoted spelling guidance; STT adds multipart `prompt` only when that provider's own
-  opt-in is enabled and vocabulary is nonempty. These are hints, not guarantees.
+- Vocabulary is JSON in ordinary settings: an array of `{"term", "language"}` objects,
+  where `language` is `""` (All languages) or a language code. A legacy array of strings
+  loads as All-languages terms and is rewritten in the object format on the next save.
+  Terms are trimmed, blanks dropped, casefold-deduplicated in order across all languages
+  (one term has one label), and bounded to 128 entries, 128 characters per term
+  and 8,000 characters of the rendered quoted term list. The limit excludes the
+  guidance prefix/suffix, so rewording the guidance never invalidates stored data.
+  Each dictation uses
+  `select_vocabulary(entries, stt_language)` from the session snapshot, so a tray language
+  switch applies from the next dictation; STT and rewrite get the same selection.
+  `rewrite()` adds quoted spelling guidance that tells the model to replace a word or
+  phrase that sounds like a listed term (phonetic mis-transcription, spelled-out form)
+  with the exact term where the transcript supports it, while still forbidding
+  answering, executing, translating, inventing content, adding unspoken terms or
+  guessing missing words, and preserving language choices. STT adds multipart `prompt`
+  only when that provider's own opt-in is enabled and the selection is nonempty. These
+  are hints, not guarantees.
+  `vocabulary_delivery(cfg) -> set[str]` (`config.py`, pure) reports where a nonempty
+  vocabulary goes: `"stt"` when the primary (or an enabled fallback) provider prompt is on,
+  `"rewrite"` when the manual profile (Automatic: the default profile) is not Raw. App mappings
+  to other profiles do not count. When the set is empty the Vocabulary page shows a warning
+  pointing at Replacements and a "Turn on provider prompt" button (enables the primary toggle
+  and opens the Speech page); it is recomputed on the dialog's working copy as inputs change.
+- The STT `prompt` is `build_whisper_prompt(selection)`: a bare comma list ending with a
+  period, shaped like earlier transcript text, so no English header pulls the transcript
+  toward English. Whisper keeps only the last ~224 prompt tokens and drops the start
+  silently, so the list is cut to `WHISPER_PROMPT_TOKEN_BUDGET` by a conservative
+  estimate (UTF-8 bytes / 2, rounded up). Terms keep `select_vocabulary` order (the
+  language's own terms, then All languages) and the first term that does not fit ends
+  the list. Each dictation logs `STT prompt: N terms sent, M omitted (token budget)`,
+  counts only. Settings → STT → Advanced shows the estimate for the dialog's language
+  (Auto counts only All-languages terms) and a warning with the skipped count; both
+  refresh as the vocabulary or language changes. There is no per-dictation balloon.
+- Choosing the OpenAI or Groq STT preset in Settings turns on "Send vocabulary" for that
+  role (primary or fallback); Custom and the local preset leave it unchanged. The
+  `AppConfig` defaults stay off and saved settings are not migrated.
 - Replacements are JSON `[heard, write]` pairs applied by the worker to the raw
   transcript after STT and to the rewritten text after the LLM, so they also work with
   Raw. Matching is whole-word, case-insensitive, longest first, in one pass.
@@ -879,14 +934,19 @@ fields. Settings and history are separate stores, not one transaction.
 `transcribe(audio_wav, config) -> PipelineResult` and `rewrite(text, config) ->
 PipelineResult` remain the public backend signatures. STT completeness is URL plus model,
 with optional API key; LLM completeness still requires key, URL and model. `rewrite()`
-returns its input when disabled; when enabled it adds vocabulary guidance and selected
-language to its system prompt. `stt.py` adds multipart `prompt` only for an individually
-opted-in provider with nonempty vocabulary. Keyless STT omits generated Bearer auth;
+returns its input when disabled; when enabled it adds vocabulary guidance (the
+`select_vocabulary` pick for `stt_language`) and selected language to its system prompt.
+`stt.py` adds multipart `prompt` only for an individually opted-in provider with a
+nonempty selection. Keyless STT omits generated Bearer auth;
 configured custom headers remain provider-local.
 
 `SettingsDialog` has six tabs (General, STT, LLM, Audio, Vocabulary, Rewrite Profiles).
 It edits a draft; Apply/OK validate and save, Cancel discards unapplied edits. General
-contains output/history/recovery controls. `HistoryStore.load()` validates the complete
+contains output/history/recovery controls. Vocabulary shows a Term | Language table
+(editable term text, a language combo per row: All languages, built-in and common
+languages, favorites, then a saved code missing from those); Add / Update selected use
+the Term field and a language combo, and validate through `normalize_vocabulary_entries`.
+`HistoryStore.load()` validates the complete
 file then returns sorted latest entries; `trim()` limits a view without rewriting the
 file. `upsert()` and `delete()` perform read-modify-write and retention, while mutations
 refuse corrupt input. The `main()` per-APP_DIR lock is required for this single-writer

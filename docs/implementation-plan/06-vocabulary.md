@@ -9,7 +9,9 @@
 Let users maintain preferred spellings and feed those terms as guidance to
 rewrite, and optionally as an STT prompt for specifically opted-in providers.
 Vocabulary is context, not a replacement table: it cannot guarantee exact
-recognition or authorize translation/invention. Keep persistence/validation in
+recognition or authorize translation/invention. Rewrite guidance does ask the
+model to replace a phonetically similar word or phrase with the listed term when
+the context supports it. Keep persistence/validation in
 `config.py`, editing in the existing Settings dialog, and request shaping in
 the existing `stt.py` / `rewrite.py` boundaries. STT and rewrite public
 signatures remain unchanged.
@@ -72,7 +74,8 @@ affirmation that the configured endpoint accepts the supported multipart
 `prompt` field; there is no capability discovery in source.
 
 Suggested request-oriented engineering limits: 128 entries, 128 characters
-per term, and at most 8,000 characters in the rendered context. These are
+per term, and at most 8,000 characters in the rendered term list (guidance
+prefix/suffix excluded). These are
 conservative defaults to bound settings and request size, not product
 requirements or estimates of any provider's token limits. Validate entries and
 rendered context at the config/Settings boundary; never silently truncate the
