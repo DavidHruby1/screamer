@@ -301,7 +301,7 @@ def normalize_vocabulary_entries(entries: list) -> list[VocabularyTerm]: ...
     """Accept VocabularyTerm, {"term", "language"} dicts and legacy str (language "").
     Trim terms (no controls); language "" or normalize_language_code(). Casefold-deduplicate
     by term across the whole list, first occurrence (and its language) wins. Cap 128 terms,
-    128 chars/term and 8,000 rendered chars for the whole list."""
+    128 chars/term and 8,000 chars of the rendered list for the whole list."""
 def encode_vocabulary_entries(entries: list) -> str: ...
     """JSON array of objects: [{"term": "PySide6", "language": ""}, ...]."""
 def decode_vocabulary_entries(value: object) -> list[VocabularyTerm]: ...
@@ -819,12 +819,18 @@ ruff format --check src/ tests/ .github/scripts/
   loads as All-languages terms and is rewritten in the object format on the next save.
   Terms are trimmed, blanks dropped, casefold-deduplicated in order across all languages
   (one term has one label), and bounded to 128 entries, 128 characters per term
-  and 8,000 rendered characters. Each dictation uses
+  and 8,000 characters of the rendered quoted term list. The limit excludes the
+  guidance prefix/suffix, so rewording the guidance never invalidates stored data.
+  Each dictation uses
   `select_vocabulary(entries, stt_language)` from the session snapshot, so a tray language
   switch applies from the next dictation; STT and rewrite get the same selection.
-  `rewrite()` adds quoted spelling guidance; STT adds multipart `prompt` only when that
-  provider's own opt-in is enabled and the selection is nonempty. These are hints, not
-  guarantees.
+  `rewrite()` adds quoted spelling guidance that tells the model to replace a word or
+  phrase that sounds like a listed term (phonetic mis-transcription, spelled-out form)
+  with the exact term where the transcript supports it, while still forbidding
+  answering, executing, translating, inventing content, adding unspoken terms or
+  guessing missing words, and preserving language choices. STT adds multipart `prompt`
+  only when that provider's own opt-in is enabled and the selection is nonempty. These
+  are hints, not guarantees.
   `vocabulary_delivery(cfg) -> set[str]` (`config.py`, pure) reports where a nonempty
   vocabulary goes: `"stt"` when the primary (or an enabled fallback) provider prompt is on,
   `"rewrite"` when the manual profile (Automatic: the default profile) is not Raw. App mappings
