@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHeaderView,
     QInputDialog,
     QGroupBox,
     QHBoxLayout,
@@ -65,6 +66,8 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStyle,
     QStyleOptionFrame,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -86,6 +89,7 @@ from src.config import (
     Hotkey,
     ProviderConfig,
     RewriteProfile,
+    VocabularyTerm,
     builtin_rewrite_profiles,
     decode_rewrite_catalog,
     encode_rewrite_catalog,
@@ -1036,7 +1040,7 @@ class SettingsDialog(QDialog):
         form.addRow("Language:", self._stt_lang)
         self._stt_favorites = QListWidget()
         self._stt_favorites.setMaximumHeight(170)
-        self._stt_favorites.itemChanged.connect(lambda _item: self._refresh_language_choices())
+        self._stt_favorites.itemChanged.connect(self._on_favorites_changed)
         form.addRow("Also show in tray:", self._stt_favorites)
 
         self._stt_prompt_primary_check = ToggleSwitch("Send vocabulary to this provider")
@@ -1072,6 +1076,11 @@ class SettingsDialog(QDialog):
             for i in range(self._stt_favorites.count())
             if self._stt_favorites.item(i).checkState() == Qt.CheckState.Checked
         ]
+
+    def _on_favorites_changed(self, _item=None) -> None:
+        self._refresh_language_choices()
+        if hasattr(self, "_vocabulary_table"):
+            self._refresh_vocabulary_language_combos()
 
     def _refresh_language_choices(self, active: str | None = None) -> None:
         if active is None:
@@ -1517,14 +1526,31 @@ class SettingsDialog(QDialog):
         )
         hint.setWordWrap(True)
         form.addRow(_hint(hint))
-        self._vocabulary_list = QListWidget()
-        self._vocabulary_list.setMaximumHeight(160)
-        self._vocabulary_list.itemSelectionChanged.connect(self._on_vocabulary_selected)
-        form.addRow("Terms:", self._vocabulary_list)
+        language_hint = QLabel(
+            "Tag a term with a language to send it only when that language is selected; "
+            "All languages terms are always sent."
+        )
+        language_hint.setWordWrap(True)
+        form.addRow(_hint(language_hint))
+        self._vocabulary_table = QTableWidget(0, 2)
+        self._vocabulary_table.setHorizontalHeaderLabels(["Term", "Language"])
+        self._vocabulary_table.setMinimumHeight(160)
+        self._vocabulary_table.setMaximumHeight(220)
+        self._vocabulary_table.verticalHeader().setVisible(False)
+        self._vocabulary_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._vocabulary_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        header = self._vocabulary_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._vocabulary_table.itemSelectionChanged.connect(self._on_vocabulary_selected)
+        form.addRow("Terms:", self._vocabulary_table)
         self._vocabulary_input = QLineEdit()
         self._vocabulary_input.setPlaceholderText("e.g. PySide6")
-        _mono(self._vocabulary_list, self._vocabulary_input)
+        _mono(self._vocabulary_table, self._vocabulary_input)
         form.addRow("Term:", self._vocabulary_input)
+        self._vocabulary_language = QComboBox()
+        self._fill_vocabulary_language_combo(self._vocabulary_language, "")
+        form.addRow("Language:", _leading(self._vocabulary_language))
         self._vocabulary_add_btn = QPushButton("Add")
         self._vocabulary_add_btn.clicked.connect(self._on_vocabulary_add)
         self._vocabulary_edit_btn = QPushButton("Update selected")
@@ -1566,41 +1592,97 @@ class SettingsDialog(QDialog):
         _style_form(form)
         self._tabs.addTab(tab, "Vocabulary")
 
-    def _vocabulary_values(self) -> list[str]:
-        return [self._vocabulary_list.item(i).text() for i in range(self._vocabulary_list.count())]
+    def _vocabulary_language_codes(self, extra: str = "") -> list[str]:
+        """All languages, built-ins without Auto, common languages, favorites, then *extra*."""
+        codes = [""]
+        candidates = [code for code, _label in LANGUAGE_OPTIONS if code]
+        candidates += [code for code, _label in COMMON_LANGUAGES]
+        candidates += self._favorite_codes() if hasattr(self, "_stt_favorites") else []
+        for code in [*candidates, extra]:
+            if code and code not in codes:
+                codes.append(code)
+        return codes
+
+    def _fill_vocabulary_language_combo(self, combo: QComboBox, selected: str) -> None:
+        combo.blockSignals(True)
+        combo.clear()
+        for code in self._vocabulary_language_codes(selected):
+            combo.addItem("All languages" if not code else f"{language_label(code)} ({code})", code)
+        combo.setCurrentIndex(_combo_index(combo, selected))
+        combo.blockSignals(False)
+
+    def _vocabulary_values(self) -> list[VocabularyTerm]:
+        result = []
+        for row in range(self._vocabulary_table.rowCount()):
+            item = self._vocabulary_table.item(row, 0)
+            combo = self._vocabulary_table.cellWidget(row, 1)
+            result.append(
+                VocabularyTerm(
+                    item.text() if item is not None else "",
+                    (combo.currentData() or "") if combo is not None else "",
+                )
+            )
+        return result
+
+    def _populate_vocabulary_table(self, entries: list[VocabularyTerm]) -> None:
+        table = self._vocabulary_table
+        table.setRowCount(0)
+        table.setRowCount(len(entries))
+        for row, entry in enumerate(entries):
+            table.setItem(row, 0, QTableWidgetItem(entry.term))
+            combo = QComboBox()
+            self._fill_vocabulary_language_combo(combo, entry.language)
+            table.setCellWidget(row, 1, combo)
 
     def _on_vocabulary_selected(self) -> None:
-        item = self._vocabulary_list.currentItem()
-        if item is not None:
-            self._vocabulary_input.setText(item.text())
+        row = self._vocabulary_table.currentRow()
+        if 0 <= row < self._vocabulary_table.rowCount():
+            entry = self._vocabulary_values()[row]
+            self._vocabulary_input.setText(entry.term)
+            self._fill_vocabulary_language_combo(self._vocabulary_language, entry.language)
 
-    def _set_vocabulary_values(self, entries: list[str]) -> None:
+    def _new_vocabulary_term(self) -> VocabularyTerm:
+        return VocabularyTerm(
+            self._vocabulary_input.text(), self._vocabulary_language.currentData() or ""
+        )
+
+    def _set_vocabulary_values(self, entries: list[VocabularyTerm]) -> None:
         try:
             normalized = normalize_vocabulary_entries(entries)
         except ValueError as e:
             QMessageBox.warning(self, "Invalid Vocabulary", str(e))
             self._vocabulary_input.setFocus()
             return
-        self._vocabulary_list.clear()
-        self._vocabulary_list.addItems(normalized)
+        self._populate_vocabulary_table(normalized)
         self._vocabulary_input.clear()
 
     def _on_vocabulary_add(self) -> None:
-        self._set_vocabulary_values([*self._vocabulary_values(), self._vocabulary_input.text()])
+        self._set_vocabulary_values([*self._vocabulary_values(), self._new_vocabulary_term()])
 
     def _on_vocabulary_edit(self) -> None:
-        row = self._vocabulary_list.currentRow()
+        row = self._vocabulary_table.currentRow()
         if row < 0:
             return
         entries = self._vocabulary_values()
-        entries[row] = self._vocabulary_input.text()
+        entries[row] = self._new_vocabulary_term()
         self._set_vocabulary_values(entries)
 
     def _on_vocabulary_remove(self) -> None:
-        row = self._vocabulary_list.currentRow()
+        row = self._vocabulary_table.currentRow()
         if row >= 0:
-            self._vocabulary_list.takeItem(row)
+            self._vocabulary_table.removeRow(row)
             self._vocabulary_input.clear()
+
+    def _refresh_vocabulary_language_combos(self) -> None:
+        """Offer newly checked favorites without changing any chosen language."""
+        combos = [self._vocabulary_language]
+        combos += [
+            self._vocabulary_table.cellWidget(row, 1)
+            for row in range(self._vocabulary_table.rowCount())
+        ]
+        for combo in combos:
+            if combo is not None:
+                self._fill_vocabulary_language_combo(combo, combo.currentData() or "")
 
     def _refresh_replacement_list(self) -> None:
         self._replacement_list.clear()
@@ -1692,9 +1774,9 @@ class SettingsDialog(QDialog):
         self._rms_label.setText(f"Threshold: {cfg.rms_threshold:.1f}")
 
         # Vocabulary
-        self._vocabulary_list.clear()
-        self._vocabulary_list.addItems(cfg.vocabulary_entries)
+        self._populate_vocabulary_table(normalize_vocabulary_entries(cfg.vocabulary_entries))
         self._vocabulary_input.clear()
+        self._fill_vocabulary_language_combo(self._vocabulary_language, "")
         self._replacements = list(cfg.replacements)
         self._refresh_replacement_list()
 
@@ -1996,9 +2078,11 @@ class SettingsDialog(QDialog):
         from src.utils import ScreamerError
 
         try:
-            self._working.vocabulary_entries = normalize_vocabulary_entries(
-                self._working.vocabulary_entries
-            )
+            normalized = normalize_vocabulary_entries(self._working.vocabulary_entries)
+            self._working.vocabulary_entries = normalized
+            if normalized != self._vocabulary_values():
+                # Cell edits can leave blank or duplicate rows that the save drops.
+                self._populate_vocabulary_table(normalized)
             recovery = Hotkey.parse(self._working.recovery_hotkey)
             if recovery is not None:
                 self._working.recovery_hotkey = recovery.to_canonical()
