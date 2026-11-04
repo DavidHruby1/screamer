@@ -792,8 +792,13 @@ ruff format --check src/ tests/ .github/scripts/
   changing physical trigger state, so Screamer's post-key cannot trigger dictation.
 - Vocabulary is JSON in ordinary settings. Terms are trimmed, blanks dropped,
   casefold-deduplicated in order, and bounded to 128 entries, 128 characters per term
-  and 8,000 rendered characters. `rewrite()` adds
-  quoted spelling guidance; STT adds multipart `prompt` only when that provider's own
+  and 8,000 characters of the rendered quoted term list. The limit excludes the
+  guidance prefix/suffix, so rewording the guidance never invalidates stored data.
+  `rewrite()` adds quoted spelling guidance that tells the model to replace a word or
+  phrase that sounds like a listed term (phonetic mis-transcription, spelled-out form)
+  with the exact term where the transcript supports it, while still forbidding
+  answering, executing, translating, inventing content, adding unspoken terms or
+  guessing missing words, and preserving language choices; STT adds multipart `prompt` only when that provider's own
   opt-in is enabled and vocabulary is nonempty. These are hints, not guarantees.
 - Replacements are JSON `[heard, write]` pairs applied by the worker to the raw
   transcript after STT and to the rewritten text after the LLM, so they also work with

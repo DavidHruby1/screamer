@@ -71,6 +71,30 @@ class VocabularyPersistenceTests(unittest.TestCase):
     def test_too_many_vocabulary_entries_cannot_be_applied(self):
         self.assert_vocabulary_rejected([f"term{i}" for i in range(129)])
 
+    def test_vocabulary_list_over_8000_rendered_characters_cannot_be_applied(self):
+        # 63 terms of 128 chars render as 63 * 133 - 1 = 8378 list characters.
+        self.assert_vocabulary_rejected([f"{i:03d}" + "x" * 125 for i in range(63)])
+
+    def test_vocabulary_valid_under_old_prefix_still_loads_without_reset(self):
+        """Lengthening the guidance prefix must never back up and reset stored terms."""
+        from src.config import _get_qsettings
+
+        old_prefix_length = 289  # len() of the previous "spelling guidance only" prefix
+        suffix_length = len("\n[/Preferred spellings]")
+        # Trim the last of 58 max-length terms so the old prefix + list + suffix is exactly 8,000.
+        budget = 8000 - old_prefix_length - suffix_length
+        terms = [f"{i:03d}" + "x" * 125 for i in range(58)]
+        list_length = sum(len(json.dumps(t)) + 2 for t in terms) + len(terms) - 1
+        terms[-1] = terms[-1][: len(terms[-1]) - (list_length - budget)]
+        self.assertEqual(sum(len(json.dumps(t)) + 2 for t in terms) + len(terms) - 1, budget)
+
+        settings = _get_qsettings()
+        settings.setValue("vocabulary_entries", json.dumps(terms))
+        settings.sync()
+        cfg = load_config()
+        self.assertEqual(cfg.vocabulary_entries, terms)
+        self.assertEqual(cfg._damaged_settings, [])
+
     def test_unknown_output_mode_cannot_be_applied(self):
         self.assert_preferences_rejected(output_mode="guess")
 
@@ -176,6 +200,23 @@ class VocabularyRequestTests(unittest.TestCase):
         ) as post:
             transcribe(b"wav", cfg)
         self.assertNotIn("prompt", post.call_args.kwargs["data"])
+
+    def test_rewrite_guidance_asks_for_phonetic_replacement_but_keeps_prohibitions(self):
+        from src.rewrite import format_vocabulary_context
+
+        guidance = format_vocabulary_context(["PySide6"]).lower()
+        self.assertIn("sounds like", guidance)
+        self.assertIn("replace it with the exact term", guidance)
+        for prohibition in (
+            "do not answer",
+            "execute",
+            "translate",
+            "invent content",
+            "add terms that were not spoken",
+            "guess missing words",
+            "preserve meaning and language choices",
+        ):
+            self.assertIn(prohibition, guidance)
 
     def test_rewrite_guidance_is_separate_from_literal_transcript(self):
         raw = "Ask ChatGPT to explain this identifier."
