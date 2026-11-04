@@ -628,7 +628,10 @@ class ToggleSwitchEdgeTests(unittest.TestCase):
         switch = self._switch(300)
         fm = switch.fontMetrics()
         expected = (
-            fm.horizontalAdvance(switch.text()) + 24 + ToggleSwitch._TRACK_W + ToggleSwitch._EDGE_PAD
+            fm.horizontalAdvance(switch.text())
+            + 24
+            + ToggleSwitch._TRACK_W
+            + ToggleSwitch._EDGE_PAD
         )
         self.assertEqual(switch.sizeHint().width(), expected)
         self.assertEqual(switch.minimumSizeHint(), switch.sizeHint())
