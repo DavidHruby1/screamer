@@ -89,7 +89,7 @@ class VocabularyPersistenceTests(unittest.TestCase):
     def test_vocabulary_list_limit_boundary_is_8000_rendered_characters(self):
         base = [f"{i:03d}" + "x" * 125 for i in range(60)]  # 60 * 133 - 1 = 7979 characters
         at_limit = base + ["y" * 16]  # + 16 + 2 quotes + 2 bullet + 1 newline = 8000
-        self.assertEqual(normalize_vocabulary_entries(at_limit), at_limit)
+        self.assertEqual([e.term for e in normalize_vocabulary_entries(at_limit)], at_limit)
         self.assert_vocabulary_rejected(base + ["y" * 17])
 
     def test_vocabulary_valid_under_old_prefix_still_loads_without_reset(self):
@@ -109,7 +109,7 @@ class VocabularyPersistenceTests(unittest.TestCase):
         settings.setValue("vocabulary_entries", json.dumps(terms))
         settings.sync()
         cfg = load_config()
-        self.assertEqual(cfg.vocabulary_entries, terms)
+        self.assertEqual([e.term for e in cfg.vocabulary_entries], terms)
         self.assertEqual(cfg._damaged_settings, [])
 
     def test_unknown_output_mode_cannot_be_applied(self):
