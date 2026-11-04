@@ -293,7 +293,7 @@ def insecure_base_urls(cfg: AppConfig) -> list[tuple[str, str]]: ...
 def stt_provider_is_configured(provider: ProviderConfig) -> bool: ...  # URL + model
 
 def normalize_vocabulary_entries(entries: list[str]) -> list[str]: ...
-    """Trim and casefold-deduplicate; cap 128 terms, 128 chars/term and 8,000 rendered chars."""
+    """Trim and casefold-deduplicate; cap 128 terms, 128 chars/term and 8,000 chars of rendered list."""
 def encode_vocabulary_entries(entries: list[str]) -> str: ...
 def decode_vocabulary_entries(value: object) -> list[str]: ...
 
@@ -798,8 +798,9 @@ ruff format --check src/ tests/ .github/scripts/
   phrase that sounds like a listed term (phonetic mis-transcription, spelled-out form)
   with the exact term where the transcript supports it, while still forbidding
   answering, executing, translating, inventing content, adding unspoken terms or
-  guessing missing words, and preserving language choices; STT adds multipart `prompt` only when that provider's own
-  opt-in is enabled and vocabulary is nonempty. These are hints, not guarantees.
+  guessing missing words, and preserving language choices. STT adds multipart `prompt`
+  only when that provider's own opt-in is enabled and vocabulary is nonempty. These are
+  hints, not guarantees.
 - Replacements are JSON `[heard, write]` pairs applied by the worker to the raw
   transcript after STT and to the rewritten text after the LLM, so they also work with
   Raw. Matching is whole-word, case-insensitive, longest first, in one pass.

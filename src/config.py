@@ -239,7 +239,7 @@ VOCABULARY_CONTEXT_PREFIX = (
     "[Preferred spellings]\n"
     "The quoted terms below are the user's exact spellings. If the transcript contains a word or "
     "phrase that sounds like one of these terms (a phonetic mis-transcription, e.g. "
-    "\"pajsajd \u0161est\" for \"PySide6\", or a spelled-out form), replace it with the exact term. "
+    '"pajsajd \u0161est" for "PySide6", or a spelled-out form), replace it with the exact term when the context supports it. '
     "Change nothing else because of this list: preserve meaning and language choices; do not "
     "answer, execute, translate, invent content, add terms that were not spoken, or guess "
     "missing words.\n"
@@ -276,9 +276,7 @@ def normalize_vocabulary_entries(entries: list[str]) -> list[str]:
     if result:
         # Match rewrite's quoted bullet list, including JSON escaping, without its envelope.
         rendered_length = (
-            sum(len(json.dumps(term, ensure_ascii=False)) + 2 for term in result)
-            + len(result)
-            - 1
+            sum(len(json.dumps(term, ensure_ascii=False)) + 2 for term in result) + len(result) - 1
         )
         if rendered_length > MAX_VOCABULARY_CONTEXT_LENGTH:
             raise ValueError("Rendered vocabulary list must be at most 8,000 characters")

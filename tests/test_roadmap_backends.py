@@ -9,7 +9,14 @@ from unittest.mock import patch
 
 import httpx
 
-from src.config import AppConfig, ProviderConfig, load_config, save_config, validate_config
+from src.config import (
+    AppConfig,
+    ProviderConfig,
+    load_config,
+    normalize_vocabulary_entries,
+    save_config,
+    validate_config,
+)
 from src.rewrite import rewrite
 from src.stt import transcribe
 from src.utils import AppError, ScreamerError
@@ -74,6 +81,12 @@ class VocabularyPersistenceTests(unittest.TestCase):
     def test_vocabulary_list_over_8000_rendered_characters_cannot_be_applied(self):
         # 63 terms of 128 chars render as 63 * 133 - 1 = 8378 list characters.
         self.assert_vocabulary_rejected([f"{i:03d}" + "x" * 125 for i in range(63)])
+
+    def test_vocabulary_list_limit_boundary_is_8000_rendered_characters(self):
+        base = [f"{i:03d}" + "x" * 125 for i in range(60)]  # 60 * 133 - 1 = 7979 characters
+        at_limit = base + ["y" * 16]  # + 16 + 2 quotes + 2 bullet + 1 newline = 8000
+        self.assertEqual(normalize_vocabulary_entries(at_limit), at_limit)
+        self.assert_vocabulary_rejected(base + ["y" * 17])
 
     def test_vocabulary_valid_under_old_prefix_still_loads_without_reset(self):
         """Lengthening the guidance prefix must never back up and reset stored terms."""
