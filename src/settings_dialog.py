@@ -2078,9 +2078,11 @@ class SettingsDialog(QDialog):
         from src.utils import ScreamerError
 
         try:
-            self._working.vocabulary_entries = normalize_vocabulary_entries(
-                self._working.vocabulary_entries
-            )
+            normalized = normalize_vocabulary_entries(self._working.vocabulary_entries)
+            self._working.vocabulary_entries = normalized
+            if normalized != self._vocabulary_values():
+                # Cell edits can leave blank or duplicate rows that the save drops.
+                self._populate_vocabulary_table(normalized)
             recovery = Hotkey.parse(self._working.recovery_hotkey)
             if recovery is not None:
                 self._working.recovery_hotkey = recovery.to_canonical()

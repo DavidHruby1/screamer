@@ -260,6 +260,12 @@ class VocabularySettingsTests(unittest.TestCase):
         self.dialog._vocabulary_add_btn.click()
         self.assertEqual(self.dialog._vocabulary_values(), [T("Screamer"), T("legacy", "tlh")])
 
+    def test_apply_syncs_table_with_saved_vocabulary_after_cell_edits(self):
+        self.dialog._vocabulary_table.item(1, 0).setText("  screamer ")
+        self.dialog._on_apply()
+        self.assertEqual(load_config().vocabulary_entries, [T("Screamer")])
+        self.assertEqual(self.dialog._vocabulary_values(), [T("Screamer")])
+
     def test_invalid_term_shows_warning(self):
         self.dialog._vocabulary_input.setText("x" * 129)
         with patch("src.settings_dialog.QMessageBox.warning") as warning:
