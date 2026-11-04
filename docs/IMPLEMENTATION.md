@@ -795,6 +795,12 @@ ruff format --check src/ tests/ .github/scripts/
   and 8,000 rendered characters. `rewrite()` adds
   quoted spelling guidance; STT adds multipart `prompt` only when that provider's own
   opt-in is enabled and vocabulary is nonempty. These are hints, not guarantees.
+  `vocabulary_delivery(cfg) -> set[str]` (`config.py`, pure) reports where a nonempty
+  vocabulary goes: `"stt"` when the primary (or an enabled fallback) provider prompt is on,
+  `"rewrite"` when the manual profile (Automatic: the default profile) is not Raw. App mappings
+  to other profiles do not count. When the set is empty the Vocabulary page shows a warning
+  pointing at Replacements and a "Turn on provider prompt" button (enables the primary toggle
+  and opens the Speech page); it is recomputed on the dialog's working copy as inputs change.
 - Replacements are JSON `[heard, write]` pairs applied by the worker to the raw
   transcript after STT and to the rewritten text after the LLM, so they also work with
   Raw. Matching is whole-word, case-insensitive, longest first, in one pass.

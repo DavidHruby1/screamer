@@ -611,3 +611,92 @@ class SidebarNavigationTests(unittest.TestCase):
         dlg._sound_check.click()
         self.assertTrue(dlg._sound_check.isChecked())
         self.assertFalse(dlg._llm_group.isHidden())
+
+
+class VocabularyDeliveryTests(unittest.TestCase):
+    def test_delivery_by_profile_and_provider_prompt(self) -> None:
+        from src.config import vocabulary_delivery
+
+        def cfg(**kw) -> AppConfig:
+            base = {"vocabulary_entries": ["PySide6"], "rewrite_manual_profile_id": "raw"}
+            return AppConfig(**{**base, **kw})
+
+        self.assertEqual(vocabulary_delivery(cfg()), set())
+        self.assertEqual(vocabulary_delivery(cfg(stt_prompt_primary_enabled=True)), {"stt"})
+        self.assertEqual(vocabulary_delivery(cfg(rewrite_manual_profile_id="clean")), {"rewrite"})
+        self.assertEqual(
+            vocabulary_delivery(
+                cfg(rewrite_manual_profile_id="clean", stt_prompt_primary_enabled=True)
+            ),
+            {"stt", "rewrite"},
+        )
+        # A fallback prompt only counts while the fallback itself is enabled.
+        self.assertEqual(vocabulary_delivery(cfg(stt_prompt_fallback_enabled=True)), set())
+        self.assertEqual(
+            vocabulary_delivery(cfg(stt_prompt_fallback_enabled=True, stt_fallback_enabled=True)),
+            {"stt"},
+        )
+        # Automatic mode follows the default profile, not the hidden manual choice.
+        self.assertEqual(
+            vocabulary_delivery(
+                cfg(
+                    rewrite_selection_mode="automatic",
+                    rewrite_default_profile_id="raw",
+                    rewrite_manual_profile_id="clean",
+                )
+            ),
+            set(),
+        )
+        empty = cfg(vocabulary_entries=[], stt_prompt_primary_enabled=True)
+        self.assertEqual(vocabulary_delivery(empty), set())
+
+
+class VocabularyWarningTests(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch("src.config.APP_DIR", tmp))
+        self.enterContext(patch("src.config._dpapi_available", return_value=False))
+        self.enterContext(patch("src.settings_dialog.is_supported", return_value=False))
+
+    def _dialog(self, **kw) -> SettingsDialog:
+        cfg = AppConfig(
+            stt_api_key="key",
+            stt_base_url="https://example.test/v1",
+            stt_model="stt",
+            llm_api_key="test",
+            llm_base_url="https://example.test/v1",
+            llm_model="test",
+            **kw,
+        )
+        dlg = SettingsDialog(cfg, devices=[])
+        self.addCleanup(dlg.deleteLater)
+        return dlg
+
+    @staticmethod
+    def _shown(dlg: SettingsDialog) -> bool:
+        return not dlg._vocabulary_warning.isHidden()
+
+    def test_warning_shows_for_raw_without_prompt_and_clears_on_toggle(self) -> None:
+        dlg = self._dialog(vocabulary_entries=["PySide6"], rewrite_manual_profile_id="raw")
+        self.assertTrue(self._shown(dlg))
+        dlg._stt_prompt_primary_check.setChecked(True)
+        self.assertFalse(self._shown(dlg))
+        dlg._stt_prompt_primary_check.setChecked(False)
+        self.assertTrue(self._shown(dlg))
+
+    def test_warning_clears_on_profile_change_and_button_enables_prompt(self) -> None:
+        dlg = self._dialog(vocabulary_entries=["PySide6"], rewrite_manual_profile_id="raw")
+        dlg._rewrite_active_combo.setCurrentIndex(dlg._rewrite_active_combo.findData("clean"))
+        self.assertFalse(self._shown(dlg))
+        dlg._rewrite_active_combo.setCurrentIndex(dlg._rewrite_active_combo.findData("raw"))
+        self.assertTrue(self._shown(dlg))
+        dlg._on_enable_provider_prompt()
+        self.assertTrue(dlg._stt_prompt_primary_check.isChecked())
+        self.assertFalse(self._shown(dlg))
+
+    def test_no_warning_for_empty_vocabulary_and_it_follows_edits(self) -> None:
+        dlg = self._dialog(rewrite_manual_profile_id="raw")
+        self.assertFalse(self._shown(dlg))
+        dlg._vocabulary_input.setText("PySide6")
+        dlg._on_vocabulary_add()
+        self.assertTrue(self._shown(dlg))

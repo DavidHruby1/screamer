@@ -213,6 +213,31 @@ def _validated_rewrite_selection(
     return profiles, mappings
 
 
+def vocabulary_delivery(cfg: AppConfig) -> set[str]:
+    """Where the vocabulary is sent: a subset of {"stt", "rewrite"}.
+
+    Pure and Qt-free so the settings dialog can evaluate it on its working copy.
+    "rewrite" means the profile that applies when no app mapping matches (the manual
+    choice, or the default in Automatic mode) is not Raw; app mappings to other profiles
+    are deliberately ignored. An empty vocabulary is never sent anywhere.
+    """
+    if not cfg.vocabulary_entries:
+        return set()
+    delivery: set[str] = set()
+    if cfg.stt_prompt_primary_enabled or (
+        cfg.stt_fallback_enabled and cfg.stt_prompt_fallback_enabled
+    ):
+        delivery.add("stt")
+    profile_id = (
+        cfg.rewrite_default_profile_id
+        if cfg.rewrite_selection_mode == "automatic"
+        else cfg.rewrite_manual_profile_id
+    )
+    if profile_id != "raw":
+        delivery.add("rewrite")
+    return delivery
+
+
 def resolve_rewrite_profile(cfg: AppConfig, executable_path: str | None) -> RewriteProfile:
     """Pure resolution on a session snapshot: manual choice, or Auto mapping -> default."""
     profiles, mappings = _validated_rewrite_selection(cfg)

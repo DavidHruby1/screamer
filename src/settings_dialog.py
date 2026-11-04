@@ -7,6 +7,7 @@ Standalone mode: ``python -m src.settings_dialog`` launches the dialog for testi
 from __future__ import annotations
 
 import copy
+import dataclasses
 import logging
 import threading
 import uuid
@@ -70,6 +71,7 @@ from PySide6.QtWidgets import (
 )
 
 import httpx
+import shiboken6
 
 from src.config import (
     COMMON_LANGUAGES,
@@ -101,6 +103,7 @@ from src.config import (
     reset_config,
     save_config,
     validate_config,
+    vocabulary_delivery,
 )
 from src import http_client, theme
 from src.audio import resolve_device
@@ -815,6 +818,7 @@ class SettingsDialog(QDialog):
         bottom.addStretch()
         bottom.addWidget(self._button_box)
         main.addWidget(footer)
+        self._connect_vocabulary_delivery()
 
     # --- General tab ---------------------------------------------------
 
@@ -1020,6 +1024,7 @@ class SettingsDialog(QDialog):
 
         _section(form, "Provider", first=True)
         advanced = Collapsible("Advanced")
+        self._stt_advanced = advanced
         self._stt_provider = ProviderFields(
             form,
             STT_PRESETS,
@@ -1511,9 +1516,19 @@ class SettingsDialog(QDialog):
     def _build_vocabulary_tab(self) -> None:
         tab = QWidget()
         form = QFormLayout(tab)
+        self._vocabulary_warning = _hint(QLabel(), "warning")
+        self._vocabulary_warning.setWordWrap(True)
+        self._vocabulary_warning.setVisible(False)
+        form.addRow(self._vocabulary_warning)
+        self._vocabulary_enable_btn = QPushButton("Turn on provider prompt")
+        self._vocabulary_enable_btn.clicked.connect(self._on_enable_provider_prompt)
+        self._vocabulary_enable_btn.setVisible(False)
+        form.addRow("", _button_row(self._vocabulary_enable_btn))
         _section(form, "Preferred spellings", first=True)
         hint = QLabel(
-            "Names, acronyms and project terms. The AI rewrite uses them as spelling hints."
+            "Names, acronyms and project terms. Terms are sent as hints to (1) the "
+            "speech-to-text provider when “Send vocabulary to this provider” is on "
+            "(Speech → Advanced), and (2) the AI rewrite in every profile except Raw."
         )
         hint.setWordWrap(True)
         form.addRow(_hint(hint))
@@ -1565,6 +1580,60 @@ class SettingsDialog(QDialog):
         form.addRow("", _button_row(self._replacement_add_btn, self._replacement_remove_btn))
         _style_form(form)
         self._tabs.addTab(tab, "Vocabulary")
+
+    def _connect_vocabulary_delivery(self) -> None:
+        """Re-evaluate the "vocabulary unused" warning whenever its inputs change."""
+        model = self._vocabulary_list.model()
+        for signal in (model.rowsInserted, model.rowsRemoved, model.modelReset):
+            signal.connect(self._refresh_vocabulary_warning)
+        for toggle in (
+            self._stt_prompt_primary_check,
+            self._stt_prompt_fallback_check,
+            self._stt_fb_check,
+        ):
+            toggle.toggled.connect(self._refresh_vocabulary_warning)
+        for combo in (self._rewrite_active_combo, self._rewrite_default_combo):
+            combo.currentIndexChanged.connect(self._refresh_vocabulary_warning)
+        self._refresh_vocabulary_warning()
+
+    def _refresh_vocabulary_warning(self, *_args) -> None:
+        if self._profile_loading or not shiboken6.isValid(self._rewrite_active_combo):
+            return  # mid-repopulation, or the dialog is being torn down
+        automatic = self._rewrite_active_combo.currentData() == "__automatic__"
+        profile_id = (
+            self._rewrite_default_combo.currentData()
+            if automatic
+            else self._rewrite_active_combo.currentData()
+        )
+        snapshot = dataclasses.replace(
+            self._working,
+            vocabulary_entries=self._vocabulary_values(),
+            stt_prompt_primary_enabled=self._stt_prompt_primary_check.isChecked(),
+            stt_prompt_fallback_enabled=self._stt_prompt_fallback_check.isChecked(),
+            stt_fallback_enabled=self._stt_fb_check.isChecked(),
+            rewrite_selection_mode="automatic" if automatic else "manual",
+            rewrite_default_profile_id=profile_id,
+            rewrite_manual_profile_id=profile_id,
+        )
+        unused = bool(snapshot.vocabulary_entries) and not vocabulary_delivery(snapshot)
+        if unused:
+            text = (
+                "Your vocabulary isn't used right now: the Raw profile skips AI rewrite "
+                "and the Speech provider prompt is off. For guaranteed fixes use "
+                "Replacements below."
+            )
+            if automatic:
+                text += " Apps mapped to other profiles still use the vocabulary."
+            self._vocabulary_warning.setText(text)
+        self._vocabulary_warning.setVisible(unused)
+        self._vocabulary_enable_btn.setVisible(unused)
+
+    def _on_enable_provider_prompt(self) -> None:
+        """Switch the primary provider prompt on and show it on the Speech page."""
+        self._stt_advanced.toggle.setChecked(True)
+        self._stt_prompt_primary_check.setChecked(True)
+        self._tabs.setCurrentIndex(1)  # STT page
+        self._stt_prompt_primary_check.setFocus()
 
     def _vocabulary_values(self) -> list[str]:
         return [self._vocabulary_list.item(i).text() for i in range(self._vocabulary_list.count())]
@@ -1697,6 +1766,7 @@ class SettingsDialog(QDialog):
         self._vocabulary_input.clear()
         self._replacements = list(cfg.replacements)
         self._refresh_replacement_list()
+        self._refresh_vocabulary_warning()
 
     def _collect(self) -> None:
         """Write widget values back into self._working."""
