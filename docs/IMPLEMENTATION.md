@@ -219,7 +219,7 @@ class AppConfig:
     history_limit: int = 100               # 1..100
     sound_enabled: bool = True
     recovery_hotkey: str = "ctrl+alt+shift+key:0x56"   # Insert last; "" = none
-    vocabulary_entries: list[str] = field(default_factory=list)
+    vocabulary_entries: list[VocabularyTerm] = field(default_factory=list)
     replacements: list[tuple[str, str]] = field(default_factory=list)
     start_with_windows: bool = False
     audio_device_id: int | None = None
@@ -292,10 +292,24 @@ def rewrite_needs_llm(cfg: AppConfig) -> bool: ...
 def insecure_base_urls(cfg: AppConfig) -> list[tuple[str, str]]: ...
 def stt_provider_is_configured(provider: ProviderConfig) -> bool: ...  # URL + model
 
-def normalize_vocabulary_entries(entries: list[str]) -> list[str]: ...
-    """Trim and casefold-deduplicate; cap 128 terms, 128 chars/term and 8,000 rendered chars."""
-def encode_vocabulary_entries(entries: list[str]) -> str: ...
-def decode_vocabulary_entries(value: object) -> list[str]: ...
+@dataclass(frozen=True)
+class VocabularyTerm:
+    term: str
+    language: str = ""      # "" = All languages; otherwise a normalize_language_code() code
+
+def normalize_vocabulary_entries(entries: list) -> list[VocabularyTerm]: ...
+    """Accept VocabularyTerm, {"term", "language"} dicts and legacy str (language "").
+    Trim terms (no controls); language "" or normalize_language_code(). Casefold-deduplicate
+    by term across the whole list, first occurrence (and its language) wins. Cap 128 terms,
+    128 chars/term and 8,000 rendered chars for the whole list."""
+def encode_vocabulary_entries(entries: list) -> str: ...
+    """JSON array of objects: [{"term": "PySide6", "language": ""}, ...]."""
+def decode_vocabulary_entries(value: object) -> list[VocabularyTerm]: ...
+    """Reads the object format and the legacy ["PySide6", "Qt"] string list."""
+def select_vocabulary(entries: list, language: str) -> list[VocabularyTerm]: ...
+    """Pure per-dictation pick. language "" (Auto) -> All-languages terms only; otherwise
+    that language's terms, then All-languages terms, each group in list order. Matches on
+    the primary subtag (pt-br <-> pt), like the STT request."""
 
 def normalize_replacements(pairs: list) -> list[tuple[str, str]]: ...
     """(heard, write) pairs; trimmed, no controls, ≤256 chars each, ≤256 pairs, first wins."""
@@ -790,11 +804,17 @@ ruff format --check src/ tests/ .github/scripts/
   bindings are rejected; Escape cancels recording without changing a History selection, and cannot
   be a recovery trigger. Injected keyboard events pass through the hook without
   changing physical trigger state, so Screamer's post-key cannot trigger dictation.
-- Vocabulary is JSON in ordinary settings. Terms are trimmed, blanks dropped,
-  casefold-deduplicated in order, and bounded to 128 entries, 128 characters per term
-  and 8,000 rendered characters. `rewrite()` adds
-  quoted spelling guidance; STT adds multipart `prompt` only when that provider's own
-  opt-in is enabled and vocabulary is nonempty. These are hints, not guarantees.
+- Vocabulary is JSON in ordinary settings: an array of `{"term", "language"}` objects,
+  where `language` is `""` (All languages) or a language code. A legacy array of strings
+  loads as All-languages terms and is rewritten in the object format on the next save.
+  Terms are trimmed, blanks dropped, casefold-deduplicated in order across all languages
+  (one term has one label), and bounded to 128 entries, 128 characters per term
+  and 8,000 rendered characters. Each dictation uses
+  `select_vocabulary(entries, stt_language)` from the session snapshot, so a tray language
+  switch applies from the next dictation; STT and rewrite get the same selection.
+  `rewrite()` adds quoted spelling guidance; STT adds multipart `prompt` only when that
+  provider's own opt-in is enabled and the selection is nonempty. These are hints, not
+  guarantees.
   `vocabulary_delivery(cfg) -> set[str]` (`config.py`, pure) reports where a nonempty
   vocabulary goes: `"stt"` when the primary (or an enabled fallback) provider prompt is on,
   `"rewrite"` when the manual profile (Automatic: the default profile) is not Raw. App mappings
@@ -885,14 +905,19 @@ fields. Settings and history are separate stores, not one transaction.
 `transcribe(audio_wav, config) -> PipelineResult` and `rewrite(text, config) ->
 PipelineResult` remain the public backend signatures. STT completeness is URL plus model,
 with optional API key; LLM completeness still requires key, URL and model. `rewrite()`
-returns its input when disabled; when enabled it adds vocabulary guidance and selected
-language to its system prompt. `stt.py` adds multipart `prompt` only for an individually
-opted-in provider with nonempty vocabulary. Keyless STT omits generated Bearer auth;
+returns its input when disabled; when enabled it adds vocabulary guidance (the
+`select_vocabulary` pick for `stt_language`) and selected language to its system prompt.
+`stt.py` adds multipart `prompt` only for an individually opted-in provider with a
+nonempty selection. Keyless STT omits generated Bearer auth;
 configured custom headers remain provider-local.
 
 `SettingsDialog` has six tabs (General, STT, LLM, Audio, Vocabulary, Rewrite Profiles).
 It edits a draft; Apply/OK validate and save, Cancel discards unapplied edits. General
-contains output/history/recovery controls. `HistoryStore.load()` validates the complete
+contains output/history/recovery controls. Vocabulary shows a Term | Language table
+(editable term text, a language combo per row: All languages, built-in and common
+languages, favorites, then a saved code missing from those); Add / Update selected use
+the Term field and a language combo, and validate through `normalize_vocabulary_entries`.
+`HistoryStore.load()` validates the complete
 file then returns sorted latest entries; `trim()` limits a view without rewriting the
 file. `upsert()` and `delete()` perform read-modify-write and retention, while mutations
 refuse corrupt input. The `main()` per-APP_DIR lock is required for this single-writer

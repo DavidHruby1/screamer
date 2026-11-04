@@ -13,7 +13,7 @@ from src.config import (
     AppConfig,
     ProviderConfig,
     parse_custom_headers,
-    normalize_vocabulary_entries,
+    select_vocabulary,
     stt_provider_is_configured,
 )
 from src.utils import AppError, PipelineResult, ScreamerError, log_duration
@@ -45,10 +45,10 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
 
         vocabulary_prompt = ""
         if config.stt_prompt_primary_enabled or config.stt_prompt_fallback_enabled:
-            terms = normalize_vocabulary_entries(config.vocabulary_entries)
+            terms = select_vocabulary(config.vocabulary_entries, config.stt_language)
             if terms:
                 vocabulary_prompt = "Preferred spellings: " + ", ".join(
-                    json.dumps(term, ensure_ascii=False) for term in terms
+                    json.dumps(item.term, ensure_ascii=False) for item in terms
                 )
 
         for is_fallback, provider, language in (
