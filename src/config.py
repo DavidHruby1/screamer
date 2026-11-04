@@ -213,6 +213,31 @@ def _validated_rewrite_selection(
     return profiles, mappings
 
 
+def vocabulary_delivery(cfg: AppConfig) -> set[str]:
+    """Where the vocabulary is sent: a subset of {"stt", "rewrite"}.
+
+    Pure and Qt-free so the settings dialog can evaluate it on its working copy.
+    "rewrite" means the profile that applies when no app mapping matches (the manual
+    choice, or the default in Automatic mode) is not Raw; app mappings to other profiles
+    are deliberately ignored. An empty vocabulary is never sent anywhere.
+    """
+    if not cfg.vocabulary_entries:
+        return set()
+    delivery: set[str] = set()
+    if cfg.stt_prompt_primary_enabled or (
+        cfg.stt_fallback_enabled and cfg.stt_prompt_fallback_enabled
+    ):
+        delivery.add("stt")
+    profile_id = (
+        cfg.rewrite_default_profile_id
+        if cfg.rewrite_selection_mode == "automatic"
+        else cfg.rewrite_manual_profile_id
+    )
+    if profile_id != "raw":
+        delivery.add("rewrite")
+    return delivery
+
+
 def resolve_rewrite_profile(cfg: AppConfig, executable_path: str | None) -> RewriteProfile:
     """Pure resolution on a session snapshot: manual choice, or Auto mapping -> default."""
     profiles, mappings = _validated_rewrite_selection(cfg)
@@ -251,18 +276,49 @@ def _has_control_chars(value: str) -> bool:
     return any(unicodedata.category(c) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for c in value)
 
 
-def normalize_vocabulary_entries(entries: list[str]) -> list[str]:
-    """Trim blanks and stably deduplicate preferred spellings; never truncate."""
+@dataclass(frozen=True)
+class VocabularyTerm:
+    """One preferred spelling. ``language == ""`` means it applies to all languages."""
+
+    term: str
+    language: str = ""
+
+
+def _coerce_vocabulary_term(entry: object) -> VocabularyTerm:
+    if isinstance(entry, VocabularyTerm):
+        term, language = entry.term, entry.language
+    elif isinstance(entry, str):
+        term, language = entry, ""
+    elif isinstance(entry, dict):
+        if not set(entry) <= {"term", "language"} or "term" not in entry:
+            raise ValueError("Every vocabulary term needs a term and an optional language")
+        term, language = entry["term"], entry.get("language", "")
+    else:
+        raise ValueError("Every vocabulary term must be text")
+    if not isinstance(term, str):
+        raise ValueError("Every vocabulary term must be text")
+    if not isinstance(language, str):
+        raise ValueError("Vocabulary language must be text")
+    language = language.strip()
+    return VocabularyTerm(term, normalize_language_code(language) if language else "")
+
+
+def normalize_vocabulary_entries(entries: list) -> list[VocabularyTerm]:
+    """Trim blanks and stably deduplicate preferred spellings; never truncate.
+
+    Accepts ``VocabularyTerm``, ``{"term", "language"}`` dicts and legacy plain strings
+    (which apply to all languages). A term (case-folded) appears once across the whole
+    list; the first occurrence and its language win.
+    """
     if not isinstance(entries, list):
         raise ValueError("Vocabulary must be a list of terms")
-    result: list[str] = []
+    result: list[VocabularyTerm] = []
     seen: set[str] = set()
     for entry in entries:
-        if not isinstance(entry, str):
-            raise ValueError("Every vocabulary term must be text")
-        if _has_control_chars(entry):
+        item = _coerce_vocabulary_term(entry)
+        if _has_control_chars(item.term):
             raise ValueError("Vocabulary terms cannot contain controls or line breaks")
-        term = entry.strip()
+        term = item.term.strip()
         if not term:
             continue
         if len(term) > MAX_VOCABULARY_TERM_LENGTH:
@@ -270,27 +326,57 @@ def normalize_vocabulary_entries(entries: list[str]) -> list[str]:
         folded = term.casefold()
         if folded not in seen:
             seen.add(folded)
-            result.append(term)
+            result.append(VocabularyTerm(term, item.language))
     if len(result) > MAX_VOCABULARY_ENTRIES:
         raise ValueError("Choose no more than 128 vocabulary terms")
     if result:
         # Match rewrite's quoted bullet list, including JSON escaping, without its envelope.
         rendered_length = (
-            sum(len(json.dumps(term, ensure_ascii=False)) + 2 for term in result) + len(result) - 1
+            sum(len(json.dumps(item.term, ensure_ascii=False)) + 2 for item in result)
+            + len(result)
+            - 1
         )
         if rendered_length > MAX_VOCABULARY_CONTEXT_LENGTH:
             raise ValueError("Rendered vocabulary list must be at most 8,000 characters")
     return result
 
 
-def encode_vocabulary_entries(entries: list[str]) -> str:
-    return json.dumps(normalize_vocabulary_entries(entries), ensure_ascii=False)
+def encode_vocabulary_entries(entries: list) -> str:
+    return json.dumps(
+        [
+            {"term": item.term, "language": item.language}
+            for item in normalize_vocabulary_entries(entries)
+        ],
+        ensure_ascii=False,
+    )
 
 
-def decode_vocabulary_entries(value: object) -> list[str]:
+def decode_vocabulary_entries(value: object) -> list[VocabularyTerm]:
+    """Decode the object format or the legacy list of strings (rewritten on next save)."""
     if not isinstance(value, str):
         raise ValueError("Vocabulary must be JSON-encoded text")
     return normalize_vocabulary_entries(json.loads(value))
+
+
+def _primary_language(code: str) -> str:
+    return code.split("-", 1)[0]
+
+
+def select_vocabulary(entries: list, language: str) -> list[VocabularyTerm]:
+    """Terms for one dictation: the language's own terms first, then "All languages" terms.
+
+    Auto (``""``) selects only "All languages" terms. Languages match on the primary
+    subtag (``pt-br`` <-> ``pt``), as the STT request does. List order is kept per group.
+    """
+    terms = normalize_vocabulary_entries(entries)
+    general = [item for item in terms if not item.language]
+    if not language:
+        return general
+    primary = _primary_language(language.strip().lower())
+    specific = [
+        item for item in terms if item.language and _primary_language(item.language) == primary
+    ]
+    return specific + general
 
 
 MAX_REPLACEMENTS = 256
@@ -649,7 +735,7 @@ class AppConfig:
     history_limit: int = 100
     sound_enabled: bool = True
     recovery_hotkey: str = "ctrl+alt+shift+key:0x56"
-    vocabulary_entries: list[str] = field(default_factory=list)
+    vocabulary_entries: list[VocabularyTerm] = field(default_factory=list)
     replacements: list[tuple[str, str]] = field(default_factory=list)
     start_with_windows: bool = False
     audio_device_id: int | None = None

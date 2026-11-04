@@ -7,6 +7,7 @@ Standalone mode: ``python -m src.settings_dialog`` launches the dialog for testi
 from __future__ import annotations
 
 import copy
+import dataclasses
 import logging
 import threading
 import uuid
@@ -46,6 +47,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHeaderView,
     QInputDialog,
     QGroupBox,
     QHBoxLayout,
@@ -65,11 +67,14 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStyle,
     QStyleOptionFrame,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 import httpx
+import shiboken6
 
 from src.config import (
     COMMON_LANGUAGES,
@@ -86,6 +91,7 @@ from src.config import (
     Hotkey,
     ProviderConfig,
     RewriteProfile,
+    VocabularyTerm,
     builtin_rewrite_profiles,
     decode_rewrite_catalog,
     encode_rewrite_catalog,
@@ -100,10 +106,13 @@ from src.config import (
     parse_custom_headers,
     reset_config,
     save_config,
+    select_vocabulary,
     validate_config,
+    vocabulary_delivery,
 )
 from src import http_client, theme
 from src.audio import resolve_device
+from src.stt import WHISPER_PROMPT_TOKEN_BUDGET, build_whisper_prompt, estimate_prompt_tokens
 from src.utils import APP_NAME, AppError, ScreamerError, log_duration
 from src.startup import is_supported
 
@@ -478,6 +487,9 @@ STT_PRESETS: list[tuple[str, str, str]] = [
     ("Groq (fast)", "https://api.groq.com/openai/v1", "whisper-large-v3-turbo"),
     ("Local server (Speaches)", "http://127.0.0.1:18000/v1", "Systran/faster-whisper-small"),
 ]
+# Hosted presets whose API accepts the Whisper ``prompt`` field. Choosing one turns on
+# "Send vocabulary" for that role; custom and local servers may not support the field.
+STT_PROMPT_PRESET_URLS = frozenset({"https://api.openai.com/v1", "https://api.groq.com/openai/v1"})
 LLM_PRESETS: list[tuple[str, str, str]] = [
     ("OpenAI", "https://api.openai.com/v1", "gpt-4.1-mini"),
     ("Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
@@ -539,6 +551,8 @@ class ConnectionTestThread(QThread):
 class ProviderFields(QObject):
     """Preset picker, API key, base URL, model, Test button and (advanced) custom headers."""
 
+    preset_applied = Signal(str)  # base URL of a preset the user just chose
+
     def __init__(
         self,
         form: QFormLayout,
@@ -593,6 +607,7 @@ class ProviderFields(QObject):
         if model:
             self.model.setText(model)
         self.status.setText("")
+        self.preset_applied.emit(url)
 
     def _sync_preset(self) -> None:
         url = self.url.text().strip().rstrip("/")
@@ -815,6 +830,7 @@ class SettingsDialog(QDialog):
         bottom.addStretch()
         bottom.addWidget(self._button_box)
         main.addWidget(footer)
+        self._connect_vocabulary_delivery()
 
     # --- General tab ---------------------------------------------------
 
@@ -1020,6 +1036,7 @@ class SettingsDialog(QDialog):
 
         _section(form, "Provider", first=True)
         advanced = Collapsible("Advanced")
+        self._stt_advanced = advanced
         self._stt_provider = ProviderFields(
             form,
             STT_PRESETS,
@@ -1036,7 +1053,7 @@ class SettingsDialog(QDialog):
         form.addRow("Language:", self._stt_lang)
         self._stt_favorites = QListWidget()
         self._stt_favorites.setMaximumHeight(170)
-        self._stt_favorites.itemChanged.connect(lambda _item: self._refresh_language_choices())
+        self._stt_favorites.itemChanged.connect(self._on_favorites_changed)
         form.addRow("Also show in tray:", self._stt_favorites)
 
         self._stt_prompt_primary_check = ToggleSwitch("Send vocabulary to this provider")
@@ -1044,6 +1061,17 @@ class SettingsDialog(QDialog):
             "Only for providers that accept the Whisper 'prompt' field."
         )
         advanced.form.addRow(self._stt_prompt_primary_check)
+        self._stt_prompt_estimate = _hint(QLabel(""), "meta")
+        self._stt_prompt_estimate.setWordWrap(True)
+        advanced.form.addRow(self._stt_prompt_estimate)
+        self._stt_prompt_overflow = _hint(QLabel(""), "warning")
+        self._stt_prompt_overflow.setWordWrap(True)
+        self._stt_prompt_overflow.setVisible(False)
+        advanced.form.addRow(self._stt_prompt_overflow)
+        self._stt_lang.currentIndexChanged.connect(self._refresh_prompt_estimate)
+        self._stt_provider.preset_applied.connect(
+            lambda url: self._enable_prompt_for_preset(self._stt_prompt_primary_check, url)
+        )
 
         self._stt_fb_check = ToggleSwitch("Use a fallback provider when this one fails")
         advanced.form.addRow(self._stt_fb_check)
@@ -1057,6 +1085,9 @@ class SettingsDialog(QDialog):
         self._stt_prompt_fallback_check = ToggleSwitch("Send vocabulary to the fallback")
         self._stt_prompt_fallback_check.setToolTip(self._stt_prompt_primary_check.toolTip())
         fb_form.addRow(self._stt_prompt_fallback_check)
+        self._stt_fb_provider.preset_applied.connect(
+            lambda url: self._enable_prompt_for_preset(self._stt_prompt_fallback_check, url)
+        )
         _style_form(fb_form)
         self._stt_fb_group.setVisible(False)
         self._stt_fb_check.toggled.connect(self._stt_fb_group.setVisible)
@@ -1066,12 +1097,50 @@ class SettingsDialog(QDialog):
         _style_form(form)
         self._tabs.addTab(tab, "STT")
 
+    @staticmethod
+    def _enable_prompt_for_preset(toggle: ToggleSwitch, url: str) -> None:
+        if url in STT_PROMPT_PRESET_URLS:
+            toggle.setChecked(True)
+
+    def _refresh_prompt_estimate(self, *_args) -> None:
+        """Show the Whisper prompt size for the dialog's language and vocabulary."""
+        if not hasattr(self, "_vocabulary_table"):
+            return  # The STT tab is built before the Vocabulary tab.
+        language = self._stt_lang.currentData() or ""
+        try:
+            terms = select_vocabulary(self._vocabulary_values(), language)
+        except ValueError:
+            terms = []
+        prompt, omitted = build_whisper_prompt(terms)
+        scope = language_label(language) if language else "all languages (Auto)"
+        if terms:
+            self._stt_prompt_estimate.setText(
+                f"Prompt for {scope}: ~{estimate_prompt_tokens(prompt)} / "
+                f"{WHISPER_PROMPT_TOKEN_BUDGET} tokens"
+            )
+        else:
+            self._stt_prompt_estimate.setText(
+                f"No vocabulary terms for {scope}; no prompt is sent."
+            )
+        if omitted:
+            noun = "term won't" if omitted == 1 else "terms won't"
+            self._stt_prompt_overflow.setText(
+                f"{omitted} {noun} fit into the Whisper prompt and will be skipped. "
+                "Language-specific terms are sent first."
+            )
+        self._stt_prompt_overflow.setVisible(bool(omitted))
+
     def _favorite_codes(self) -> list[str]:
         return [
             self._stt_favorites.item(i).data(Qt.ItemDataRole.UserRole)
             for i in range(self._stt_favorites.count())
             if self._stt_favorites.item(i).checkState() == Qt.CheckState.Checked
         ]
+
+    def _on_favorites_changed(self, _item=None) -> None:
+        self._refresh_language_choices()
+        if hasattr(self, "_vocabulary_table"):
+            self._refresh_vocabulary_language_combos()
 
     def _refresh_language_choices(self, active: str | None = None) -> None:
         if active is None:
@@ -1511,20 +1580,51 @@ class SettingsDialog(QDialog):
     def _build_vocabulary_tab(self) -> None:
         tab = QWidget()
         form = QFormLayout(tab)
+        self._vocabulary_warning = _hint(QLabel(), "warning")
+        self._vocabulary_warning.setWordWrap(True)
+        self._vocabulary_warning.setVisible(False)
+        form.addRow(self._vocabulary_warning)
+        self._vocabulary_enable_btn = QPushButton("Turn on provider prompt")
+        self._vocabulary_enable_btn.clicked.connect(self._on_enable_provider_prompt)
+        self._vocabulary_enable_row = _button_row(self._vocabulary_enable_btn)
+        form.addRow("", self._vocabulary_enable_row)
+        form.setRowVisible(self._vocabulary_enable_row, False)  # hides the empty label too
+        self._vocabulary_form = form
         _section(form, "Preferred spellings", first=True)
         hint = QLabel(
-            "Names, acronyms and project terms. The AI rewrite uses them as spelling hints."
+            "Names, acronyms and project terms. Terms are sent as hints to (1) the "
+            "speech-to-text provider when “Send vocabulary to this provider” is on "
+            "(Speech → Advanced), and (2) the AI rewrite in every profile except Raw."
         )
         hint.setWordWrap(True)
         form.addRow(_hint(hint))
-        self._vocabulary_list = QListWidget()
-        self._vocabulary_list.setMaximumHeight(160)
-        self._vocabulary_list.itemSelectionChanged.connect(self._on_vocabulary_selected)
-        form.addRow("Terms:", self._vocabulary_list)
+        language_hint = QLabel(
+            "Tag a term with a language to send it only when that language is selected; "
+            "All languages terms are always sent."
+        )
+        language_hint.setWordWrap(True)
+        form.addRow(_hint(language_hint))
+        self._vocabulary_table = QTableWidget(0, 2)
+        self._vocabulary_table.setHorizontalHeaderLabels(["Term", "Language"])
+        self._vocabulary_table.setMinimumHeight(160)
+        self._vocabulary_table.setMaximumHeight(220)
+        self._vocabulary_table.verticalHeader().setVisible(False)
+        self._vocabulary_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._vocabulary_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        header = self._vocabulary_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._vocabulary_table.itemSelectionChanged.connect(self._on_vocabulary_selected)
+        # Terms are also editable in place, so the Whisper prompt estimate follows them.
+        self._vocabulary_table.itemChanged.connect(self._refresh_prompt_estimate)
+        form.addRow("Terms:", self._vocabulary_table)
         self._vocabulary_input = QLineEdit()
         self._vocabulary_input.setPlaceholderText("e.g. PySide6")
-        _mono(self._vocabulary_list, self._vocabulary_input)
+        _mono(self._vocabulary_table, self._vocabulary_input)
         form.addRow("Term:", self._vocabulary_input)
+        self._vocabulary_language = QComboBox()
+        self._fill_vocabulary_language_combo(self._vocabulary_language, "")
+        form.addRow("Language:", _leading(self._vocabulary_language))
         self._vocabulary_add_btn = QPushButton("Add")
         self._vocabulary_add_btn.clicked.connect(self._on_vocabulary_add)
         self._vocabulary_edit_btn = QPushButton("Update selected")
@@ -1566,41 +1666,155 @@ class SettingsDialog(QDialog):
         _style_form(form)
         self._tabs.addTab(tab, "Vocabulary")
 
-    def _vocabulary_values(self) -> list[str]:
-        return [self._vocabulary_list.item(i).text() for i in range(self._vocabulary_list.count())]
+    def _vocabulary_language_codes(self, extra: str = "") -> list[str]:
+        """All languages, built-ins without Auto, common languages, favorites, then *extra*."""
+        codes = [""]
+        candidates = [code for code, _label in LANGUAGE_OPTIONS if code]
+        candidates += [code for code, _label in COMMON_LANGUAGES]
+        candidates += self._favorite_codes() if hasattr(self, "_stt_favorites") else []
+        for code in [*candidates, extra]:
+            if code and code not in codes:
+                codes.append(code)
+        return codes
+
+    def _fill_vocabulary_language_combo(self, combo: QComboBox, selected: str) -> None:
+        combo.blockSignals(True)
+        combo.clear()
+        for code in self._vocabulary_language_codes(selected):
+            combo.addItem("All languages" if not code else f"{language_label(code)} ({code})", code)
+        combo.setCurrentIndex(_combo_index(combo, selected))
+        combo.blockSignals(False)
+
+    def _vocabulary_values(self) -> list[VocabularyTerm]:
+        result = []
+        for row in range(self._vocabulary_table.rowCount()):
+            item = self._vocabulary_table.item(row, 0)
+            combo = self._vocabulary_table.cellWidget(row, 1)
+            result.append(
+                VocabularyTerm(
+                    item.text() if item is not None else "",
+                    (combo.currentData() or "") if combo is not None else "",
+                )
+            )
+        return result
+
+    def _populate_vocabulary_table(self, entries: list[VocabularyTerm]) -> None:
+        table = self._vocabulary_table
+        table.setRowCount(0)
+        table.setRowCount(len(entries))
+        for row, entry in enumerate(entries):
+            table.setItem(row, 0, QTableWidgetItem(entry.term))
+            combo = QComboBox()
+            self._fill_vocabulary_language_combo(combo, entry.language)
+            combo.currentIndexChanged.connect(self._refresh_prompt_estimate)
+            table.setCellWidget(row, 1, combo)
+        self._refresh_prompt_estimate()
+
+    def _connect_vocabulary_delivery(self) -> None:
+        """Re-evaluate the "vocabulary unused" warning whenever its inputs change."""
+        model = self._vocabulary_table.model()
+        for signal in (model.rowsInserted, model.rowsRemoved, model.modelReset):
+            signal.connect(self._refresh_vocabulary_warning)
+        self._vocabulary_table.itemChanged.connect(self._refresh_vocabulary_warning)
+        for toggle in (
+            self._stt_prompt_primary_check,
+            self._stt_prompt_fallback_check,
+            self._stt_fb_check,
+        ):
+            toggle.toggled.connect(self._refresh_vocabulary_warning)
+        for combo in (self._rewrite_active_combo, self._rewrite_default_combo):
+            combo.currentIndexChanged.connect(self._refresh_vocabulary_warning)
+        self._refresh_vocabulary_warning()
+
+    def _refresh_vocabulary_warning(self, *_args) -> None:
+        if self._profile_loading or not shiboken6.isValid(self._rewrite_active_combo):
+            return  # mid-repopulation, or the dialog is being torn down
+        automatic = self._rewrite_active_combo.currentData() == "__automatic__"
+        profile_id = (
+            self._rewrite_default_combo.currentData()
+            if automatic
+            else self._rewrite_active_combo.currentData()
+        )
+        snapshot = dataclasses.replace(
+            self._working,
+            vocabulary_entries=self._vocabulary_values(),
+            stt_prompt_primary_enabled=self._stt_prompt_primary_check.isChecked(),
+            stt_prompt_fallback_enabled=self._stt_prompt_fallback_check.isChecked(),
+            stt_fallback_enabled=self._stt_fb_check.isChecked(),
+            rewrite_selection_mode="automatic" if automatic else "manual",
+            rewrite_default_profile_id=profile_id,
+            rewrite_manual_profile_id=profile_id,
+        )
+        unused = bool(snapshot.vocabulary_entries) and not vocabulary_delivery(snapshot)
+        if unused:
+            text = (
+                "Your vocabulary isn't used right now: the Raw profile skips AI rewrite "
+                "and the Speech provider prompt is off. For guaranteed fixes use "
+                "Replacements below."
+            )
+            if automatic and any(m.profile_id != "raw" for m in self._rewrite_app_mappings):
+                text += " Apps mapped to other profiles still use the vocabulary."
+            self._vocabulary_warning.setText(text)
+        self._vocabulary_warning.setVisible(unused)
+        self._vocabulary_form.setRowVisible(self._vocabulary_enable_row, unused)
+
+    def _on_enable_provider_prompt(self) -> None:
+        """Switch the primary provider prompt on and show it on the Speech page."""
+        self._stt_advanced.toggle.setChecked(True)
+        self._stt_prompt_primary_check.setChecked(True)
+        self._tabs.setCurrentIndex(1)  # STT page
+        self._stt_prompt_primary_check.setFocus()
 
     def _on_vocabulary_selected(self) -> None:
-        item = self._vocabulary_list.currentItem()
-        if item is not None:
-            self._vocabulary_input.setText(item.text())
+        row = self._vocabulary_table.currentRow()
+        if 0 <= row < self._vocabulary_table.rowCount():
+            entry = self._vocabulary_values()[row]
+            self._vocabulary_input.setText(entry.term)
+            self._fill_vocabulary_language_combo(self._vocabulary_language, entry.language)
 
-    def _set_vocabulary_values(self, entries: list[str]) -> None:
+    def _new_vocabulary_term(self) -> VocabularyTerm:
+        return VocabularyTerm(
+            self._vocabulary_input.text(), self._vocabulary_language.currentData() or ""
+        )
+
+    def _set_vocabulary_values(self, entries: list[VocabularyTerm]) -> None:
         try:
             normalized = normalize_vocabulary_entries(entries)
         except ValueError as e:
             QMessageBox.warning(self, "Invalid Vocabulary", str(e))
             self._vocabulary_input.setFocus()
             return
-        self._vocabulary_list.clear()
-        self._vocabulary_list.addItems(normalized)
+        self._populate_vocabulary_table(normalized)
         self._vocabulary_input.clear()
 
     def _on_vocabulary_add(self) -> None:
-        self._set_vocabulary_values([*self._vocabulary_values(), self._vocabulary_input.text()])
+        self._set_vocabulary_values([*self._vocabulary_values(), self._new_vocabulary_term()])
 
     def _on_vocabulary_edit(self) -> None:
-        row = self._vocabulary_list.currentRow()
+        row = self._vocabulary_table.currentRow()
         if row < 0:
             return
         entries = self._vocabulary_values()
-        entries[row] = self._vocabulary_input.text()
+        entries[row] = self._new_vocabulary_term()
         self._set_vocabulary_values(entries)
 
     def _on_vocabulary_remove(self) -> None:
-        row = self._vocabulary_list.currentRow()
+        row = self._vocabulary_table.currentRow()
         if row >= 0:
-            self._vocabulary_list.takeItem(row)
+            self._vocabulary_table.removeRow(row)
             self._vocabulary_input.clear()
+            self._refresh_prompt_estimate()
+
+    def _refresh_vocabulary_language_combos(self) -> None:
+        """Offer newly checked favorites without changing any chosen language."""
+        combos = [self._vocabulary_language]
+        combos += [
+            self._vocabulary_table.cellWidget(row, 1)
+            for row in range(self._vocabulary_table.rowCount())
+        ]
+        for combo in combos:
+            if combo is not None:
+                self._fill_vocabulary_language_combo(combo, combo.currentData() or "")
 
     def _refresh_replacement_list(self) -> None:
         self._replacement_list.clear()
@@ -1692,11 +1906,12 @@ class SettingsDialog(QDialog):
         self._rms_label.setText(f"Threshold: {cfg.rms_threshold:.1f}")
 
         # Vocabulary
-        self._vocabulary_list.clear()
-        self._vocabulary_list.addItems(cfg.vocabulary_entries)
+        self._populate_vocabulary_table(normalize_vocabulary_entries(cfg.vocabulary_entries))
         self._vocabulary_input.clear()
+        self._fill_vocabulary_language_combo(self._vocabulary_language, "")
         self._replacements = list(cfg.replacements)
         self._refresh_replacement_list()
+        self._refresh_vocabulary_warning()
 
     def _collect(self) -> None:
         """Write widget values back into self._working."""
@@ -1996,9 +2211,11 @@ class SettingsDialog(QDialog):
         from src.utils import ScreamerError
 
         try:
-            self._working.vocabulary_entries = normalize_vocabulary_entries(
-                self._working.vocabulary_entries
-            )
+            normalized = normalize_vocabulary_entries(self._working.vocabulary_entries)
+            self._working.vocabulary_entries = normalized
+            if normalized != self._vocabulary_values():
+                # Cell edits can leave blank or duplicate rows that the save drops.
+                self._populate_vocabulary_table(normalized)
             recovery = Hotkey.parse(self._working.recovery_hotkey)
             if recovery is not None:
                 self._working.recovery_hotkey = recovery.to_canonical()
