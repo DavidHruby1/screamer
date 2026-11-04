@@ -180,11 +180,8 @@ class VocabularyRequestSelectionTests(unittest.TestCase):
         return post.call_args.kwargs["json"]["messages"][0]["content"]
 
     def test_stt_prompt_uses_selected_language_terms(self):
-        self.assertEqual(
-            self._stt_prompt("cs"),
-            'Preferred spellings: "ahoj", "Kotlin", "Screamer", "QThread"',
-        )
-        self.assertEqual(self._stt_prompt(""), 'Preferred spellings: "Screamer", "QThread"')
+        self.assertEqual(self._stt_prompt("cs"), "ahoj, Kotlin, Screamer, QThread.")
+        self.assertEqual(self._stt_prompt(""), "Screamer, QThread.")
 
     def test_rewrite_uses_same_selection(self):
         prompt = self._rewrite_prompt("en")
