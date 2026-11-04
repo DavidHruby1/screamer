@@ -1522,8 +1522,10 @@ class SettingsDialog(QDialog):
         form.addRow(self._vocabulary_warning)
         self._vocabulary_enable_btn = QPushButton("Turn on provider prompt")
         self._vocabulary_enable_btn.clicked.connect(self._on_enable_provider_prompt)
-        self._vocabulary_enable_btn.setVisible(False)
-        form.addRow("", _button_row(self._vocabulary_enable_btn))
+        self._vocabulary_enable_row = _button_row(self._vocabulary_enable_btn)
+        form.addRow("", self._vocabulary_enable_row)
+        form.setRowVisible(self._vocabulary_enable_row, False)  # hides the empty label too
+        self._vocabulary_form = form
         _section(form, "Preferred spellings", first=True)
         hint = QLabel(
             "Names, acronyms and project terms. Terms are sent as hints to (1) the "
@@ -1622,11 +1624,11 @@ class SettingsDialog(QDialog):
                 "and the Speech provider prompt is off. For guaranteed fixes use "
                 "Replacements below."
             )
-            if automatic:
+            if automatic and any(m.profile_id != "raw" for m in self._rewrite_app_mappings):
                 text += " Apps mapped to other profiles still use the vocabulary."
             self._vocabulary_warning.setText(text)
         self._vocabulary_warning.setVisible(unused)
-        self._vocabulary_enable_btn.setVisible(unused)
+        self._vocabulary_form.setRowVisible(self._vocabulary_enable_row, unused)
 
     def _on_enable_provider_prompt(self) -> None:
         """Switch the primary provider prompt on and show it on the Speech page."""

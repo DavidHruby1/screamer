@@ -12,7 +12,7 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QApplication, QLineEdit, QDialog
 
-from src.config import AppConfig, load_config, save_config
+from src.config import AppConfig, AppMapping, load_config, save_config
 from src.utils import AppError, ScreamerError
 from src.settings_dialog import PasswordField, SettingsDialog
 
@@ -700,3 +700,21 @@ class VocabularyWarningTests(unittest.TestCase):
         dlg._vocabulary_input.setText("PySide6")
         dlg._on_vocabulary_add()
         self.assertTrue(self._shown(dlg))
+
+    def test_automatic_caveat_only_with_non_raw_app_mapping(self) -> None:
+        dlg = self._dialog(
+            vocabulary_entries=["PySide6"],
+            rewrite_selection_mode="automatic",
+            rewrite_default_profile_id="raw",
+        )
+        self.assertTrue(self._shown(dlg))
+        self.assertNotIn("Apps mapped", dlg._vocabulary_warning.text())
+        dlg._rewrite_app_mappings = [AppMapping("code.exe", "clean")]
+        dlg._refresh_vocabulary_warning()
+        self.assertIn("Apps mapped", dlg._vocabulary_warning.text())
+
+    def test_enable_button_row_follows_warning(self) -> None:
+        dlg = self._dialog(vocabulary_entries=["PySide6"], rewrite_manual_profile_id="raw")
+        self.assertTrue(dlg._vocabulary_form.isRowVisible(dlg._vocabulary_enable_row))
+        dlg._stt_prompt_primary_check.setChecked(True)
+        self.assertFalse(dlg._vocabulary_form.isRowVisible(dlg._vocabulary_enable_row))
