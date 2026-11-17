@@ -1,0 +1,12 @@
+[
+ {
+  "check": "hero-lines",
+  "target": "section.hero h1",
+  "reason": "The h1 is final (34 characters, 3 lines at 1440 and 390); the stress fill to 48 characters takes 4 lines with Geist, Manrope and Host Grotesk alike, all three dealt pairings tried."
+ },
+ {
+  "check": "scroll-reveal",
+  "target": "div.closing__cta.close--word > div.section-head--split > a.btn.btn--primary",
+  "reason": "The 0.1 s colour change is the kit's hover transition: when the phone action bar hides as the close's button arrives, the checker's resting pointer lands on that button. Nothing on the page animates on scroll."
+ }
+]

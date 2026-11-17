@@ -1,0 +1,11 @@
+{
+ "page": "index.html",
+ "url": null,
+ "root": null,
+ "kind": "software",
+ "category": "push-to-talk dictation app for Windows",
+ "primary": "Download for Windows",
+ "rounds": 3,
+ "start": "2026-11-07T22:18:00.860Z",
+ "by": "gate.mjs --start"
+}

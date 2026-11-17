@@ -1,0 +1,471 @@
+{
+ "start": "2026-11-07T22:18:00.860Z",
+ "round": 3,
+ "idle": 0,
+ "errors": 0,
+ "status": "open",
+ "history": [
+  {
+   "at": "2026-11-07T22:36:14.315Z",
+   "mode": "manual",
+   "status": "fail",
+   "fails": 3,
+   "round": 1,
+   "reused": false,
+   "stopHookActive": false
+  },
+  {
+   "at": "2026-11-07T22:38:57.932Z",
+   "mode": "manual",
+   "status": "fail",
+   "fails": 4,
+   "round": 2,
+   "reused": false,
+   "stopHookActive": false
+  },
+  {
+   "at": "2026-11-07T22:43:36.860Z",
+   "mode": "manual",
+   "status": "open",
+   "fails": 2,
+   "round": 3,
+   "reused": false,
+   "stopHookActive": false
+  },
+  {
+   "at": "2026-11-07T22:46:29.231Z",
+   "mode": "hook",
+   "host": "claude",
+   "decision": "allow",
+   "reason": "no build is active here",
+   "stopHookActive": false
+  }
+ ],
+ "max": 3,
+ "marker": {
+  "page": "index.html",
+  "url": null,
+  "root": null,
+  "kind": "software",
+  "category": "push-to-talk dictation app for Windows",
+  "primary": "Download for Windows",
+  "rounds": 3,
+  "start": "2026-11-07T22:18:00.860Z",
+  "by": "gate.mjs --start"
+ },
+ "manual": true,
+ "roundKey": "768d532095094e4f:575bc1b6",
+ "roundFree": false,
+ "idleFree": false,
+ "blockKey": null,
+ "fp": "768d532095094e4f",
+ "page": "index.html",
+ "found": {
+  "fails": [
+   {
+    "check": "section-gaps",
+    "where": "section#faq / footer#contact",
+    "msg": "400px between these sections, +114% against the median 187px",
+    "fix": "use one gap between sections (all within 25% of each other)",
+    "widths": [
+     1440,
+     390
+    ],
+    "from": "consistency",
+    "ids": [
+     "section-gaps"
+    ],
+    "wheres": [
+     "section#faq / footer#contact"
+    ]
+   },
+   {
+    "check": "hero-lines",
+    "where": "section.hero h1",
+    "msg": "the check fills the h1 to 48 characters (this hero's maxChars in heroes.json), not the page's own: it takes 4 lines at 1440, 3 at most",
+    "fix": "the check fills the h1 to this hero's maxChars, not your own: take the next type pairing the deal printed (start.mjs); when the h1 is final and fits, waive it (target: section.hero h1)",
+    "widths": [
+     1440,
+     390
+    ],
+    "from": "layout",
+    "ids": [
+     "hero-lines"
+    ],
+    "wheres": [
+     "section.hero h1"
+    ]
+   },
+   {
+    "check": "sparse",
+    "where": "#faq section.section \"Questions Open an issue on GitHu\"",
+    "msg": "its content fills 50% of its screen; merge it or give it its visual (0.55 is the aim)",
+    "fix": "fill the section or make it a screen shorter",
+    "widths": [
+     390
+    ],
+    "from": "layout",
+    "ids": [
+     "sparse"
+    ],
+    "wheres": [
+     "#faq section.section \"Questions Open an issue on GitHu\""
+    ]
+   }
+  ],
+  "warns": [
+   {
+    "check": "cut-text",
+    "where": "div.ui-win__main > ul.ui-win__rows > li.ui-win__row:nth-of-type(2) > span.ui-win__sub \"WindowsTerminal.exe\"",
+    "msg": "shortened with an ellipsis (and 2 more like it: \"When no app matches\", \"The window changed while\")",
+    "fix": "give the text room: no overflow clipping a line, no line past its box",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "cut-text",
+    "where": "ul.ui-notify__list > li.ui-note:nth-of-type(3) > span.ui-note__text > span.ui-note__body \"Raw profile, one line\"",
+    "msg": "cut 14px at the bottom by the overflow of div.wrap > div.grid > article.card.card--row:nth-of-type(1) > div.panel: a fragment run out through its panel's edge",
+    "fix": "give the text room: no overflow clipping a line, no line past its box",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "cut-text",
+    "where": "p.t-stat.mo-cr > span.mo-cr__col > span.mo-cr__strip > span:nth-of-type(2) \"4\"",
+    "msg": "cut 41px at the bottom by the overflow of div.grid.stats > div.span-3:nth-of-type(1) > p.t-stat.mo-cr > span.mo-cr__col (inside a held section or scroll scene, whose motion --quick does not check) (and 1 more like it: \"8\")",
+    "fix": "give the text room: no overflow clipping a line, no line past its box",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "cut-text",
+    "where": "p.t-stat.mo-cr > span.mo-cr__col:nth-of-type(1) > span.mo-cr__strip > span:nth-of-type(2) \"2\"",
+    "msg": "cut 41px at the bottom by the overflow of div.grid.stats > div.span-3:nth-of-type(3) > p.t-stat.mo-cr > span.mo-cr__col:nth-of-type(1) (inside a held section or scroll scene, whose motion --quick does not check) (and 5 more like it: \"1\", \"1\", \"3\", \"3\", ...)",
+    "fix": "give the text room: no overflow clipping a line, no line past its box",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "scroll-reveal",
+    "where": "section#offline > div.wrap > div.grid.stats \"3 4 5 6 7 8 9 0 1 2 3 speech provider pr\"",
+    "msg": "starts an animation (1.4 s) the moment it is scrolled into view (an IntersectionObserver) on span.mo-cr__strip (inside a dealt moment's section, [data-moment]: an enter moment is expected on every kind; its still is judged under reduced motion)",
+    "fix": "show it at rest: no fade, rise or unmask when it is scrolled into view",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "text-contrast",
+    "where": "div.ui-diff__lines > div.ui-diff__sug > div.ui-diff__ln > span.ui-diff__code \"I still need a sign-off on the installer\"",
+    "msg": "26 lines of text in drawn mocks read under 4.5:1 (10 colour pairs), the worst \"I still need a sign-off \" in #363636 on #171717 at 1.48:1",
+    "fix": "lift the mocks' muted text (labels, meta, initials) to 4.5:1 on their own panel, or set it larger",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "section-gaps",
+    "where": "section#features / section#history",
+    "msg": "uneven space at the edge of a band: 72px outside its edge, 115px inside it (the space on either side of a change of ground reads as one gap only when the two match)",
+    "fix": "use one gap between sections (all within 25% of each other)",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "hole",
+    "where": "section#offline \"Offline dictation with a local server\"",
+    "msg": "an empty hole 732x228px inside the section (25% of the screen's height), with content above and below it",
+    "fix": "close the empty space: move the content together, or give the space the visual it lacks",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "nav-labels",
+    "where": "header.nav.nav--centre > div.wrap.nav__bar > a.nav__logo \"Screamer\"",
+    "msg": "\"Screamer\" opens a section headed \"Push-to-talk dictation for Windows\"",
+    "fix": "name each nav link after the heading of the section it opens",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "nav-labels",
+    "where": "div.wrap.nav__bar > nav.nav__links > div.nav__item:nth-of-type(1) > a.nav__link \"Features\"",
+    "msg": "\"Features\" opens a section headed \"What Screamer does after you let go. Four steps ru\"",
+    "fix": "name each nav link after the heading of the section it opens",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "nav-labels",
+    "where": "div.nav__menu > div.wrap.grid > div.menu-col.span-3:nth-of-type(1) > a:nth-of-type(2) \"ProvidersOpenAI, Groq or your server\"",
+    "msg": "\"ProvidersOpenAI, Groq or your server\" opens a section headed \"What Screamer does after you let go. Four steps ru\"",
+    "fix": "name each nav link after the heading of the section it opens",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "fade-cut",
+    "where": "ul.ui-notify__list > li.ui-note:nth-of-type(3) > span.ui-note__text > span.ui-note__title \"Copied to clipboard 9m\"",
+    "msg": "2 lines of div.ui.ui-notify fade out under its edge (\"Copied to clipboard 9m\", \"9m\"): drawn at a fraction of #111111 on #ffffff, half-erased",
+    "fix": "fit the mock's rows inside its panel (fewer rows, a taller panel), or end the fade below the last whole row: no row half-erased",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "fade-cut",
+    "where": "div.ui-win__main > ul.ui-win__rows > li.ui-win__row:nth-of-type(9) > span.ui-avatar \"VS\"",
+    "msg": "3 lines of div.ui.ui-panel fade out under its edge (\"VS\", \"Check the DPAPI roundt\", \"Copied\"): drawn at a fraction of #a18d62 on #463f2f, half-erased",
+    "fix": "fit the mock's rows inside its panel (fewer rows, a taller panel), or end the fade below the last whole row: no row half-erased",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "nav-current",
+    "where": "header.nav.nav--centre",
+    "msg": "the nav stays on screen with 4 links to the page's sections, but never marks the one you are in (no link changes as the page scrolls)",
+    "fix": "mark the link of the section on screen (a colour, a weight or a line under it) as the visitor scrolls",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "action-repeat",
+    "where": "header.nav.nav--centre > div.wrap.nav__bar > div.nav__actions > a.btn.btn--primary \"download for windows\"",
+    "msg": "\"download for windows\" shows 2 times on the first screen at 1440px (nav, hero): the nav's button and the hero's; nothing else on the screen may repeat it",
+    "fix": "show the action once a screen besides the nav's button: the hero's, the close's or the phone bar's, never all at once",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "hidden-content",
+    "where": "div.ui.ui-panel > div.ui-diff__lines > div.ui-diff__ln:nth-of-type(4) > i:nth-of-type(2) \"3\"",
+    "msg": "with reduced motion asked for it stays hidden on screen 4, 0.7 s after it was scrolled to (transparent letters) inside a drawn mock: the page shows it only when a script reveals it",
+    "fix": "show the content at rest: the hidden state only under a class the script adds on its live path, never in the plain CSS (prefers-reduced-motion and a script that never runs show the finished page)",
+    "widths": [
+     1440
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "cut-text",
+    "where": "div.ui-win__main > ul.ui-win__rows > li.ui-win__row:nth-of-type(4) > span.ui-avatar \"VS\"",
+    "msg": "cut 6px at the bottom by the overflow of section.hero.hero--collage > div.wrap > div.hero-text.grid > div.hero__art.span-6: a fragment run out through its panel's edge (and 2 more like it: \"Code.exe\", \"Clean\")",
+    "fix": "give the text room: no overflow clipping a line, no line past its box",
+    "widths": [
+     390
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "cut-text",
+    "where": "ul.ui-toggles__list > li.ui-tg:nth-of-type(2) > span.ui-tg__text > span.ui-tg__sub \"Whole word, any case\"",
+    "msg": "cut 14px at the bottom by the overflow of div.group > div.grid > article.card.card--row:nth-of-type(1) > div.panel: a fragment run out through its panel's edge",
+    "fix": "give the text room: no overflow clipping a line, no line past its box",
+    "widths": [
+     390
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "cut-text",
+    "where": "ul.ui-notify__list > li.ui-note:nth-of-type(3) > span.ui-note__text > span.ui-note__title \"Copied to clipboard 9m\"",
+    "msg": "cut 9px at the bottom by the overflow of div.wrap > div.grid > article.card.card--row:nth-of-type(1) > div.panel: a fragment run out through its panel's edge (and 1 more like it: \"9m\")",
+    "fix": "give the text room: no overflow clipping a line, no line past its box",
+    "widths": [
+     390
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "cut-text",
+    "where": "div.ui.ui-panel > div.ui-diff__lines > div.ui-diff__ln:nth-of-type(10) > i:nth-of-type(2) \"6\"",
+    "msg": "cut 8px at the bottom by the overflow of section#history > div.wrap > div.ui.app > div.app__pane.app__pane--open: a fragment run out through its panel's edge (and 1 more like it: \"Release notes are on the\")",
+    "fix": "give the text room: no overflow clipping a line, no line past its box",
+    "widths": [
+     390
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "text-contrast",
+    "where": "div.ui.ui-panel > div.ui-diff__lines > div.ui-diff__ln:nth-of-type(15) > span.ui-diff__code \"Hold Shift at the end to press Enter.\"",
+    "msg": "9 lines of text in drawn mocks read under 4.5:1 (4 colour pairs), the worst \"Hold Shift at the end to\" in #aaaaaa on #ffffff at 2.32:1",
+    "fix": "lift the mocks' muted text (labels, meta, initials) to 4.5:1 on their own panel, or set it larger",
+    "widths": [
+     390
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "section-gaps",
+    "where": "main#top > section.hero.hero--collage / section#features",
+    "msg": "117px between these sections, -48% against the median 225px",
+    "fix": "use one gap between sections (all within 25% of each other)",
+    "widths": [
+     390
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "fade-cut",
+    "where": "ul.ui-toggles__list > li.ui-tg:nth-of-type(2) > span.ui-tg__text > span.ui-tg__label \"kubernetis → Kubernetes\"",
+    "msg": "a line of div.ui.ui-panel fades out under its edge (\"kubernetis → Kubernete\"): drawn at a fraction of #111111 on #ffffff, half-erased",
+    "fix": "fit the mock's rows inside its panel (fewer rows, a taller panel), or end the fade below the last whole row: no row half-erased",
+    "widths": [
+     390
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "fade-cut",
+    "where": "div.ui.ui-panel > div.ui-diff__lines > div.ui-diff__ln:nth-of-type(1) > span.ui-diff__code \"Hi team, a quick update on the 1.9 relea\"",
+    "msg": "a line of div.ui.ui-panel fades out under its edge (\"Hi team, a quick updat\"): drawn at a fraction of #aaaaaa on #111111, half-erased",
+    "fix": "fit the mock's rows inside its panel (fewer rows, a taller panel), or end the fade below the last whole row: no row half-erased",
+    "widths": [
+     390
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "fade-cut",
+    "where": "div.ui.ui-panel > div.ui-diff__lines > div.ui-diff__ln:nth-of-type(8) > span.ui-diff__code \"And like the history window shows the ra\"",
+    "msg": "3 lines of div.ui.ui-panel fade out under its edge (\"And like the history w\", \"The history window sho\", \"The\"): drawn at a fraction of #aaaaaa on #231817, half-erased",
+    "fix": "fit the mock's rows inside its panel (fewer rows, a taller panel), or end the fade below the last whole row: no row half-erased",
+    "widths": [
+     390
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "visual-caption",
+    "where": "div.ui-win__main > ul.ui-win__rows > li.ui-win__row:nth-of-type(4) > span.ui-win__sub \"Code.exe\"",
+    "msg": "a muted 13px line of 1 row sits 0px under the effect (grain-gradient): it reads as a caption: \"Code.exe\"; no caption or description under any image, render or visual (house rule)",
+    "fix": "take the line away: no caption or description under, over or on any image, render or visual; a licence credit goes in one footer line",
+    "widths": [
+     390
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "empty-area",
+    "where": "section#offline \"Offline dictation with a local server\"",
+    "msg": "38% of the section is empty: 576px under its last (p.t-stat), in its 1491px of rows (WARN over 35%, FAIL over 50%)",
+    "fix": "fill the section: a picture or a second column beside the words, or more of its own content; the section stays one or two screens tall (T-height)",
+    "widths": [
+     390
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "empty-area",
+    "where": "section#faq \"Questions\"",
+    "msg": "42% of the section is empty: 624px under its last (div.faq__item:nth-of-type(4)), in its 1491px of rows (WARN over 35%, FAIL over 50%)",
+    "fix": "fill the section: a picture or a second column beside the words, or more of its own content; the section stays one or two screens tall (T-height)",
+    "widths": [
+     390
+    ],
+    "from": "consistency"
+   },
+   {
+    "check": "copy-stat-strip",
+    "msg": "stat strip x1",
+    "fix": "a strip only of figures the brief gives (a price, hours, a count); otherwise put each number in the sentence it proves, or leave it out (references/copy-tells.md)",
+    "widths": [],
+    "from": "copy",
+    "where": "copy x1: \"3 / 7 / 100 / 224\"",
+    "exact": false
+   }
+  ],
+  "crashed": [],
+  "seconds": {
+   "consistency": 131,
+   "layout": 4
+  }
+ },
+ "open": [
+  {
+   "check": "section-gaps",
+   "where": "section#faq / footer#contact",
+   "msg": "400px between these sections, +114% against the median 187px",
+   "fix": "use one gap between sections (all within 25% of each other)",
+   "widths": [
+    1440,
+    390
+   ],
+   "from": "consistency",
+   "ids": [
+    "section-gaps"
+   ],
+   "wheres": [
+    "section#faq / footer#contact"
+   ]
+  },
+  {
+   "check": "sparse",
+   "where": "#faq section.section \"Questions Open an issue on GitHu\"",
+   "msg": "its content fills 50% of its screen; merge it or give it its visual (0.55 is the aim)",
+   "fix": "fill the section or make it a screen shorter",
+   "widths": [
+    390
+   ],
+   "from": "layout",
+   "ids": [
+    "sparse"
+   ],
+   "wheres": [
+    "#faq section.section \"Questions Open an issue on GitHu\""
+   ]
+  }
+ ],
+ "waived": [
+  {
+   "check": "hero-lines",
+   "where": "section.hero h1",
+   "msg": "the check fills the h1 to 48 characters (this hero's maxChars in heroes.json), not the page's own: it takes 4 lines at 1440, 3 at most",
+   "fix": "the check fills the h1 to this hero's maxChars, not your own: take the next type pairing the deal printed (start.mjs); when the h1 is final and fits, waive it (target: section.hero h1)",
+   "widths": [
+    1440,
+    390
+   ],
+   "from": "layout",
+   "ids": [
+    "hero-lines"
+   ],
+   "wheres": [
+    "section.hero h1"
+   ],
+   "reason": "The h1 is final (34 characters, 3 lines at 1440 and 390); the stress fill to 48 characters takes 4 lines with Geist, Manrope and Host Grotesk alike, all three dealt pairings tried."
+  }
+ ],
+ "warnCount": 29,
+ "at": "2026-11-07T22:43:36.860Z",
+ "openTold": true
+}

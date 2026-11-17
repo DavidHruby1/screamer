@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en" data-type="software" data-radius="soft" data-ground="sand" data-buttons="arrow" data-motion>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Screamer: push-to-talk dictation for Windows</title>
+<meta name="description" content="Hold a hotkey, speak and let go: Screamer transcribes with Whisper, tidies the text with an LLM if you want, and types it where your cursor was.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Screamer: push-to-talk dictation for Windows">
+<meta property="og:description" content="Hold a hotkey, speak and let go. Screamer types the text into the window you started in.">
+<meta property="og:image" content="share.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#ffffff">
+<!-- <link rel="canonical" href="https://[the project's domain]/"> -->
+<meta name="site-kind" content="software">
+<meta name="page-type" content="software">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..700&family=Geist+Mono:wght@400..500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/system.css">
+<link rel="stylesheet" href="assets/ui/cards.css">
+<link rel="stylesheet" href="assets/motion/motion.css">
+<link rel="stylesheet" href="assets/backgrounds/backgrounds.css">
+<link rel="stylesheet" href="assets/layout/layout.css">
+<link rel="stylesheet" href="assets/icons/icon.css">
+<style>
+:root {
+  --p-bg: #ffffff; --p-surface: #f4f4f4; --p-ink: #111111; --p-muted: #6b6b6b;
+  --p-accent: #1a4be0; --p-accent-ink: #ffffff; --p-action: #1a4be0; --p-action-ink: #ffffff;
+  --p-inv-bg: #111111; --p-inv-surface: #1e1e1e; --p-inv-ink: #ffffff; --p-inv-muted: #9a9a9a;
+  --p-inv-accent: #ffffff; --p-inv-accent-ink: #111111; --p-inv-action: #ffffff; --p-inv-action-ink: #111111;
+  --font-display: "Geist", system-ui, sans-serif;
+  --font-text: "Geist", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --display-weight: 500;
+  --display-tracking: -0.035em;
+  --display-tracking-xl: -0.045em;
+}
+</style>
+<link rel="stylesheet" href="assets/ui/base.css">
+<link rel="stylesheet" href="assets/ui/window/fragment.css">
+<link rel="stylesheet" href="assets/ui/diff-review/fragment.css">
+<link rel="stylesheet" href="assets/ui/toggles/fragment.css">
+<link rel="stylesheet" href="assets/ui/notify/fragment.css">
+<link rel="stylesheet" href="assets/ui/checklist/fragment.css">
+<link rel="stylesheet" href="assets/diagrams/diagram.css">
+<script>document.documentElement.classList.add('m-enter');setTimeout(()=>document.documentElement.classList.add('m-enter-done'),700)</script>
+<script src="assets/backgrounds/backgrounds.js"></script>
+<script>document.documentElement.classList.add('mo-js');setTimeout(()=>document.documentElement.classList.add('mo-safe'),2500)</script>
+<link rel="modulepreload" href="assets/moments/moments.js">
+<link rel="modulepreload" href="assets/moments/lib.js">
+<link rel="modulepreload" href="assets/moments/counter-rolls/moment.js">
+<style>
+  /* hero: the small dictation card over the settings window (inside the visual) */
+  .hero__art > .ly-piece--note { left: var(--s-6); bottom: var(--s-6); width: 300px; z-index: 2; }
+  .d-card { background: #fff; color: #16181a; border-radius: 12px; padding: 14px 16px; font: 400 14px/1.4 var(--font-text);
+    box-shadow: 0 0 0 1px rgb(0 0 0 / .06), 0 18px 40px -20px rgb(0 0 0 / .45); }
+  .d-card__row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+  .d-card h5 { margin: 0; font: 500 14px/1.3 var(--font-text); }
+  .d-chip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 99px; font-size: 13px; font-weight: 500; background: #e6ecfc; color: #1a3fb8; white-space: nowrap; }
+  .d-note__line { display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 13px; color: #3d4247; border-top: 1px solid rgb(0 0 0 / .06); }
+  .d-note__line:first-of-type { border-top: 0; }
+  .d-note__line i { width: 18px; height: 18px; border-radius: 50%; flex: none; display: grid; place-items: center; font-style: normal; font-size: 12px; font-weight: 500; background: #eef0f2; color: #3d4247; }
+  .d-note__line i.rec { background: #fde9dc; color: #b4480f; }
+  .d-note__line i.rec::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #e8621c; }
+  .d-note__line b { font-weight: 500; color: #16181a; }
+  .hero__art > .frame__fx { position: absolute; inset: 0; z-index: 0; }
+  .hero__art > .ly-piece--main { z-index: 1; }
+  .nowrap { white-space: nowrap; }
+  .hero__proof { font-size: var(--t-small); color: var(--muted); }
+  .ly-piece--main .ui-win__main { padding-right: var(--ly-cut-room); }
+  @media (max-width: 1023px) { .hero__art > .ly-piece--note { left: var(--s-4); bottom: var(--s-4); width: 270px; } }
+
+  /* features: one panel height for the four cards */
+  #features .panel { --p-h: 300px; }
+  @media (max-width: 639px) { #features .panel { --p-h: 164px; } }
+
+  /* history: the app frame (sections-library.md app-frame) */
+  .app.ui { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); margin-top: var(--s-7); background: var(--u-bg); border: 1px solid var(--u-border); border-radius: var(--u-r); box-shadow: var(--u-shadow); }
+  .app > .app__pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+  .app > .app__pane + .app__pane { border-left: 1px solid var(--u-line); }
+  .app > .app__pane > .ui-panel { width: 100%; border: 0; border-radius: 0; box-shadow: none; }
+  .app > .app__pane::after { content: ""; position: absolute; inset: auto 0 0 0; height: 64px; background: linear-gradient(transparent, var(--u-bg)); pointer-events: none; }
+  @media (min-width: 1024px) and (max-width: 1279px) { .app.ui { grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); } }
+  @media (max-width: 1023px) {
+    .app.ui { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    .app > .app__pane--list { max-height: 252px; }
+    .app > .app__pane--list::after { display: none; }
+    .app .ui-win__side { display: none; }
+    .app .ui-win__body { grid-template-columns: minmax(0, 1fr); }
+    .app > .app__pane + .app__pane { border-left: 0; border-top: 1px solid var(--u-line); }
+  }
+  @media (max-width: 639px) {
+    .app.ui { grid-template-rows: minmax(0, 1fr); }
+    .app > .app__pane--list { display: none; }
+    .app > .app__pane + .app__pane { border-top: 0; }
+  }
+
+  /* offline: the speech settings window inside the split frame */
+  #offline .off-stats { margin-top: var(--s-7); }
+  @media (max-width: 1023px) { #offline .off-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: var(--s-5); } #offline .off-stats > div { grid-column: auto; } }
+  #offline .frame--split { background: var(--ground-bg); border-color: transparent; }
+  .set-win { width: 560px; font: 400 13px/1.4 var(--font-text); }
+  .set-win__bar { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--u-line); color: var(--u-muted, #5d6268); }
+  .set-win__tabs { display: flex; gap: 4px; padding: 10px 14px 0; border-bottom: 1px solid var(--u-line); }
+  .set-win__tabs span { padding: 6px 10px 9px; color: #5d6268; }
+  .set-win__tabs span.is-on { color: #16181a; font-weight: 500; box-shadow: inset 0 -2px 0 #16181a; }
+  .set-win__body { display: grid; gap: 14px; padding: 18px 20px 24px; }
+  .set-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 12px; }
+  .set-row > span:first-child { color: #5d6268; }
+  .set-field { display: flex; align-items: center; height: 32px; padding: 0 10px; border: 1px solid rgb(0 0 0 / .12); border-radius: 8px; background: #fff; color: #16181a; font-family: var(--font-mono); font-size: 12.5px; white-space: nowrap; overflow: hidden; }
+  .set-field--ph { color: #80868c; font-family: var(--font-text); font-size: 13px; }
+  .set-test { display: flex; align-items: center; gap: 10px; }
+  .set-test b { font-weight: 500; color: #16181a; }
+  .set-ok { display: inline-flex; align-items: center; gap: 6px; color: #17673f; }
+  .set-ok svg { width: 14px; height: 14px; }
+  @media (max-width: 639px) {
+    .set-win { width: 318px; }
+    .set-win__tabs span:nth-child(n+4) { display: none; }
+    .set-row { grid-template-columns: 56px minmax(0, 1fr); gap: 8px; }
+    .set-row:nth-child(n+6) { display: none; }
+    .set-field { font-size: 11.5px; padding: 0 8px; }
+    .set-win__body { gap: 10px; padding: 14px 14px 20px; }
+  }
+  /* faq: the recording pill as it shows near the bottom of the screen (inside the visual) */
+  .pills { --ratio: 64%; width: 100%; }
+  .pills__col { display: grid; gap: 14px; justify-items: center; }
+  .pill { display: inline-flex; align-items: center; gap: 12px; height: 44px; padding: 0 18px 0 14px; border-radius: 99px; color: #fff; font: 400 14px/1 var(--font-text); box-shadow: 0 14px 30px -16px rgb(0 0 0 / .5); white-space: nowrap; }
+  .pill b { font-weight: 500; margin-right: 6px; }
+  .pill--rec { background: #b84a12; }
+  .pill--proc { background: #1f4fbf; }
+  .pill__dot { width: 9px; height: 9px; border-radius: 50%; background: #fff; flex: none; }
+  .pill__wave { display: inline-flex; align-items: center; gap: 2px; height: 20px; }
+  .pill__wave i { width: 3px; height: var(--h); border-radius: 2px; background: rgb(255 255 255 / .9); }
+  @media (max-width: 639px) { .pills { --ratio: 100%; } .pill { font-size: 13px; padding: 0 14px 0 12px; gap: 8px; } .pill__wave { display: none; } }
+  /* one or two screens at every width: the tablet stacks #offline and #faq, 1024 keeps them on one screen */
+  @media (min-width: 1024px) and (max-width: 1279px) { .pills { --ratio: 44%; } #offline .frame--split { --ratio: 70%; } }
+  @media (min-width: 640px) and (max-width: 1023px) { #offline .frame--split { --ratio: 52%; } .pills { --ratio: 30%; } }
+  @media (max-width: 1279px) { .pill__wave { display: none; } }
+  /* close-word: the name hand-set per breakpoint, never clipped */
+  #contact .close__word { flex: none; font-size: clamp(56px, 14.5vw, 216px); line-height: 1; }
+  @media (max-width: 639px) { #contact .close__word { font-size: clamp(52px, 17vw, 88px); } }
+</style>
+</head>
+<body>
+<!-- type: software
+     deal: hero collage, nav nav-centre (nav-cards redealt: no photographs), close close-word, footer footer-columns,
+           rhythm dark-band, buttons arrow, mark dots, ground sand, grounds none
+     effect: grain-gradient in the hero frame; card grounds painterly-landscape (still)
+     moments: counter-rolls in #offline -->
+<header class="nav nav--centre">
+  <div class="wrap nav__bar">
+    <a class="skip-link" href="#top">Skip to content</a>
+    <a class="nav__logo" href="#top"><span class="mark" data-mark="dots" aria-hidden="true"></span>Screamer</a>
+    <nav class="nav__links" aria-label="Main">
+      <div class="nav__item">
+        <a class="nav__link" href="#features">Features <svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        <div class="nav__menu">
+          <div class="wrap grid">
+            <div class="menu-col span-3">
+              <p class="t-label">Dictation</p>
+              <a href="#features">Replacements<span>Fixes words Whisper mishears</span></a>
+              <a href="#features">Providers<span>OpenAI, Groq or your server</span></a>
+            </div>
+            <div class="menu-col span-3">
+              <p class="t-label">Output</p>
+              <a href="#history">History<span>Raw and cleaned text, side by side</span></a>
+              <a href="#offline">Local setup<span>No audio leaves the PC</span></a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="nav__item"><a class="nav__link" href="#history">History</a></div>
+      <div class="nav__item"><a class="nav__link" href="#offline">Offline</a></div>
+      <div class="nav__item"><a class="nav__link" href="#faq">Questions</a></div>
+    </nav>
+    <div class="nav__actions">
+      <a class="btn btn--primary" href="https://github.com/DavidHruby1/screamer/releases/latest">Download for Windows<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg></a>
+    </div>
+    <button class="nav__toggle" type="button" aria-expanded="false" aria-label="Menu">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h14M2 13h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero hero--collage" data-enter aria-labelledby="hero-h">
+    <div class="wrap"><div class="hero-text grid hero__grid">
+      <div class="hero__text span-5">
+        <h1 id="hero-h"><span class="nowrap">Push-to-talk</span> dictation for Windows</h1>
+        <p class="hero__lead">Hold Ctrl+Alt+Space, speak and let go. Screamer transcribes with Whisper, tidies the text if you want, and types it into the window you started in.</p>
+        <div class="btn-row">
+          <a class="btn btn--primary" href="https://github.com/DavidHruby1/screamer/releases/latest">Download for Windows<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg></a>
+          <a class="btn btn--secondary" href="https://github.com/DavidHruby1/screamer">Read the source</a>
+        </div>
+        <p class="hero__proof">Version 1.9.0, free under the MIT licence.</p>
+      </div>
+      <div class="hero__art span-6 start-7" role="img" aria-label="Screamer's profile settings: Slack uses Polished, the terminal Raw; a dictation is recorded, transcribed, cleaned up and typed into Slack">
+        <div class="frame__fx" data-fx="grain-gradient" data-fx-seed="7" data-fx-palette='{"bg":"#d9ccb7","surface":"#e9e0d2","ink":"#2a2622","muted":"#6f675c","accent":"#a8794a"}' data-fx-params='{"calm":0.2,"calmX":0.4,"calmY":0.4,"tint":0.6,"contrast":0.55}' aria-hidden="true"></div>
+        <div class="ly-piece ly-piece--main" aria-hidden="true">
+          <div class="ui ui-panel ui-win" data-ui="window" data-ui-still data-open="Open" data-work="Working" data-done="Set">
+            <div class="ui-win__bar">
+              <span class="ui-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="ui-win__crumb">Settings <i>/</i> <b>Profiles</b></span>
+              <span class="ui-spacer"></span>
+              <span class="ui-win__search" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><span class="ui-win__ph">Choose running app</span></span>
+            </div>
+            <div class="ui-win__body">
+              <nav class="ui-win__side" aria-hidden="true">
+                <span class="ui-win__nav">General</span>
+                <span class="ui-win__nav">Speech</span>
+                <span class="ui-win__nav">Rewrite</span>
+                <span class="ui-win__nav">Audio</span>
+                <span class="ui-win__nav">Vocabulary</span>
+                <span class="ui-win__nav is-on">Profiles<em>6</em></span>
+              </nav>
+              <div class="ui-win__main">
+                <div class="ui-win__cols" aria-hidden="true"><span>App</span><span>Process</span><span>Profile</span><span></span></div>
+                <ul class="ui-win__rows">
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="1">Sl</span><span class="ui-win__who">Slack</span><span class="ui-win__sub">slack.exe</span><span class="ui-win__st" data-st>Polished</span><span class="ui-win__age ly-cut-hide"></span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="3">Te</span><span class="ui-win__who">Terminal</span><span class="ui-win__sub">WindowsTerminal.exe</span><span class="ui-win__st is-done" data-st>Raw</span><span class="ui-win__age ly-cut-hide"></span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="4">Ou</span><span class="ui-win__who">Outlook</span><span class="ui-win__sub">outlook.exe</span><span class="ui-win__st" data-st>Formal</span><span class="ui-win__age ly-cut-hide"></span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="2">VS</span><span class="ui-win__who">VS Code</span><span class="ui-win__sub">Code.exe</span><span class="ui-win__st is-done" data-st>Clean</span><span class="ui-win__age ly-cut-hide"></span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="5">No</span><span class="ui-win__who">Notion</span><span class="ui-win__sub">Notion.exe</span><span class="ui-win__st" data-st>Polished</span><span class="ui-win__age ly-cut-hide"></span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="3">Ch</span><span class="ui-win__who">Chrome</span><span class="ui-win__sub">chrome.exe</span><span class="ui-win__st is-done" data-st>Clean</span><span class="ui-win__age ly-cut-hide"></span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="1">—</span><span class="ui-win__who">Any other app</span><span class="ui-win__sub">When no app matches</span><span class="ui-win__st is-done" data-st>Clean</span><span class="ui-win__age ly-cut-hide"></span></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="ly-piece ly-piece--note d-card" aria-hidden="true" data-ly-steps="700">
+          <div class="d-card__row"><h5>Dictation</h5><span class="d-chip" data-step data-step-at="4">Typed into Slack</span></div>
+          <div class="d-note__line" data-step><i class="rec"></i><span><b>Recording</b> from the default microphone</span></div>
+          <div class="d-note__line" data-step><i>✓</i><span>Transcribed by <b>whisper-large-v3-turbo</b></span></div>
+          <div class="d-note__line" data-step><i>✓</i><span>Cleaned up with <b>Polished</b></span></div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <section class="section g2" id="features" aria-labelledby="features-h">
+    <div class="wrap">
+      <div class="group">
+        <div class="section-head">
+          <h2 id="features-h">What Screamer does after you let go. <span class="muted">Four steps run before a word is typed.</span></h2>
+        </div>
+        <div class="grid">
+          <article class="card card--row card--open span-6 m-nolift">
+            <h3>Fixes words your dictation gets wrong</h3>
+            <p>Replacements run on every result, whole words only, even with the Raw profile.</p>
+            <div class="panel" data-fx="painterly-landscape" data-fx-seed="11" data-fx-palette='{"bg":"#d9ccb7","surface":"#e9e0d2","ink":"#2a2622","muted":"#6f675c","accent":"#a8794a"}' data-fx-params='{"blur":1,"brush":0.35,"slope":0,"hillY":0.3,"horizon":0.62,"calm":0.2,"calmX":0.6,"calmY":0.9,"drift":0}' style="--calm-k:0%">
+              <div class="stage stage--fade-b"><div class="at-right" style="--ax:32px;--ay:48px" data-ui-loop>
+                <div class="ui ui-panel ui-toggles" data-ui="toggles">
+                  <div class="ui-head">
+                    <svg class="ui-icon ui-toggles__ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg>
+                    <div class="ui-title">Replacements</div>
+                    <span class="ui-spacer"></span>
+                    <div class="ui-meta" data-tg-count>3 of 4 on</div>
+                  </div>
+                  <ul class="ui-toggles__list">
+                    <li class="ui-tg">
+                      <span class="ui-tg__text"><span class="ui-tg__label">pajsajd → PySide6</span><span class="ui-tg__sub">Whole word, any case</span></span>
+                      <button class="ui-switch is-on" type="button" role="switch" aria-checked="true" aria-label="pajsajd to PySide6" tabindex="-1"><i></i></button>
+                    </li>
+                    <li class="ui-tg">
+                      <span class="ui-tg__text"><span class="ui-tg__label">kubernetis → Kubernetes</span><span class="ui-tg__sub">Whole word, any case</span></span>
+                      <button class="ui-switch is-on" type="button" role="switch" aria-checked="true" aria-label="kubernetis to Kubernetes" tabindex="-1"><i></i></button>
+                    </li>
+                    <li class="ui-tg">
+                      <span class="ui-tg__text"><span class="ui-tg__label">get hub → GitHub</span><span class="ui-tg__sub">Whole word, any case</span></span>
+                      <button class="ui-switch" type="button" role="switch" aria-checked="false" aria-label="get hub to GitHub" tabindex="-1"><i></i></button>
+                    </li>
+                    <li class="ui-tg">
+                      <span class="ui-tg__text"><span class="ui-tg__label">dee pee api → DPAPI</span><span class="ui-tg__sub">Whole word, any case</span></span>
+                      <button class="ui-switch is-on" type="button" role="switch" aria-checked="true" aria-label="dee pee api to DPAPI" tabindex="-1"><i></i></button>
+                    </li>
+                  </ul>
+                </div>
+              </div></div>
+            </div>
+          </article>
+          <article class="card card--row card--open span-6 m-nolift">
+            <h3>Works with OpenAI, Groq or your own server</h3>
+            <p>Any server with an OpenAI-compatible transcription endpoint, and Ollama or LM Studio for cleanup.</p>
+            <div class="panel" data-fx="painterly-landscape" data-fx-seed="23" data-fx-palette='{"bg":"#c6d3df","surface":"#d6e0e9","ink":"#25303a","muted":"#5d6873","accent":"#3f6a92"}' data-fx-params='{"blur":1,"brush":0.35,"slope":0,"hillY":0.3,"horizon":0.62,"calm":0.3,"calmX":0.5,"calmY":0.5,"drift":0}' style="--calm-k:0%">
+              <div class="dg" data-dg-still data-diagram='{"layout":"hub","alt":"Screamer sends audio to OpenAI, Groq or a local server, and cleanup to Ollama or LM Studio.","center":{"label":"Screamer","icon":"ui:mic"},"spokes":[{"label":"OpenAI","icon":"openai"},{"label":"Groq","icon":"groq"},{"label":"Ollama","icon":"ollama"},{"label":"LM Studio","icon":"si:lmstudio"},{"label":"Local server","icon":"ui:server"},{"label":"Windows","icon":"windows"}]}'></div>
+            </div>
+          </article>
+        </div>
+      </div>
+      <div class="grid">
+        <article class="card card--row card--open span-6 m-nolift">
+          <h3>Holds the text if the window changed</h3>
+          <p>Switch apps mid-sentence and nothing lands in the wrong place. Insert last puts it where you are.</p>
+          <div class="panel" data-fx="painterly-landscape" data-fx-seed="37" data-fx-palette='{"bg":"#cdd6c6","surface":"#dce3d6","ink":"#262d24","muted":"#5f6a5a","accent":"#6c8e63"}' data-fx-params='{"blur":1,"brush":0.35,"slope":0,"hillY":0.3,"horizon":0.62,"calm":0.2,"calmX":0.5,"calmY":0.9,"drift":0}' style="--calm-k:0%">
+            <div class="stage stage--fade-b"><div class="at-rise fit" style="--ax:32px;--ay:calc(100% - 180px);--ay-sm:calc(100% - 180px);--fit-max:380px">
+              <div class="ui ui-notify" data-ui="notify">
+                <ul class="ui-notify__list" data-notify-list>
+                  <li class="ui-note"><span class="ui-agent ui-note__av" aria-hidden="true"></span><span class="ui-note__text"><span class="ui-note__title">Text held back<time>now</time></span><span class="ui-note__body">The window changed while it was processing</span></span><span class="ui-btn ui-btn--sm ui-note__btn">Insert last</span></li>
+                  <li class="ui-note"><span class="ui-note__ico"><svg class="ui-icon" viewBox="0 0 16 16"><path d="m3.5 8.4 2.8 2.8 6.2-6.4"/></svg></span><span class="ui-note__text"><span class="ui-note__title">Typed into Slack<time>3m</time></span><span class="ui-note__body">Polished profile, two sentences</span></span></li>
+                  <li class="ui-note"><span class="ui-note__ico"><svg class="ui-icon" viewBox="0 0 16 16"><path d="m3.5 8.4 2.8 2.8 6.2-6.4"/></svg></span><span class="ui-note__text"><span class="ui-note__title">Copied to clipboard<time>9m</time></span><span class="ui-note__body">Raw profile, one line</span></span></li>
+                </ul>
+              </div>
+            </div></div>
+          </div>
+        </article>
+        <article class="card card--row card--open span-6 m-nolift">
+          <h3>Checks the microphone before your first dictation</h3>
+          <p>The setup guide tests the microphone and the provider, then you try a practice dictation.</p>
+          <div class="panel" data-fx="painterly-landscape" data-fx-seed="41" data-fx-palette='{"bg":"#d9ccb7","surface":"#e9e0d2","ink":"#2a2622","muted":"#6f675c","accent":"#a8794a"}' data-fx-params='{"blur":1,"brush":0.35,"slope":0,"hillY":0.3,"horizon":0.62,"calm":0.2,"calmX":0.4,"calmY":0.9,"drift":0}' style="--calm-k:0%">
+            <div class="stage stage--fade-b"><div class="at-rise fit" style="--ax:max(24px, 50% - 170px);--ay:40px;--fit-max:340px">
+              <div class="ui ui-panel ui-checks" data-ui="checklist">
+                <div class="ui-checks__head">
+                  <div class="ui-title">Setup guide</div>
+                  <span class="ui-spacer"></span>
+                  <div class="ui-meta" data-checks-count>3 of 4</div>
+                </div>
+                <div class="ui-checks__bar"><i data-checks-bar style="--k:0.75"></i></div>
+                <ul class="ui-checks__list">
+                  <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"/></svg></span><span class="ui-check__label">Pick a microphone</span></li>
+                  <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"/></svg></span><span class="ui-check__label">Watch the level bar move</span></li>
+                  <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"/></svg></span><span class="ui-check__label">Test the connection to Groq</span></li>
+                  <li class="ui-check"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"/></svg></span><span class="ui-check__label">Hold Ctrl+Alt+Space and speak</span></li>
+                </ul>
+              </div>
+            </div></div>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section ground-inverse" id="history" aria-labelledby="history-h">
+    <div class="wrap">
+      <div class="grid">
+        <h2 class="span-5" id="history-h">History keeps the raw and the cleaned text</h2>
+        <div class="span-6 start-7 stack-4">
+          <p>Pick an entry to see what Whisper heard beside what the profile wrote. Copy either one, insert it again, or rerun cleanup with new settings.</p>
+          <a class="link" href="https://github.com/DavidHruby1/screamer#history">Read how history is stored</a>
+        </div>
+      </div>
+      <div class="ui app fill" role="img" aria-label="Screamer's History window: a list of dictations by app, and a Slack message showing the raw transcript with filler words removed by the Polished profile" data-ui-pause-host>
+        <div class="app__pane app__pane--list">
+          <div class="ui ui-panel ui-win" data-ui="window" data-open="Held back" data-work="Inserting" data-done="Inserted">
+            <div class="ui-win__bar">
+              <span class="ui-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="ui-win__crumb">Screamer <i>/</i> <b>History</b></span>
+              <span class="ui-spacer"></span>
+              <span class="ui-win__search" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><span class="ui-win__ph">Search</span></span>
+            </div>
+            <div class="ui-win__body">
+              <nav class="ui-win__side" aria-hidden="true">
+                <span class="ui-win__nav is-on">All<em>38</em></span>
+                <span class="ui-win__nav">Held back<em>1</em></span>
+                <span class="ui-win__nav">Copied<em>4</em></span>
+                <span class="ui-win__label">Profiles</span>
+                <span class="ui-win__nav"><span class="ui-win__hash">#</span>Polished</span>
+                <span class="ui-win__nav"><span class="ui-win__hash">#</span>Raw</span>
+              </nav>
+              <div class="ui-win__main">
+                <div class="ui-win__cols" aria-hidden="true"><span>App</span><span>Text</span><span>Status</span><span>Age</span></div>
+                <ul class="ui-win__rows">
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="1">Sl</span><span class="ui-win__who">Slack</span><span class="ui-win__sub">The build is ready and we can ship…</span><span class="ui-win__st is-done" data-st>Typed</span><span class="ui-win__age">2m</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="4">Ou</span><span class="ui-win__who">Outlook</span><span class="ui-win__sub">Thanks for the invoice, I will pay…</span><span class="ui-win__st" data-st>Held back</span><span class="ui-win__age">6m</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="3">Te</span><span class="ui-win__who">Terminal</span><span class="ui-win__sub">git commit -m "fix hotkey release"</span><span class="ui-win__st is-done" data-st>Typed</span><span class="ui-win__age">11m</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="2">VS</span><span class="ui-win__who">VS Code</span><span class="ui-win__sub">Rename the helper to parse hotkey</span><span class="ui-win__st is-done" data-st>Copied</span><span class="ui-win__age">18m</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="5">No</span><span class="ui-win__who">Notion</span><span class="ui-win__sub">Agenda for Monday: hotkeys, history</span><span class="ui-win__st is-done" data-st>Typed</span><span class="ui-win__age">26m</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="1">Sl</span><span class="ui-win__who">Slack</span><span class="ui-win__sub">Running five minutes late, start…</span><span class="ui-win__st is-done" data-st>Typed</span><span class="ui-win__age">41m</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="3">Ch</span><span class="ui-win__who">Chrome</span><span class="ui-win__sub">Search for Speaches docker image</span><span class="ui-win__st is-done" data-st>Typed</span><span class="ui-win__age">1h</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="4">Ou</span><span class="ui-win__who">Outlook</span><span class="ui-win__sub">Hi Martin, the draft is attached…</span><span class="ui-win__st is-done" data-st>Typed</span><span class="ui-win__age">2h</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="2">VS</span><span class="ui-win__who">VS Code</span><span class="ui-win__sub">Check the DPAPI roundtrip</span><span class="ui-win__st is-done" data-st>Copied</span><span class="ui-win__age">3h</span></li>
+                  <li class="ui-win__row" data-row><span class="ui-avatar" data-tone="5">No</span><span class="ui-win__who">Notion</span><span class="ui-win__sub">Release notes for version 1.9</span><span class="ui-win__st is-done" data-st>Typed</span><span class="ui-win__age">4h</span></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="app__pane app__pane--open" data-ui-loop>
+          <div class="ui ui-panel ui-diff" data-ui="diff-review">
+            <div class="ui-diff__head">
+              <svg class="ui-icon ui-diff__fold" viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 6.25 3.5 3.5 3.5-3.5"/></svg>
+              <span class="ui-diff__tool" aria-hidden="true"><img data-icon="slack" src="assets/icons/slack.svg" alt=""></span>
+              <span class="ui-diff__repo">Slack</span><i class="ui-diff__slash" aria-hidden="true">/</i>
+              <span class="ui-diff__path"><span class="ui-diff__dir">#release / </span><b>Polished</b></span>
+              <span class="ui-spacer"></span>
+              <span class="ui-diff__stat"><b class="is-add"><span class="ui-diff__was">+2</span><span class="ui-diff__now">+3</span></b><b class="is-del"><span class="ui-diff__was">&minus;2</span><span class="ui-diff__now">&minus;3</span></b><span class="ui-diff__bar" aria-hidden="true"><i class="is-add"></i><i class="is-add"></i><i class="is-del"></i><i class="is-del"></i></span></span>
+            </div>
+            <div class="ui-diff__hunk"><span>Raw → Polished</span> <em class="ui-diff__sig">whisper-large-v3-turbo, 2 minutes ago</em></div>
+            <div class="ui-diff__lines">
+              <div class="ui-diff__ln"><i>1</i><i>1</i><span class="ui-diff__code" data-i="0">Hi team, a quick update on the 1.9 release.</span></div>
+              <div class="ui-diff__ln is-del"><i>2</i><i></i><span class="ui-diff__code" data-i="0"><mark class="ui-diff__w">So um the</mark> build is ready and we can ship on <mark class="ui-diff__w">Wednesday, no, Thursday</mark>.</span></div>
+              <div class="ui-diff__ln is-add"><i></i><i>2</i><span class="ui-diff__code" data-i="0"><mark class="ui-diff__w">The</mark> build is ready and we can ship on <mark class="ui-diff__w">Thursday</mark>.</span></div>
+              <div class="ui-diff__ln is-target" data-diff-target><i>3</i><i>3</i><span class="ui-diff__code" data-i="0">I still need <mark class="ui-diff__w">uh</mark> a sign-off on the installer.</span></div>
+              <div class="ui-diff__sug" data-diff-sug><div class="ui-diff__ln is-add"><i></i><i>3</i><span class="ui-diff__code" data-i="0">I still need a sign-off on the installer.</span></div></div>
+              <div class="ui-diff__thread">
+                <div class="ui-diff__by">
+                  <span class="ui-avatar" data-tone="4">P</span>
+                  <span class="ui-diff__name">Polished profile</span>
+                  <span class="ui-diff__time">now</span>
+                  <span class="ui-spacer"></span>
+                  <span class="ui-diff__act" data-diff-act>
+                    <button class="ui-btn ui-btn--sm ui-diff__apply" type="button" tabindex="-1" data-diff-apply><span class="ui-diff__lbl">Use result</span><i class="ui-diff__spin" aria-hidden="true"></i></button>
+                    <span class="ui-chip ui-diff__done"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 8.4 2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Inserted</span>
+                  </span>
+                </div>
+                <div class="ui-diff__msg">Drops the filler word and keeps your final version.</div>
+              </div>
+              <div class="ui-diff__ln"><i>4</i><i>4</i><span class="ui-diff__code" data-i="0">The vocabulary prompt now fits in 224 tokens.</span></div>
+              <div class="ui-diff__ln is-del"><i>5</i><i></i><span class="ui-diff__code" data-i="0"><mark class="ui-diff__w">And like</mark> the history window shows the raw text too.</span></div>
+              <div class="ui-diff__ln is-add"><i></i><i>5</i><span class="ui-diff__code" data-i="0"><mark class="ui-diff__w">The</mark> history window shows the raw text too.</span></div>
+              <div class="ui-diff__ln"><i>6</i><i>6</i><span class="ui-diff__code" data-i="0">Release notes are on the GitHub release page.</span></div>
+              <div class="ui-diff__ln"><i>7</i><i>7</i><span class="ui-diff__code" data-i="0">The zip comes with its SHA-256 file.</span></div>
+              <div class="ui-diff__ln"><i>8</i><i>8</i><span class="ui-diff__code" data-i="0">Please try Toggle mode before Thursday.</span></div>
+              <div class="ui-diff__ln"><i>9</i><i>9</i><span class="ui-diff__code" data-i="0">Press the hotkey once to start and once to stop.</span></div>
+              <div class="ui-diff__ln"><i>10</i><i>10</i><span class="ui-diff__code" data-i="0">Esc cancels, and nothing is sent.</span></div>
+              <div class="ui-diff__ln"><i>11</i><i>11</i><span class="ui-diff__code" data-i="0">Hold Shift at the end to press Enter.</span></div>
+              <div class="ui-diff__ln"><i>12</i><i>12</i><span class="ui-diff__code" data-i="0">Tell me what breaks.</span></div>
+              <div class="ui-diff__ln"><i>13</i><i>13</i><span class="ui-diff__code" data-i="0">Thanks.</span></div>
+              <div class="ui-diff__ln"><i>14</i><i>14</i><span class="ui-diff__code" data-i="0"></span></div>
+              <div class="ui-diff__ln"><i>15</i><i>15</i><span class="ui-diff__code" data-i="0">PS: the tray icon is three bars, bottom right.</span></div>
+              <div class="ui-diff__ln"><i>16</i><i>16</i><span class="ui-diff__code" data-i="0">Right-click it for Settings and History.</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="offline" style="--hm: 2" aria-labelledby="offline-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5 stack-5">
+          <h2 id="offline-h">Offline dictation with a local server</h2>
+          <p class="t-lead">Point Screamer at Speaches on your own machine and the audio never leaves it.</p>
+          <ul class="stack-3">
+            <li>API keys are encrypted with Windows DPAPI.</li>
+            <li>History is off until you turn it on, and never keeps audio.</li>
+          </ul>
+          <a class="link" href="https://github.com/DavidHruby1/screamer/blob/main/docs/LOCAL-STT.md">Read the local setup notes</a>
+        </div>
+        <div class="frame frame--split span-6 start-7" role="img" aria-label="Screamer's speech settings pointed at a local Speaches server on 127.0.0.1, with no API key and a passing connection test">
+          <div class="stage stage--fade-br"><div class="at-corner to-edge" style="--ax:56px;--ay:56px">
+            <div class="ui ui-panel set-win" aria-hidden="true">
+              <div class="set-win__bar"><span class="ui-dots"><i></i><i></i><i></i></span><span>Screamer settings</span></div>
+              <div class="set-win__tabs"><span>General</span><span class="is-on">Speech</span><span>Rewrite</span><span>Audio</span><span>Vocabulary</span><span>Profiles</span></div>
+              <div class="set-win__body">
+                <div class="set-row"><span>Provider</span><span class="set-field set-field--ph">Local (Speaches)</span></div>
+                <div class="set-row"><span>API key</span><span class="set-field set-field--ph">Not needed for a local server</span></div>
+                <div class="set-row"><span>Base URL</span><span class="set-field">http://127.0.0.1:18000/v1</span></div>
+                <div class="set-row"><span>Model</span><span class="set-field">Systran/faster-whisper-tiny.en</span></div>
+                <div class="set-row"><span>Language</span><span class="set-field set-field--ph">English</span></div>
+                <div class="set-row"><span></span><span class="set-test"><span class="ui-btn ui-btn--sm">Test connection</span><span class="set-ok"><svg viewBox="0 0 16 16"><path d="m3.5 8.4 2.8 2.8 6.2-6.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Server lists the model</span></span></div>
+                <div class="set-row"><span>Fallback</span><span class="set-field set-field--ph">Off</span></div>
+              </div>
+            </div>
+          </div></div>
+        </div>
+      </div>
+      <div class="grid off-stats" data-moment="counter-rolls">
+        <div class="span-3"><p class="t-stat">3</p><p class="t-small muted">speech provider presets</p></div>
+        <div class="span-3"><p class="t-stat">7</p><p class="t-small muted">hotkey presets, or your own</p></div>
+        <div class="span-3"><p class="t-stat">100</p><p class="t-small muted">history entries at most</p></div>
+        <div class="span-3"><p class="t-stat">224</p><p class="t-small muted">tokens of vocabulary for Whisper</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="faq" style="--hm: 2" aria-labelledby="faq-h">
+    <div class="wrap">
+      <div class="grid grid--top">
+        <div class="span-5 stack-5">
+          <h2 id="faq-h">Questions</h2>
+          <a class="link" href="https://github.com/DavidHruby1/screamer/issues">Open an issue on GitHub</a>
+          <div class="frame frame--lit pills" role="img" aria-label="Screamer's recording pill: orange with the microphone level while it records, blue while it transcribes and cleans up">
+            <div class="ui pills__col" aria-hidden="true">
+              <div class="pill pill--rec"><span class="pill__dot"></span><span class="pill__wave"><i style="--h:6px"></i><i style="--h:10px"></i><i style="--h:16px"></i><i style="--h:12px"></i><i style="--h:20px"></i><i style="--h:14px"></i><i style="--h:8px"></i><i style="--h:18px"></i><i style="--h:11px"></i><i style="--h:6px"></i><i style="--h:13px"></i><i style="--h:9px"></i></span><span class="pill__txt"><b>Recording</b> Default microphone</span></div>
+              <div class="pill pill--proc"><span class="pill__dot"></span><span class="pill__txt"><b>Processing</b> Transcribe, then clean up</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="faq span-6 start-7">
+          <div class="faq__item"><h3>What is the price?</h3><p>Nothing. Screamer is MIT-licensed. You pay your speech provider, or nothing on a local server.</p></div>
+          <div class="faq__item"><h3>Does history keep my recordings?</h3><p>Never audio. History is opt-in and keeps up to 100 text entries, encrypted with DPAPI.</p></div>
+          <div class="faq__item"><h3>What if I switch windows mid-dictation?</h3><p>The text is held back. Press Ctrl+Alt+Shift+V in the right app, or open History.</p></div>
+          <div class="faq__item"><h3>Is it Windows only?</h3><p>Yes. It relies on Windows keyboard hooks, SendInput and DPAPI.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer closing" id="contact" aria-labelledby="close-h">
+  <div class="wrap">
+    <div class="closing__cta close--word">
+      <div class="section-head--split">
+        <div><h2 id="close-h">Download Screamer for Windows</h2><p class="t-lead">A zip with Screamer.exe and its SHA-256 checksum. Extract it and run.</p></div>
+        <a class="btn btn--primary" href="https://github.com/DavidHruby1/screamer/releases/latest">Download for Windows<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg></a>
+      </div>
+      <p class="close__word" aria-hidden="true">Screamer</p>
+    </div>
+    <div class="closing__links">
+      <div class="grid">
+        <div class="span-4 stack-4">
+          <a class="nav__logo" href="#top"><span class="mark" data-mark="dots" aria-hidden="true"></span>Screamer</a>
+          <p class="footer__lede">Push-to-talk dictation for Windows, open source.</p>
+        </div>
+        <div class="span-2 start-7 footer__col"><h3>Product</h3><ul><li><a href="#features">Features</a></li><li><a href="#history">History</a></li><li><a href="#offline">Offline</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Help</h3><ul><li><a href="#faq">Questions</a></li><li><a href="https://github.com/DavidHruby1/screamer/issues">Open an issue on GitHub</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Code</h3><ul><li><a href="https://github.com/DavidHruby1/screamer">Read the source</a></li><li><a href="https://github.com/DavidHruby1/screamer/blob/main/LICENSE">MIT licence</a></li></ul></div>
+      </div>
+      <div class="footer__legal">
+        <span>&copy; 2026 Screamer</span>
+        <span>Product names and logos are trademarks of their owners</span>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<nav class="actionbar" aria-label="Quick actions">
+  <a class="btn btn--primary" href="https://github.com/DavidHruby1/screamer/releases/latest">Download for Windows</a>
+</nav>
+
+<script type="module" src="assets/system.js"></script>
+<script type="module" src="assets/motion/motion.js"></script>
+<script type="module" src="assets/layout/layout.js"></script>
+<script type="module" src="assets/diagrams/mount.js"></script>
+</body>
+</html>

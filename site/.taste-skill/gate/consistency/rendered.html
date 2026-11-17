@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en" data-type="software" data-radius="soft" data-ground="sand" data-buttons="arrow" data-motion="" class="m-enter mo-js m-enter-done mo-safe" data-mode="light" style="--g-kl: 1.000; --g-k: 1.000; --g-kp: 0.080; --g-kd: 1.000;" data-tone="light" data-moments-ready="1" data-ready="1"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Screamer: push-to-talk dictation for Windows</title>
+<meta name="description" content="Hold a hotkey, speak and let go: Screamer transcribes with Whisper, tidies the text with an LLM if you want, and types it where your cursor was.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Screamer: push-to-talk dictation for Windows">
+<meta property="og:description" content="Hold a hotkey, speak and let go. Screamer types the text into the window you started in.">
+<meta property="og:image" content="share.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#ffffff">
+<!-- <link rel="canonical" href="https://[the project's domain]/"> -->
+<meta name="site-kind" content="software">
+<meta name="page-type" content="software">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..700&amp;family=Geist+Mono:wght@400..500&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/system.css">
+<link rel="stylesheet" href="assets/ui/cards.css">
+<link rel="stylesheet" href="assets/motion/motion.css">
+<link rel="stylesheet" href="assets/backgrounds/backgrounds.css">
+<link rel="stylesheet" href="assets/layout/layout.css">
+<link rel="stylesheet" href="assets/icons/icon.css">
+<style>
+:root {
+  --p-bg: #ffffff; --p-surface: #f4f4f4; --p-ink: #111111; --p-muted: #6b6b6b;
+  --p-accent: #1a4be0; --p-accent-ink: #ffffff; --p-action: #1a4be0; --p-action-ink: #ffffff;
+  --p-inv-bg: #111111; --p-inv-surface: #1e1e1e; --p-inv-ink: #ffffff; --p-inv-muted: #9a9a9a;
+  --p-inv-accent: #ffffff; --p-inv-accent-ink: #111111; --p-inv-action: #ffffff; --p-inv-action-ink: #111111;
+  --font-display: "Geist", system-ui, sans-serif;
+  --font-text: "Geist", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --display-weight: 500;
+  --display-tracking: -0.035em;
+  --display-tracking-xl: -0.045em;
+}
+</style>
+<link rel="stylesheet" href="assets/ui/base.css">
+<link rel="stylesheet" href="assets/ui/window/fragment.css">
+<link rel="stylesheet" href="assets/ui/diff-review/fragment.css">
+<link rel="stylesheet" href="assets/ui/toggles/fragment.css">
+<link rel="stylesheet" href="assets/ui/notify/fragment.css">
+<link rel="stylesheet" href="assets/ui/checklist/fragment.css">
+<link rel="stylesheet" href="assets/diagrams/diagram.css">
+<script>document.documentElement.classList.add('m-enter');setTimeout(()=>document.documentElement.classList.add('m-enter-done'),700)</script>
+<script src="assets/backgrounds/backgrounds.js"></script>
+<script>document.documentElement.classList.add('mo-js');setTimeout(()=>document.documentElement.classList.add('mo-safe'),2500)</script>
+<link rel="modulepreload" href="assets/moments/moments.js">
+<link rel="modulepreload" href="assets/moments/lib.js">
+<link rel="modulepreload" href="assets/moments/counter-rolls/moment.js">
+<style>
+  /* hero: the small dictation card over the settings window (inside the visual) */
+  .hero__art > .ly-piece--note { left: var(--s-6); bottom: var(--s-6); width: 300px; z-index: 2; }
+  .d-card { background: #fff; color: #16181a; border-radius: 12px; padding: 14px 16px; font: 400 14px/1.4 var(--font-text);
+    box-shadow: 0 0 0 1px rgb(0 0 0 / .06), 0 18px 40px -20px rgb(0 0 0 / .45); }
+  .d-card__row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+  .d-card h5 { margin: 0; font: 500 14px/1.3 var(--font-text); }
+  .d-chip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 99px; font-size: 13px; font-weight: 500; background: #e6ecfc; color: #1a3fb8; white-space: nowrap; }
+  .d-note__line { display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 13px; color: #3d4247; border-top: 1px solid rgb(0 0 0 / .06); }
+  .d-note__line:first-of-type { border-top: 0; }
+  .d-note__line i { width: 18px; height: 18px; border-radius: 50%; flex: none; display: grid; place-items: center; font-style: normal; font-size: 12px; font-weight: 500; background: #eef0f2; color: #3d4247; }
+  .d-note__line i.rec { background: #fde9dc; color: #b4480f; }
+  .d-note__line i.rec::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #e8621c; }
+  .d-note__line b { font-weight: 500; color: #16181a; }
+  .hero__art > .frame__fx { position: absolute; inset: 0; z-index: 0; }
+  .hero__art > .ly-piece--main { z-index: 1; }
+  .nowrap { white-space: nowrap; }
+  .hero__proof { font-size: var(--t-small); color: var(--muted); }
+  .ly-piece--main .ui-win__main { padding-right: var(--ly-cut-room); }
+  @media (max-width: 1023px) { .hero__art > .ly-piece--note { left: var(--s-4); bottom: var(--s-4); width: 270px; } }
+
+  /* features: one panel height for the four cards */
+  #features .panel { --p-h: 300px; }
+  @media (max-width: 639px) { #features .panel { --p-h: 164px; } }
+
+  /* history: the app frame (sections-library.md app-frame) */
+  .app.ui { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); margin-top: var(--s-7); background: var(--u-bg); border: 1px solid var(--u-border); border-radius: var(--u-r); box-shadow: var(--u-shadow); }
+  .app > .app__pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+  .app > .app__pane + .app__pane { border-left: 1px solid var(--u-line); }
+  .app > .app__pane > .ui-panel { width: 100%; border: 0; border-radius: 0; box-shadow: none; }
+  .app > .app__pane::after { content: ""; position: absolute; inset: auto 0 0 0; height: 64px; background: linear-gradient(transparent, var(--u-bg)); pointer-events: none; }
+  @media (min-width: 1024px) and (max-width: 1279px) { .app.ui { grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); } }
+  @media (max-width: 1023px) {
+    .app.ui { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    .app > .app__pane--list { max-height: 252px; }
+    .app > .app__pane--list::after { display: none; }
+    .app .ui-win__side { display: none; }
+    .app .ui-win__body { grid-template-columns: minmax(0, 1fr); }
+    .app > .app__pane + .app__pane { border-left: 0; border-top: 1px solid var(--u-line); }
+  }
+  @media (max-width: 639px) {
+    .app.ui { grid-template-rows: minmax(0, 1fr); }
+    .app > .app__pane--list { display: none; }
+    .app > .app__pane + .app__pane { border-top: 0; }
+  }
+
+  /* offline: the speech settings window inside the split frame */
+  #offline .stats { margin-top: var(--s-7); }
+  @media (max-width: 1023px) { #offline .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: var(--s-5); } #offline .stats > div { grid-column: auto; } }
+  #offline .frame--split { background: var(--ground-bg); border-color: transparent; }
+  .set-win { width: 560px; font: 400 13px/1.4 var(--font-text); }
+  .set-win__bar { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--u-line); color: var(--u-muted, #5d6268); }
+  .set-win__tabs { display: flex; gap: 4px; padding: 10px 14px 0; border-bottom: 1px solid var(--u-line); }
+  .set-win__tabs span { padding: 6px 10px 9px; color: #5d6268; }
+  .set-win__tabs span.is-on { color: #16181a; font-weight: 500; box-shadow: inset 0 -2px 0 #16181a; }
+  .set-win__body { display: grid; gap: 14px; padding: 18px 20px 24px; }
+  .set-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 12px; }
+  .set-row > span:first-child { color: #5d6268; }
+  .set-field { display: flex; align-items: center; height: 32px; padding: 0 10px; border: 1px solid rgb(0 0 0 / .12); border-radius: 8px; background: #fff; color: #16181a; font-family: var(--font-mono); font-size: 12.5px; white-space: nowrap; overflow: hidden; }
+  .set-field--ph { color: #80868c; font-family: var(--font-text); font-size: 13px; }
+  .set-test { display: flex; align-items: center; gap: 10px; }
+  .set-test b { font-weight: 500; color: #16181a; }
+  .set-ok { display: inline-flex; align-items: center; gap: 6px; color: #17673f; }
+  .set-ok svg { width: 14px; height: 14px; }
+  @media (max-width: 639px) {
+    .set-win { width: 318px; }
+    .set-win__tabs span:nth-child(n+4) { display: none; }
+    .set-row { grid-template-columns: 56px minmax(0, 1fr); gap: 8px; }
+    .set-row:nth-child(n+6) { display: none; }
+    .set-field { font-size: 11.5px; padding: 0 8px; }
+    .set-win__body { gap: 10px; padding: 14px 14px 20px; }
+  }
+  /* faq: the recording pill as it shows near the bottom of the screen (inside the visual) */
+  .pills { --ratio: 64%; width: 100%; }
+  .pills__col { display: grid; gap: 14px; justify-items: center; }
+  .pill { display: inline-flex; align-items: center; gap: 12px; height: 44px; padding: 0 18px 0 14px; border-radius: 99px; color: #fff; font: 400 14px/1 var(--font-text); box-shadow: 0 14px 30px -16px rgb(0 0 0 / .5); white-space: nowrap; }
+  .pill b { font-weight: 500; margin-right: 6px; }
+  .pill--rec { background: #b84a12; }
+  .pill--proc { background: #1f4fbf; }
+  .pill__dot { width: 9px; height: 9px; border-radius: 50%; background: #fff; flex: none; }
+  .pill__wave { display: inline-flex; align-items: center; gap: 2px; height: 20px; }
+  .pill__wave i { width: 3px; height: var(--h); border-radius: 2px; background: rgb(255 255 255 / .9); }
+  @media (max-width: 639px) { .pills { --ratio: 70%; } .pill { font-size: 13px; padding: 0 14px 0 12px; gap: 8px; } .pill__wave { display: none; } }
+  /* one or two screens at every width: the tablet stacks #offline and #faq, 1024 keeps them on one screen */
+  @media (min-width: 1024px) and (max-width: 1279px) { .pills { --ratio: 44%; } #offline .frame--split { --ratio: 70%; } }
+  @media (min-width: 640px) and (max-width: 1023px) { #offline .frame--split { --ratio: 52%; } .pills { --ratio: 30%; } }
+  @media (max-width: 1279px) { .pill__wave { display: none; } }
+  /* close-word: the name hand-set per breakpoint, never clipped */
+  #contact .close__word { flex: none; font-size: clamp(56px, 12.5vw, 184px); line-height: 1; }
+  @media (max-width: 639px) { #contact .close__word { font-size: clamp(52px, 17vw, 88px); } }
+</style>
+<link rel="stylesheet" href="http://127.0.0.1:5200/assets/moments/counter-rolls/moment.css"></head>
+<body>
+<!-- type: software
+     deal: hero collage, nav nav-centre (nav-cards redealt: no photographs), close close-word, footer footer-columns,
+           rhythm dark-band, buttons arrow, mark dots, ground sand, grounds none
+     effect: grain-gradient in the hero frame; card grounds painterly-landscape (still)
+     moments: counter-rolls in #offline -->
+<header class="nav nav--centre" data-m-nav="1">
+  <div class="wrap nav__bar">
+    <a class="skip-link" href="#top">Skip to content</a>
+    <a class="nav__logo" href="#top"><span class="mark" data-mark="dots" aria-hidden="true"></span>Screamer</a>
+    <nav class="nav__links" aria-label="Main">
+      <div class="nav__item">
+        <a class="nav__link" href="#features">Features <svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></a><button class="nav__expand" type="button" aria-label="Show Features links" aria-expanded="false"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg></button>
+        <div class="nav__menu">
+          <div class="wrap grid">
+            <div class="menu-col span-3">
+              <p class="t-label">Dictation</p>
+              <a href="#features">Replacements<span>Fixes words Whisper mishears</span></a>
+              <a href="#features">Providers<span>OpenAI, Groq or your server</span></a>
+            </div>
+            <div class="menu-col span-3">
+              <p class="t-label">Output</p>
+              <a href="#history">History<span>Raw and cleaned text, side by side</span></a>
+              <a href="#offline">Local setup<span>No audio leaves the PC</span></a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="nav__item"><a class="nav__link" href="#history">History</a></div>
+      <div class="nav__item"><a class="nav__link" href="#offline">Offline</a></div>
+      <div class="nav__item"><a class="nav__link" href="#faq">Questions</a></div>
+    </nav>
+    <div class="nav__actions">
+      <a class="btn btn--primary" href="https://github.com/DavidHruby1/screamer/releases/latest">Download for Windows<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"></path><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"></path></svg></a>
+    </div>
+    <button class="nav__toggle" type="button" aria-expanded="false" aria-label="Menu">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h14M2 13h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path></svg>
+    </button>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero hero--collage is-still is-entered" data-enter="" aria-labelledby="hero-h">
+    <div class="wrap"><div class="hero-text grid hero__grid">
+      <div class="hero__text span-5">
+        <h1 id="hero-h"><span class="nowrap">Push-to-talk</span> dictation for Windows</h1>
+        <p class="hero__lead">Hold Ctrl+Alt+Space, speak and let go. Screamer transcribes with Whisper, tidies the text if you want, and types it into the window you started in.</p>
+        <div class="btn-row">
+          <a class="btn btn--primary" href="https://github.com/DavidHruby1/screamer/releases/latest">Download for Windows<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"></path><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"></path></svg></a>
+          <a class="btn btn--secondary" href="https://github.com/DavidHruby1/screamer">Read the source</a>
+        </div>
+        <p class="hero__proof">Version 1.9.0, free under the MIT licence.</p>
+      </div>
+      <div class="hero__art span-6 start-7" role="img" aria-label="Screamer's profile settings: Slack uses Polished, the terminal Raw; a dictation is recorded, transcribed, cleaned up and typed into Slack" data-ui-pause-room="" style="padding-bottom: calc(44px);">
+        <div class="frame__fx" data-fx="grain-gradient" data-fx-seed="7" data-fx-palette="{&quot;bg&quot;:&quot;#d9ccb7&quot;,&quot;surface&quot;:&quot;#e9e0d2&quot;,&quot;ink&quot;:&quot;#2a2622&quot;,&quot;muted&quot;:&quot;#6f675c&quot;,&quot;accent&quot;:&quot;#a8794a&quot;}" data-fx-params="{&quot;calm&quot;:0.2,&quot;calmX&quot;:0.4,&quot;calmY&quot;:0.4,&quot;tint&quot;:0.6,&quot;contrast&quot;:0.55}" aria-hidden="true" style="isolation: isolate; background-color: rgb(217, 204, 183); padding-bottom: calc(44px);" data-fx-own-bg="1" data-fx-mounted="grain-gradient" data-ui-pause-room=""><canvas class="fx-canvas" aria-hidden="true" style="position: absolute; inset: 0px; width: 100%; height: 100%; display: block; z-index: -1; pointer-events: none; opacity: 1; transition: opacity 0.5s; border-radius: inherit; image-rendering: auto;" width="628" height="716"></canvas><button type="button" class="ui-pause loop-pause ui-pause--below" aria-label="Pause animation" title="Pause animation"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.25" y="3.25" width="2.75" height="9.5" rx="0.9"></rect><rect x="9" y="3.25" width="2.75" height="9.5" rx="0.9"></rect></svg></button></div>
+        <div class="ly-piece ly-piece--main" aria-hidden="true">
+          <div class="ui ui-panel ui-win" data-ui="window" data-ui-still="" data-open="Open" data-work="Working" data-done="Set">
+            <div class="ui-win__bar">
+              <span class="ui-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="ui-win__crumb">Settings <i>/</i> <b>Profiles</b></span>
+              <span class="ui-spacer"></span>
+              <span class="ui-win__search" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"></circle><path d="m10.5 10.5 3 3"></path></svg><span class="ui-win__ph">Choose running app</span></span>
+            </div>
+            <div class="ui-win__body">
+              <nav class="ui-win__side" aria-hidden="true">
+                <span class="ui-win__nav">General</span>
+                <span class="ui-win__nav">Speech</span>
+                <span class="ui-win__nav">Rewrite</span>
+                <span class="ui-win__nav">Audio</span>
+                <span class="ui-win__nav">Vocabulary</span>
+                <span class="ui-win__nav is-on">Profiles<em>6</em></span>
+              </nav>
+              <div class="ui-win__main">
+                <div class="ui-win__cols" aria-hidden="true"><span>App</span><span>Process</span><span>Profile</span><span></span></div>
+                <ul class="ui-win__rows">
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="1">Sl</span><span class="ui-win__who">Slack</span><span class="ui-win__sub">slack.exe</span><span class="ui-win__st" data-st="">Polished</span><span class="ui-win__age ly-cut-hide"></span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="3">Te</span><span class="ui-win__who">Terminal</span><span class="ui-win__sub">WindowsTerminal.exe</span><span class="ui-win__st is-done" data-st="">Raw</span><span class="ui-win__age ly-cut-hide"></span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="4">Ou</span><span class="ui-win__who">Outlook</span><span class="ui-win__sub">outlook.exe</span><span class="ui-win__st" data-st="">Formal</span><span class="ui-win__age ly-cut-hide"></span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="2">VS</span><span class="ui-win__who">VS Code</span><span class="ui-win__sub">Code.exe</span><span class="ui-win__st is-done" data-st="">Clean</span><span class="ui-win__age ly-cut-hide"></span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="5">No</span><span class="ui-win__who">Notion</span><span class="ui-win__sub">Notion.exe</span><span class="ui-win__st" data-st="">Polished</span><span class="ui-win__age ly-cut-hide"></span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="3">Ch</span><span class="ui-win__who">Chrome</span><span class="ui-win__sub">chrome.exe</span><span class="ui-win__st is-done" data-st="">Clean</span><span class="ui-win__age ly-cut-hide"></span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="1">—</span><span class="ui-win__who">Any other app</span><span class="ui-win__sub">When no app matches</span><span class="ui-win__st is-done" data-st="">Clean</span><span class="ui-win__age ly-cut-hide"></span></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="ly-piece ly-piece--note d-card" aria-hidden="true" data-ly-steps="700">
+          <div class="d-card__row"><h5>Dictation</h5><span class="d-chip" data-step="" data-step-at="4">Typed into Slack</span></div>
+          <div class="d-note__line" data-step=""><i class="rec"></i><span><b>Recording</b> from the default microphone</span></div>
+          <div class="d-note__line" data-step=""><i>✓</i><span>Transcribed by <b>whisper-large-v3-turbo</b></span></div>
+          <div class="d-note__line" data-step=""><i>✓</i><span>Cleaned up with <b>Polished</b></span></div>
+        </div>
+      <button type="button" class="ui-pause loop-pause ui-pause--below" aria-label="Pause animation" title="Pause animation"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.25" y="3.25" width="2.75" height="9.5" rx="0.9"></rect><rect x="9" y="3.25" width="2.75" height="9.5" rx="0.9"></rect></svg></button></div>
+    </div></div>
+  </section>
+
+  <section class="section g2" id="features" aria-labelledby="features-h">
+    <div class="wrap">
+      <div class="group">
+        <div class="section-head">
+          <h2 id="features-h">What Screamer does after you let go. <span class="muted">Four steps run before a word is typed.</span></h2>
+        </div>
+        <div class="grid">
+          <article class="card card--row card--open span-6 m-nolift">
+            <h3 class="ui-pause-beside">Fixes words your dictation gets wrong</h3>
+            <p>Replacements run on every result, whole words only, even with the Raw profile.</p>
+            <div class="panel" data-fx="painterly-landscape" data-fx-seed="11" data-fx-palette="{&quot;bg&quot;:&quot;#d9ccb7&quot;,&quot;surface&quot;:&quot;#e9e0d2&quot;,&quot;ink&quot;:&quot;#2a2622&quot;,&quot;muted&quot;:&quot;#6f675c&quot;,&quot;accent&quot;:&quot;#a8794a&quot;}" data-fx-params="{&quot;blur&quot;:1,&quot;brush&quot;:0.35,&quot;slope&quot;:0,&quot;hillY&quot;:0.3,&quot;horizon&quot;:0.62,&quot;calm&quot;:0.2,&quot;calmX&quot;:0.6,&quot;calmY&quot;:0.9,&quot;drift&quot;:0}" style="--calm-k:0%" data-fx-mounted="painterly-landscape"><canvas width="377" height="238" class="fx-canvas is-baked" aria-hidden="true" style="position: absolute; inset: 0px; width: 100%; height: 100%; display: block; z-index: -1; pointer-events: none; border-radius: inherit;"></canvas>
+              <div class="stage stage--fade-b"><div class="at-right" style="--ax:32px;--ay:48px" data-ui-loop="">
+                <div class="ui ui-panel ui-toggles" data-ui="toggles">
+                  <div class="ui-head">
+                    <svg class="ui-icon ui-toggles__ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M3 8h10M3 11.5h6"></path></svg>
+                    <div class="ui-title">Replacements</div>
+                    <span class="ui-spacer"></span>
+                    <div class="ui-meta" data-tg-count="">3 of 4 on</div>
+                  </div>
+                  <ul class="ui-toggles__list">
+                    <li class="ui-tg">
+                      <span class="ui-tg__text"><span class="ui-tg__label">pajsajd → PySide6</span><span class="ui-tg__sub">Whole word, any case</span></span>
+                      <button class="ui-switch is-on" type="button" role="switch" aria-checked="true" aria-label="pajsajd to PySide6" tabindex="-1"><i></i></button>
+                    </li>
+                    <li class="ui-tg">
+                      <span class="ui-tg__text"><span class="ui-tg__label">kubernetis → Kubernetes</span><span class="ui-tg__sub">Whole word, any case</span></span>
+                      <button class="ui-switch is-on" type="button" role="switch" aria-checked="true" aria-label="kubernetis to Kubernetes" tabindex="-1"><i></i></button>
+                    </li>
+                    <li class="ui-tg">
+                      <span class="ui-tg__text"><span class="ui-tg__label">get hub → GitHub</span><span class="ui-tg__sub">Whole word, any case</span></span>
+                      <button class="ui-switch" type="button" role="switch" aria-checked="false" aria-label="get hub to GitHub" tabindex="-1"><i></i></button>
+                    </li>
+                    <li class="ui-tg">
+                      <span class="ui-tg__text"><span class="ui-tg__label">dee pee api → DPAPI</span><span class="ui-tg__sub">Whole word, any case</span></span>
+                      <button class="ui-switch is-on" type="button" role="switch" aria-checked="true" aria-label="dee pee api to DPAPI" tabindex="-1"><i></i></button>
+                    </li>
+                  </ul>
+                </div>
+              </div></div>
+            </div>
+          <button type="button" class="ui-pause loop-pause ui-pause--title" aria-label="Pause animation" title="Pause animation" style="top: -3px; right: 8px;"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.25" y="3.25" width="2.75" height="9.5" rx="0.9"></rect><rect x="9" y="3.25" width="2.75" height="9.5" rx="0.9"></rect></svg></button></article>
+          <article class="card card--row card--open span-6 m-nolift">
+            <h3>Works with OpenAI, Groq or your own server</h3>
+            <p>Any server with an OpenAI-compatible transcription endpoint, and Ollama or LM Studio for cleanup.</p>
+            <div class="panel" data-fx="painterly-landscape" data-fx-seed="23" data-fx-palette="{&quot;bg&quot;:&quot;#c6d3df&quot;,&quot;surface&quot;:&quot;#d6e0e9&quot;,&quot;ink&quot;:&quot;#25303a&quot;,&quot;muted&quot;:&quot;#5d6873&quot;,&quot;accent&quot;:&quot;#3f6a92&quot;}" data-fx-params="{&quot;blur&quot;:1,&quot;brush&quot;:0.35,&quot;slope&quot;:0,&quot;hillY&quot;:0.3,&quot;horizon&quot;:0.62,&quot;calm&quot;:0.3,&quot;calmX&quot;:0.5,&quot;calmY&quot;:0.5,&quot;drift&quot;:0}" style="--calm-k:0%" data-fx-mounted="painterly-landscape"><canvas width="377" height="238" class="fx-canvas is-baked" aria-hidden="true" style="position: absolute; inset: 0px; width: 100%; height: 100%; display: block; z-index: -1; pointer-events: none; border-radius: inherit;"></canvas>
+              <div class="dg is-still" data-dg-still="" data-diagram="{&quot;layout&quot;:&quot;hub&quot;,&quot;alt&quot;:&quot;Screamer sends audio to OpenAI, Groq or a local server, and cleanup to Ollama or LM Studio.&quot;,&quot;center&quot;:{&quot;label&quot;:&quot;Screamer&quot;,&quot;icon&quot;:&quot;ui:mic&quot;},&quot;spokes&quot;:[{&quot;label&quot;:&quot;OpenAI&quot;,&quot;icon&quot;:&quot;openai&quot;},{&quot;label&quot;:&quot;Groq&quot;,&quot;icon&quot;:&quot;groq&quot;},{&quot;label&quot;:&quot;Ollama&quot;,&quot;icon&quot;:&quot;ollama&quot;},{&quot;label&quot;:&quot;LM Studio&quot;,&quot;icon&quot;:&quot;si:lmstudio&quot;},{&quot;label&quot;:&quot;Local server&quot;,&quot;icon&quot;:&quot;ui:server&quot;},{&quot;label&quot;:&quot;Windows&quot;,&quot;icon&quot;:&quot;windows&quot;}]}" data-layout="hub" role="img" aria-label="Screamer sends audio to OpenAI, Groq or a local server, and cleanup to Ollama or LM Studio." data-tier="n" data-orient="h" data-ground="light" data-dg-ground="none" style="--dg-cx: 314px; --dg-cy: 198px;"><svg class="dg-svg" width="628" height="396" viewBox="0 0 628 396" aria-hidden="true" focusable="false"><defs><radialGradient id="dgh29"><stop offset="0" class="dg-halo__in"></stop><stop offset="1" class="dg-halo__out"></stop></radialGradient><linearGradient id="dgc30" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1" y2="0"><stop offset="0" class="dg-c0"></stop><stop offset="0.55" class="dg-c1"></stop><stop offset="1" class="dg-c2"></stop></linearGradient><linearGradient id="dgc31" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1" y2="0"><stop offset="0" class="dg-c0"></stop><stop offset="0.55" class="dg-c1"></stop><stop offset="1" class="dg-c2"></stop></linearGradient><linearGradient id="dgc32" gradientUnits="userSpaceOnUse" x1="410.6" y1="313.4" x2="377.8" y2="274.3"><stop offset="0" class="dg-c0"></stop><stop offset="0.55" class="dg-c1"></stop><stop offset="1" class="dg-c2"></stop></linearGradient><linearGradient id="dgc33" gradientUnits="userSpaceOnUse" x1="229" y1="299.5" x2="212.9" y2="318.8"><stop offset="0" class="dg-c0"></stop><stop offset="0.55" class="dg-c1"></stop><stop offset="1" class="dg-c2"></stop></linearGradient><linearGradient id="dgc34" gradientUnits="userSpaceOnUse" x1="250.5" y1="198" x2="224" y2="198"><stop offset="0" class="dg-c0"></stop><stop offset="0.55" class="dg-c1"></stop><stop offset="1" class="dg-c2"></stop></linearGradient><linearGradient id="dgc35" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1" y2="0"><stop offset="0" class="dg-c0"></stop><stop offset="0.55" class="dg-c1"></stop><stop offset="1" class="dg-c2"></stop></linearGradient></defs><circle class="dg-halo" cx="314" cy="198" r="118.8" fill="url(#dgh29)"></circle><g class="dg-edges"><g class="dg-e"><path class="dg-line" d="M333.2 175L415.1 77.2"></path><path class="dg-lit" d="M333.2 175L415.1 77.2" stroke-dasharray="none" style="opacity: 0.313;"></path><path class="dg-glow" d="M333.2 175L415.1 77.2" stroke="url(#dgc30)" stroke-dasharray="28.1 269.6" stroke-dashoffset="269.6"></path><path class="dg-comet" d="M333.2 175L415.1 77.2" stroke="url(#dgc30)" stroke-dasharray="51 269.6" stroke-dashoffset="269.6"></path><circle class="dg-spark-halo" r="6" cx="-50" cy="-50"></circle><circle class="dg-spark" r="2.1" cx="-50" cy="-50"></circle></g><g class="dg-e"><path class="dg-line" d="M377.5 198L495.5 198"></path><path class="dg-lit" d="M377.5 198L495.5 198" stroke-dasharray="none" style="opacity: 0.718;"></path><path class="dg-glow" d="M377.5 198L495.5 198" stroke="url(#dgc31)" stroke-dasharray="26 252.4" stroke-dashoffset="252.4"></path><path class="dg-comet" d="M377.5 198L495.5 198" stroke="url(#dgc31)" stroke-dasharray="47.2 252.4" stroke-dashoffset="252.4"></path><circle class="dg-spark-halo" r="6" cx="-50" cy="-50"></circle><circle class="dg-spark" r="2.1" cx="-50" cy="-50"></circle></g><g class="dg-e is-run"><path class="dg-line" d="M333.2 221L415.1 318.8"></path><path class="dg-lit" d="M333.2 221L415.1 318.8" stroke-dasharray="0 69.5 58 129.6" style="opacity: 1;"></path><path class="dg-glow" d="M333.2 221L415.1 318.8" stroke="url(#dgc32)" stroke-dasharray="28.1 269.6" stroke-dashoffset="-69.5"></path><path class="dg-comet" d="M333.2 221L415.1 318.8" stroke="url(#dgc32)" stroke-dasharray="51 269.6" stroke-dashoffset="-69.5"></path><circle class="dg-spark-halo" r="6" cx="377.8" cy="274.3" style="opacity: 1;"></circle><circle class="dg-spark" r="2.1" cx="377.8" cy="274.3" style="opacity: 1;"></circle></g><g class="dg-e is-run"><path class="dg-line" d="M294.8 221L212.9 318.8"></path><path class="dg-lit" d="M294.8 221L212.9 318.8" stroke-dasharray="127.6 129.6" style="opacity: 1;"></path><path class="dg-glow" d="M294.8 221L212.9 318.8" stroke="url(#dgc33)" stroke-dasharray="28.1 269.6" stroke-dashoffset="-125.4"></path><path class="dg-comet" d="M294.8 221L212.9 318.8" stroke="url(#dgc33)" stroke-dasharray="51 269.6" stroke-dashoffset="-102.4"></path><circle class="dg-spark-halo" r="6" cx="212.9" cy="318.8" style="opacity: 0;"></circle><circle class="dg-spark" r="2.1" cx="212.9" cy="318.8" style="opacity: 0;"></circle></g><g class="dg-e is-run"><path class="dg-line" d="M250.5 198L146 198"></path><path class="dg-lit" d="M250.5 198L146 198" stroke-dasharray="26.5 106.5" style="opacity: 1;"></path><path class="dg-glow" d="M250.5 198L146 198" stroke="url(#dgc34)" stroke-dasharray="23 228.1" stroke-dashoffset="-3.5"></path><path class="dg-comet" d="M250.5 198L146 198" stroke="url(#dgc34)" stroke-dasharray="41.8 228.1" stroke-dashoffset="15.3"></path><circle class="dg-spark-halo" r="6" cx="224" cy="198" style="opacity: 1;"></circle><circle class="dg-spark" r="2.1" cx="224" cy="198" style="opacity: 1;"></circle></g><g class="dg-e"><path class="dg-line" d="M294.8 175L212.9 77.2"></path><path class="dg-lit" d="M294.8 175L212.9 77.2" style="opacity: 0;"></path><path class="dg-glow" d="M294.8 175L212.9 77.2" stroke="url(#dgc35)" stroke-dasharray="28.1 269.6" stroke-dashoffset="269.6"></path><path class="dg-comet" d="M294.8 175L212.9 77.2" stroke="url(#dgc35)" stroke-dasharray="51 269.6" stroke-dashoffset="269.6"></path><circle class="dg-spark-halo" r="6" cx="-50" cy="-50"></circle><circle class="dg-spark" r="2.1" cx="-50" cy="-50"></circle></g></g><g class="dg-ports"><circle class="dg-port" cx="333.2" cy="175" r="2"></circle><circle class="dg-port" cx="415.1" cy="77.2" r="2"></circle><circle class="dg-port" cx="377.5" cy="198" r="2"></circle><circle class="dg-port" cx="495.5" cy="198" r="2"></circle><circle class="dg-port" cx="333.2" cy="221" r="2"></circle><circle class="dg-port" cx="415.1" cy="318.8" r="2"></circle><circle class="dg-port" cx="294.8" cy="221" r="2"></circle><circle class="dg-port" cx="212.9" cy="318.8" r="2"></circle><circle class="dg-port" cx="250.5" cy="198" r="2"></circle><circle class="dg-port" cx="146" cy="198" r="2"></circle><circle class="dg-port" cx="294.8" cy="175" r="2"></circle><circle class="dg-port" cx="212.9" cy="77.2" r="2"></circle></g></svg><div class="dg-nodes" aria-hidden="true"><div class="dg-node dg-node--core-pill is-ink is-hit" data-id="screamer" style="left: 253px; top: 177px;"><span class="dg-ic" data-icon="ui:mic"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"><path d="M12 19v3m7-12v2a7 7 0 0 1-14 0v-2"></path><rect width="6" height="13" x="9" y="2" rx="3"></rect></g></svg></span><span class="dg-label">Screamer</span></div><div class="dg-node dg-node--pill" data-id="openai" style="left: 382px; top: 45px;"><span class="dg-ic" data-icon="openai"><svg data-ic="ink" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 260" aria-hidden="true" focusable="false"><g>
+        <path d="M239.183914,106.202783 C245.054304,88.5242096 243.02228,69.1733805 233.607599,53.0998864 C219.451678,28.4588021 190.999703,15.7836129 163.213007,21.739505 C147.554077,4.32145883 123.794909,-3.42398554 100.87901,1.41873898 C77.9631105,6.26146349 59.3690093,22.9572536 52.0959621,45.2214219 C33.8436494,48.9644867 18.0901721,60.392749 8.86672513,76.5818033 C-5.443491,101.182962 -2.19544431,132.215255 16.8986662,153.320094 C11.0060865,170.990656 13.0197283,190.343991 22.4238231,206.422991 C36.5975553,231.072344 65.0680342,243.746566 92.8695738,237.783372 C105.235639,251.708249 123.001113,259.630942 141.623968,259.52692 C170.105359,259.552169 195.337611,241.165718 204.037777,214.045661 C222.28734,210.296356 238.038489,198.869783 247.267014,182.68528 C261.404453,158.127515 258.142494,127.262775 239.183914,106.202783 L239.183914,106.202783 Z M141.623968,242.541207 C130.255682,242.559177 119.243876,238.574642 110.519381,231.286197 L112.054146,230.416496 L163.724595,200.590881 C166.340648,199.056444 167.954321,196.256818 167.970781,193.224005 L167.970781,120.373788 L189.815614,133.010026 C190.034132,133.121423 190.186235,133.330564 190.224885,133.572774 L190.224885,193.940229 C190.168603,220.758427 168.442166,242.484864 141.623968,242.541207 Z M37.1575749,197.93062 C31.456498,188.086359 29.4094818,176.546984 31.3766237,165.342426 L32.9113895,166.263285 L84.6329973,196.088901 C87.2389349,197.618207 90.4682717,197.618207 93.0742093,196.088901 L156.255402,159.663793 L156.255402,184.885111 C156.243557,185.149771 156.111725,185.394602 155.89729,185.550176 L103.561776,215.733903 C80.3054953,229.131632 50.5924954,221.165435 37.1575749,197.93062 Z M23.5493181,85.3811273 C29.2899861,75.4733097 38.3511911,67.9162648 49.1287482,64.0478825 L49.1287482,125.438515 C49.0891492,128.459425 50.6965386,131.262556 53.3237748,132.754232 L116.198014,169.025864 L94.3531808,181.662102 C94.1132325,181.789434 93.8257461,181.789434 93.5857979,181.662102 L41.3526015,151.529534 C18.1419426,138.076098 10.1817681,108.385562 23.5493181,85.125333 L23.5493181,85.3811273 Z M203.0146,127.075598 L139.935725,90.4458545 L161.7294,77.8607748 C161.969348,77.7334434 162.256834,77.7334434 162.496783,77.8607748 L214.729979,108.044502 C231.032329,117.451747 240.437294,135.426109 238.871504,154.182739 C237.305714,172.939368 225.050719,189.105572 207.414262,195.67963 L207.414262,134.288998 C207.322521,131.276867 205.650697,128.535853 203.0146,127.075598 Z M224.757116,94.3850867 L223.22235,93.4642272 L171.60306,63.3828173 C168.981293,61.8443751 165.732456,61.8443751 163.110689,63.3828173 L99.9806554,99.8079259 L99.9806554,74.5866077 C99.9533004,74.3254088 100.071095,74.0701869 100.287609,73.9215426 L152.520805,43.7889738 C168.863098,34.3743518 189.174256,35.2529043 204.642579,46.0434841 C220.110903,56.8340638 227.949269,75.5923959 224.757116,94.1804513 L224.757116,94.3850867 Z M88.0606409,139.097931 L66.2158076,126.512851 C65.9950399,126.379091 65.8450965,126.154176 65.8065367,125.898945 L65.8065367,65.684966 C65.8314495,46.8285367 76.7500605,29.6846032 93.8270852,21.6883055 C110.90411,13.6920079 131.063833,16.2835462 145.5632,28.338998 L144.028434,29.2086986 L92.3579852,59.0343142 C89.7419327,60.5687513 88.1282597,63.3683767 88.1117998,66.4011901 L88.0606409,139.097931 Z M99.9294965,113.5185 L128.06687,97.3011417 L156.255402,113.5185 L156.255402,145.953218 L128.169187,162.170577 L99.9806554,145.953218 L99.9294965,113.5185 Z" fill="currentColor"></path>
+    </g></svg></span><span class="dg-label">OpenAI</span></div><div class="dg-node dg-node--pill" data-id="groq" style="left: 496px; top: 182px;"><span class="dg-ic dg-ic--wide" data-icon="groq"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 146" aria-hidden="true" focusable="false"><g>
+        <path d="M356.049778,0.0800976998 L356.039443,0.0800976998 C327.721031,0.0800976998 304.678731,23.1223973 304.678731,51.4408099 C304.678731,79.7592224 327.721031,102.801522 356.039443,102.801522 C384.357856,102.801522 407.400155,79.7592224 407.400155,51.4330585 C407.351063,23.1663218 384.313931,0.129189838 356.049778,0.0800976998 M380.164354,51.4408099 C380.164354,64.7447794 369.343413,75.5631365 356.042027,75.5631365 C342.740641,75.5631365 331.9197,64.7421956 331.9197,51.4408099 C331.9197,38.1394241 342.740641,27.3184832 356.042027,27.3184832 C369.343413,27.3184832 380.164354,38.1368403 380.164354,51.4408099 M234.830953,46.7021266 C234.942056,43.6687492 235.200436,40.7258047 235.779206,37.7415194 L235.792125,37.6820921 C236.52334,34.1629609 237.63954,30.7756033 239.101969,27.6078685 C242.150849,21.1225386 246.649239,15.4097639 252.126889,11.0638178 C257.496018,6.82897486 263.782396,3.674159 270.31165,1.93526378 C273.515558,1.04385389 276.83057,0.470251012 280.176586,0.229957912 C287.573997,-0.299720425 294.888725,0.527094541 301.854641,3.13414548 C304.43327,4.10048547 307.009316,5.32262134 309.414831,6.7178716 L313.492062,9.08721323 L300.415466,31.83496 L296.333068,29.5612188 C293.50381,27.9851028 290.447179,27.0187628 287.248438,26.6906206 C283.897254,26.3883164 280.43755,26.6906206 277.189717,27.5768629 C274.114999,28.3985103 271.184974,29.8867772 268.699361,31.8763007 C266.373944,33.7495534 264.498108,36.1421492 263.283723,38.7776219 C261.971154,41.6223821 261.480233,44.7539438 261.480233,47.8648351 L261.480233,99.3263154 L234.828369,99.3263154 L234.828369,46.7021266 L234.830953,46.7021266 Z M225.573209,48.4306866 C225.250235,35.4161023 219.948284,23.2360843 210.641448,14.1385359 C201.342363,5.04873889 189.066745,0.0258379677 176.077998,0 L175.656839,0 C148.529557,0 126.339911,22.0010295 126.102201,49.2445826 C125.98593,62.512379 131.029502,75.0360419 140.300165,84.5108247 C149.575995,93.9881912 161.967884,99.2694718 175.233097,99.3857427 L190.350892,99.3857427 L190.350892,73.064605 L175.997901,73.064605 C169.773534,73.1498703 163.895397,70.7727773 159.446099,66.4164959 C154.991633,62.0576308 152.500853,56.2156663 152.433674,49.9628781 C152.291565,37.0774836 162.608666,26.4761655 175.439801,26.3211377 L176.057328,26.3211377 C188.867792,26.3211377 199.347672,36.806185 199.420018,49.6709091 L199.420018,95.618567 C199.420018,108.336015 189.069329,118.805559 176.344129,118.968338 C170.248953,118.92183 164.520675,116.500812 160.213486,112.139364 L156.872637,108.762341 L156.859718,108.77526 L143.429142,132.494514 C152.392333,140.674815 163.872142,145.199043 176.057328,145.289476 L176.726531,145.289476 C189.787624,145.103443 202.039988,139.879006 211.230553,130.569586 C220.413367,121.26275 225.511198,108.922537 225.578377,95.7916814 L225.578377,48.4358542 L225.565458,48.4358542 L225.565458,48.4306866 L225.573209,48.4306866 Z M462.553881,0.0749301063 C449.288669,0.0749301063 436.824433,5.24510744 427.453002,14.6423763 C418.097074,24.0215586 412.955318,36.4832104 412.98106,49.7200012 C412.98106,77.0720738 435.219895,99.3211478 462.556465,99.3211478 L476.614903,99.3211478 L476.614903,73.0361832 L462.556465,73.0361832 C449.70466,73.0361832 439.253202,62.5769739 439.253202,49.7200012 C439.253202,36.8630285 449.70466,26.4038192 462.556465,26.4038192 C468.395846,26.4038192 473.984598,28.5845436 478.296955,32.5429203 C482.459452,36.3669395 485.730538,41.4880247 485.730538,47.1310368 L485.730538,142.126909 L512,142.126909 L512,49.7200012 C512,22.3472582 489.818105,0.0749301063 462.553881,0.0749301063 M42.8858588,88.4201092 L0,88.4201092 L70.382624,0.387569515 L52.6190212,57.2595202 L95.4971286,57.2595202 L25.122256,145.29206 L42.8858588,88.4201092 Z" fill="#F43E01" fill-rule="nonzero"></path>
+    </g></svg></span><span class="dg-label">Groq</span></div><div class="dg-node dg-node--pill" data-id="ollama" style="left: 383px; top: 319px;"><span class="dg-ic" data-icon="ollama"><svg data-ic="ink" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 339" aria-hidden="true" focusable="false"><g>
+        <path d="M189.485253,144.651167 C186.040033,145.640751 183.179141,148.050463 181.618403,151.277367 L180.603325,153.363915 L180.617423,156.282263 C180.617423,159.003235 180.673817,159.341594 181.449223,161.258963 C182.520694,163.979934 183.592164,165.657632 185.551828,167.575 C188.93542,170.930395 192.74196,171.80449 197.845544,170.465151 C201.012651,169.497587 203.646166,167.276673 205.134365,164.318293 C206.307366,162.177602 206.705742,159.697713 206.262228,157.297341 C205.359937,150.910811 201.60979,146.272471 196.05506,144.651167 C193.892236,144.163835 191.648077,144.163835 189.485253,144.651167 L189.485253,144.651167 Z M59.7386121,144.721658 C55.4386311,146.075095 52.224219,149.233114 50.5747181,153.730471 C49.7507324,156.080784 49.4617404,158.585381 49.7288202,161.061586 C50.5324232,165.417961 54.0992927,169.379582 58.1596027,170.465151 C63.2631867,171.80449 67.0697273,170.930395 70.453319,167.575 C72.4270808,165.657632 73.4844531,163.979934 74.5559238,161.258963 C75.3313302,159.341594 75.3877234,159.003235 75.3877234,156.282263 L75.4018217,153.363915 L74.3867442,151.277367 C72.8105008,148.018164 69.9088652,145.594143 66.4212056,144.62297 C64.2168359,144.130597 61.927481,144.164406 59.7386121,144.721658 L59.7386121,144.721658 Z M118.725893,172.918255 C116.879016,173.919235 115.581972,176.44283 115.976725,178.317904 C116.413772,180.33396 118.190158,182.378214 120.953424,184.055911 C122.433746,184.944104 122.532434,185.070989 122.602925,185.97328 C122.659318,186.509015 122.461942,188.031631 122.194074,189.399166 C121.912108,190.724406 121.686536,192.134236 121.686536,192.528989 C121.714732,193.572263 122.673417,195.278157 123.702592,196.095858 C124.604884,196.82897 124.774063,196.857166 127.297659,196.927658 C129.609779,196.998149 130.089122,196.941756 131.019609,196.504709 C133.402222,195.348648 134.008449,193.205707 133.134354,189.103102 C132.401243,185.677216 132.542226,185.155578 134.360906,184.098206 C136.292373,182.970342 138.322528,181.010679 138.928755,179.67134 C140.085287,177.120083 138.988734,174.112394 136.461553,172.904157 C135.659591,172.549867 134.785154,172.390439 133.909761,172.438913 C132.133375,172.438913 130.991413,172.861862 128.904865,174.187102 L127.706509,174.934312 L126.959299,174.483167 C123.871772,172.650388 123.30784,172.438913 121.446865,172.46711 C120.516417,172.38756 119.580879,172.542675 118.725893,172.918255 L118.725893,172.918255 Z M124.224229,141.97249 C118.965564,142.480029 117.527538,142.677405 115.003942,143.184944 C110.901337,144.030842 105.417099,145.934112 101.59646,147.809186 C88.3440598,154.294403 79.194264,165.0937 76.4028009,177.612989 C75.838869,180.094289 75.7683775,180.911991 75.7683775,185.085087 C75.7683775,189.229987 75.838869,190.11818 76.3746043,192.472595 C80.0965551,208.826622 95.1535379,220.908863 114.637386,223.108198 C118.866876,223.573442 137.138271,223.573442 141.36776,223.108198 C157.016872,221.345911 170.466649,212.858735 176.514819,200.959771 C178.122025,197.773556 178.897431,195.715204 179.616444,192.472595 C180.166278,190.11818 180.236769,189.229987 180.236769,185.099185 C180.236769,180.911991 180.166278,180.094289 179.602346,177.612989 C175.542036,159.426184 157.905065,145.130509 136.292373,142.409537 C132.287333,142.013669 128.26152,141.867704 124.238328,141.97249 L124.224229,141.97249 Z M133.317632,155.182596 C140.560826,155.966644 147.516637,158.449482 153.619182,162.429121 C156.763102,164.515669 161.189968,168.886142 163.07914,171.762195 C165.419458,175.300868 166.744698,178.924131 167.350925,183.3228 C167.632891,185.338856 167.491908,186.861473 166.744698,190.11818 C165.616834,194.982093 162.064063,200.05748 157.270641,203.610251 C154.248665,205.642057 150.98571,207.29011 147.556913,208.516459 C142.171363,210.236452 138.646789,210.546614 126.057008,210.462024 C117.851799,210.377435 116.385575,210.321041 114.03116,209.869896 C105.995129,208.361378 99.6226986,205.161064 94.9984567,200.283053 C91.2765059,196.335529 89.5706117,192.740463 88.6542223,186.946062 C88.2312734,184.239189 89.0066798,179.770028 90.5856892,176.005783 C92.5030578,171.409737 97.4656589,165.714025 102.371867,162.429121 C108.053481,158.636679 115.539678,155.943904 122.419647,155.210792 C125.056029,154.928827 130.68125,154.928827 133.317632,155.182596 L133.317632,155.182596 Z M55.7346953,0.101312352 C52.2470459,0.750582118 48.9536572,2.18752185 46.1055574,4.30260531 C38.0131341,10.4353652 31.7534896,23.4903896 29.1030095,39.7457277 C28.1161286,45.8925859 27.4253119,54.4079582 27.4253119,60.9354704 C27.4253119,68.6049448 28.327603,78.4173605 29.6105482,85.1986421 C29.8925142,86.70716 30.0475955,88.0464984 29.9348091,88.1310882 C29.0666637,88.8584037 28.187773,89.5727961 27.2984272,90.2740296 C22.2280329,94.4607184 17.7297665,99.2955252 13.919142,104.654294 C7.00374491,114.469576 2.46668664,125.759129 0.666741378,137.630214 C-0.0959911738,143.979429 -0.20464814,150.39019 0.342480512,156.761605 C1.62542568,167.758278 4.92442753,177.034959 10.5919435,185.522134 L12.4247223,188.271302 L11.9030853,189.173594 C8.11064299,195.546024 4.88213263,204.752213 3.37361469,213.591847 C2.18935762,220.584603 2.03427633,222.459676 2.03427633,231.835045 C2.03427633,241.280905 2.16116102,243.155979 3.2749266,249.683491 C4.61426496,257.508046 7.33523657,265.797846 10.3663707,271.310281 C11.3673499,273.114863 13.7922573,276.850912 14.0883216,277.048288 C14.1870096,277.090583 13.8909454,277.992874 13.4397998,279.036148 C9.71086013,287.458809 7.11301674,296.337934 5.71393224,305.442261 C4.83983773,311.321252 4.71295305,313.224522 4.71295305,319.413675 C4.71295305,327.308722 5.1500003,331.143459 6.79950123,337.445399 L7.0391723,338.361788 L27.8764575,338.361788 L27.1715426,337.078843 C22.9843479,329.296582 22.5895955,314.874023 26.2128583,300.465562 C27.8623592,293.811165 29.7374329,288.919055 33.2338109,282.194167 L35.3203591,278.105661 L35.3203591,275.610262 C35.3203591,273.284042 35.2780642,273.016175 34.5167561,271.47946 C33.8166828,270.154673 32.8911549,268.961982 31.7816862,267.954886 C29.4966203,265.776166 27.6536216,263.17682 26.3538412,260.29951 C20.3761627,247.329075 19.2201022,228.070799 23.4213952,211.646281 C25.1695842,204.794508 28.0597354,198.704043 31.0908695,195.376845 C33.0470618,193.368302 34.1703179,190.693643 34.2347901,187.890648 C34.2347901,185.14148 33.2479092,182.885752 31.0767712,180.531337 C24.7931717,173.803356 20.766464,165.281718 19.5584614,156.155378 C17.5846996,142.621012 21.1656674,127.88829 29.2862873,116.200801 C37.2236294,104.724786 48.3612852,97.3654737 60.8241811,95.4058102 C63.6297425,94.9405664 68.8602112,95.0110579 71.7644607,95.5467932 C74.9506762,96.1107252 76.9385363,95.9415456 78.9827896,94.968763 C81.506385,93.7704076 82.7611336,92.2900863 84.2555532,88.8923963 C85.566695,85.8612621 86.5817724,84.1976629 89.3309407,80.7717764 C92.6299425,76.6832698 95.816158,73.8777084 100.919742,70.4941168 C106.742339,66.6875762 113.382638,63.9102114 119.980642,62.5849713 C122.377352,62.0915309 123.505216,62.0210394 128.002573,62.0210394 C132.499931,62.0210394 133.613696,62.0915309 136.024505,62.5849713 C146.120169,64.7567922 155.442628,69.6128481 163.008649,76.6409749 C164.65815,78.1776895 168.619771,83.0838973 169.888618,85.1281506 C170.36796,85.9317536 171.227957,87.6235495 171.749594,88.8923963 C173.229915,92.2900863 174.498762,93.7704076 177.022357,94.9546647 C178.996119,95.913349 181.054471,96.1107252 184.113801,95.5890881 C188.949518,94.7713868 192.671469,94.8418783 197.408497,95.8146609 C213.53695,99.0572695 227.578856,112.351965 233.796205,130.172214 C239.22405,145.793129 237.687336,162.133057 229.623109,174.62415 C228.255574,176.738894 226.902137,178.43069 224.928376,180.531337 C220.684788,185.070989 220.684788,190.710308 224.914277,195.376845 C231.864739,202.975828 236.207014,221.68427 234.895873,238.179279 C234.021778,249.063166 231.230315,258.80509 227.38148,264.317525 C226.429547,265.6139 225.373366,266.830394 224.223461,267.954886 C223.114204,268.962178 222.188706,270.154829 221.488391,271.47946 C220.727083,273.016175 220.684788,273.284042 220.684788,275.610262 L220.684788,278.119759 L222.771336,282.208265 C226.267714,288.919055 228.128689,293.811165 229.792289,300.465562 C233.359158,314.676647 233.048996,328.803142 228.960489,336.85327 C228.724619,337.300192 228.517426,337.761668 228.340164,338.234904 C228.340164,338.319493 232.978504,338.361788 238.660118,338.361788 L248.951876,338.361788 L249.233842,337.318514 L249.741381,335.429342 C250.009249,334.357872 250.544984,331.199853 250.982031,328.15462 C251.390882,325.095289 251.390882,313.830749 250.982031,310.418961 C249.431218,298.082949 246.823033,288.284632 242.565347,279.036148 C242.114202,277.992874 241.818137,277.090583 241.916825,277.048288 C242.029612,276.977797 242.720428,276.005014 243.439442,274.905347 C248.740402,266.883415 251.997109,256.803131 253.64661,243.494338 C254.083657,239.82878 254.083657,224.066882 253.64661,220.542308 C252.476451,211.448905 251.080719,205.287949 248.740402,199.042403 C247.405204,195.657736 245.85596,192.361471 244.102062,189.173594 L243.566326,188.271302 L245.413203,185.536233 C251.080719,177.02086 254.379721,167.74418 255.662666,156.775704 C256.206085,150.399135 256.092703,143.983599 255.324307,137.630214 C253.517617,125.763325 248.986399,114.476297 242.086005,104.654294 C238.270904,99.2947421 233.767875,94.45991 228.692621,90.2740296 C227.807979,89.5727214 226.933788,88.858329 226.070338,88.1310882 C226.029145,87.1428202 226.138482,86.1540345 226.394599,85.1986421 C229.327045,69.8737916 229.228357,50.7564989 226.154928,35.8123025 C223.476251,22.7854746 218.612338,12.4373235 212.338595,6.45964498 C207.347797,1.69442008 202.244213,-0.335734902 196.125552,0.0449191578 C182.083647,0.876718769 170.748615,17.0333689 166.293552,42.4807976 C165.654292,45.8655619 165.197786,49.282298 164.926017,52.7161624 C164.926017,53.2237011 164.827329,53.6466501 164.714543,53.6466501 C163.983505,53.3422533 163.280593,52.9742858 162.613896,52.5469828 C152.158955,46.244864 140.20934,42.8522442 128.002573,42.7204687 C116.272789,42.7204687 104.218744,46.1463553 93.3771523,52.5610811 C92.7150342,52.9877809 92.0168567,53.3557393 91.2906041,53.6607484 C91.1778178,53.6607484 91.0791297,53.2377994 91.0791297,52.7302607 C90.809466,49.3008417 90.3529429,45.8886844 89.7115947,42.5089942 C85.665383,19.6274558 76.360506,4.49998148 63.9962982,0.67934259 C61.2878013,0.101125878 58.5114656,-0.0934549157 55.7487936,0.101312352 L55.7346953,0.101312352 Z M59.8654968,19.8671269 C63.3618748,22.6444917 67.2389069,30.5677354 69.4805364,39.4355652 C69.9034853,41.0286729 70.3264343,42.87555 70.453319,43.5522683 C70.5520071,44.2148884 70.8198747,45.6952097 71.0313492,46.8371719 C71.9759352,51.9830508 72.4129825,57.5518787 72.4693756,64.319062 L72.4975722,71.0157538 L70.8057764,73.4829561 L69.1421772,75.9924532 L65.2228502,75.9924532 C60.6550015,75.9924532 56.1153494,76.5704834 51.7730734,77.7406422 L48.4176784,78.5865401 C47.9524346,78.6852282 47.8819431,78.5442452 47.6140754,76.5563851 C46.1789769,65.6814134 46.254887,54.6602097 47.8396482,43.8060377 C49.5878372,32.6965785 53.6622454,22.6444917 57.6520639,19.683849 C58.5966499,18.978934 58.7658295,18.9930323 59.8654968,19.8671269 L59.8654968,19.8671269 Z M198.38128,19.6979473 C200.77799,21.4743329 203.42847,26.1831646 205.402232,32.2172363 C209.349756,44.2571833 210.47762,60.8085857 208.391072,76.5563851 C208.123204,78.5301469 208.052712,78.6852282 207.587468,78.5865401 L204.232073,77.7406422 C199.844217,76.5739638 195.322603,75.9862487 190.782297,75.9924532 L186.86297,75.9924532 L185.185272,73.4829561 L183.507575,71.0157538 L183.535771,64.3331603 C183.592164,54.9013986 184.466259,47.5561851 186.552807,39.3509754 C188.76624,30.5677354 192.671469,22.6444917 196.13965,19.8671269 C197.239317,18.9930323 197.408497,18.978934 198.38128,19.6979473 L198.38128,19.6979473 Z" fill="currentColor"></path>
+    </g></svg></span><span class="dg-label">Ollama</span></div><div class="dg-node dg-node--pill is-hit" data-id="lm-studio" style="left: 145px; top: 319px;"><span class="dg-ic" data-icon="si:lmstudio"><svg data-ic="ink" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M14.025 0c3.492 0 5.237 0 6.571.68a6.24 6.24 0 0 1 2.725 2.724C24 4.738 24 6.484 24 9.975v4.05c0 3.492 0 5.237-.68 6.571a6.24 6.24 0 0 1-2.724 2.725c-1.334.679-3.08.679-6.571.679h-4.05c-3.492 0-5.237 0-6.571-.68A6.24 6.24 0 0 1 .68 20.597C0 19.262 0 17.516 0 14.025v-4.05c0-3.492 0-5.237.68-6.571A6.23 6.23 0 0 1 3.404.68C4.738 0 6.484 0 9.975 0zM7.688 16.313a1.313 1.313 0 0 0 0 2.625h11.625a1.313 1.313 0 0 0 0-2.625zm-3-3.75a1.313 1.313 0 0 0 0 2.624h11.625a1.313 1.313 0 0 0 0-2.624zm3-3.75a1.313 1.313 0 0 0 0 2.624h11.625a1.313 1.313 0 0 0 0-2.624zm-3-3.75a1.313 1.313 0 0 0 0 2.625h11.625a1.313 1.313 0 0 0 0-2.625z"></path></svg></span><span class="dg-label">LM Studio</span></div><div class="dg-node dg-node--pill" data-id="local-server" style="left: 24px; top: 182px;"><span class="dg-ic" data-icon="ui:server"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"></rect><rect width="20" height="8" x="2" y="14" rx="2" ry="2"></rect><path d="M6 6h.01M6 18h.01"></path></g></svg></span><span class="dg-label">Local server</span></div><div class="dg-node dg-node--pill" data-id="windows" style="left: 148px; top: 45px;"><span class="dg-ic" data-icon="windows"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" aria-hidden="true" focusable="false"><g>
+        <path d="M0,2.84217094e-14 L121.32899,2.84217094e-14 L121.32899,121.32899 L0,121.32899 L0,2.84217094e-14 Z M134.67101,2.84217094e-14 L256,2.84217094e-14 L256,121.32899 L134.67101,121.32899 L134.67101,2.84217094e-14 Z M0,134.67101 L121.32899,134.67101 L121.32899,256 L0,256 L0,134.67101 Z M134.67101,134.67101 L256,134.67101 L256,256 L134.67101,256 L134.67101,134.67101 Z" fill="#0078D4"></path>
+    </g></svg></span><span class="dg-label">Windows</span></div></div></div>
+            </div>
+          </article>
+        </div>
+      </div>
+      <div class="grid">
+        <article class="card card--row card--open span-6 m-nolift">
+          <h3>Holds the text if the window changed</h3>
+          <p>Switch apps mid-sentence and nothing lands in the wrong place. Insert last puts it where you are.</p>
+          <div class="panel" data-fx="painterly-landscape" data-fx-seed="37" data-fx-palette="{&quot;bg&quot;:&quot;#cdd6c6&quot;,&quot;surface&quot;:&quot;#dce3d6&quot;,&quot;ink&quot;:&quot;#262d24&quot;,&quot;muted&quot;:&quot;#5f6a5a&quot;,&quot;accent&quot;:&quot;#6c8e63&quot;}" data-fx-params="{&quot;blur&quot;:1,&quot;brush&quot;:0.35,&quot;slope&quot;:0,&quot;hillY&quot;:0.3,&quot;horizon&quot;:0.62,&quot;calm&quot;:0.2,&quot;calmX&quot;:0.5,&quot;calmY&quot;:0.9,&quot;drift&quot;:0}" style="--calm-k:0%" data-fx-mounted="painterly-landscape"><canvas width="377" height="361" class="fx-canvas is-baked" aria-hidden="true" style="position: absolute; inset: 0px; width: 100%; height: 100%; display: block; z-index: -1; pointer-events: none; border-radius: inherit;"></canvas>
+            <div class="stage stage--fade-b"><div class="at-rise fit" style="--ax:32px;--ay:calc(100% - 180px);--ay-sm:calc(100% - 180px);--fit-max:380px">
+              <div class="ui ui-notify is-ui-held" data-ui="notify" data-ui-still="">
+                <ul class="ui-notify__list" data-notify-list="">
+                  <li class="ui-note"><span class="ui-agent ui-note__av" aria-hidden="true"></span><span class="ui-note__text"><span class="ui-note__title">Text held back<time>now</time></span><span class="ui-note__body">The window changed while it was processing</span></span><span class="ui-btn ui-btn--sm ui-note__btn">Insert last</span></li>
+                  <li class="ui-note"><span class="ui-note__ico"><svg class="ui-icon" viewBox="0 0 16 16"><path d="m3.5 8.4 2.8 2.8 6.2-6.4"></path></svg></span><span class="ui-note__text"><span class="ui-note__title">Typed into Slack<time>3m</time></span><span class="ui-note__body">Polished profile, two sentences</span></span></li>
+                  <li class="ui-note"><span class="ui-note__ico"><svg class="ui-icon" viewBox="0 0 16 16"><path d="m3.5 8.4 2.8 2.8 6.2-6.4"></path></svg></span><span class="ui-note__text"><span class="ui-note__title">Copied to clipboard<time>9m</time></span><span class="ui-note__body">Raw profile, one line</span></span></li>
+                </ul>
+              </div>
+            </div></div>
+          </div>
+        </article>
+        <article class="card card--row card--open span-6 m-nolift">
+          <h3>Checks the microphone before your first dictation</h3>
+          <p>The setup guide tests the microphone and the provider, then you try a practice dictation.</p>
+          <div class="panel" data-fx="painterly-landscape" data-fx-seed="41" data-fx-palette="{&quot;bg&quot;:&quot;#d9ccb7&quot;,&quot;surface&quot;:&quot;#e9e0d2&quot;,&quot;ink&quot;:&quot;#2a2622&quot;,&quot;muted&quot;:&quot;#6f675c&quot;,&quot;accent&quot;:&quot;#a8794a&quot;}" data-fx-params="{&quot;blur&quot;:1,&quot;brush&quot;:0.35,&quot;slope&quot;:0,&quot;hillY&quot;:0.3,&quot;horizon&quot;:0.62,&quot;calm&quot;:0.2,&quot;calmX&quot;:0.4,&quot;calmY&quot;:0.9,&quot;drift&quot;:0}" style="--calm-k:0%" data-fx-mounted="painterly-landscape"><canvas width="377" height="361" class="fx-canvas is-baked" aria-hidden="true" style="position: absolute; inset: 0px; width: 100%; height: 100%; display: block; z-index: -1; pointer-events: none; border-radius: inherit;"></canvas>
+            <div class="stage stage--fade-b"><div class="at-rise fit" style="--ax:max(24px, 50% - 170px);--ay:40px;--fit-max:340px">
+              <div class="ui ui-panel ui-checks is-ui-held" data-ui="checklist" data-ui-still="">
+                <div class="ui-checks__head">
+                  <div class="ui-title">Setup guide</div>
+                  <span class="ui-spacer"></span>
+                  <div class="ui-meta" data-checks-count="">3 of 4</div>
+                </div>
+                <div class="ui-checks__bar"><i data-checks-bar="" style="--k:0.75"></i></div>
+                <ul class="ui-checks__list">
+                  <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"></path></svg></span><span class="ui-check__label">Pick a microphone</span></li>
+                  <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"></path></svg></span><span class="ui-check__label">Watch the level bar move</span></li>
+                  <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"></path></svg></span><span class="ui-check__label">Test the connection to Groq</span></li>
+                  <li class="ui-check"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"></path></svg></span><span class="ui-check__label">Hold Ctrl+Alt+Space and speak</span></li>
+                </ul>
+              </div>
+            </div></div>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section ground-inverse" id="history" aria-labelledby="history-h">
+    <div class="wrap">
+      <div class="grid">
+        <h2 class="span-5" id="history-h">History keeps the raw and the cleaned text</h2>
+        <div class="span-6 start-7 stack-4">
+          <p>Pick an entry to see what Whisper heard beside what the profile wrote. Copy either one, insert it again, or rerun cleanup with new settings.</p>
+          <a class="link" href="https://github.com/DavidHruby1/screamer#history">Read how history is stored</a>
+        </div>
+      </div>
+      <div class="ui app fill" role="img" aria-label="Screamer's History window: a list of dictations by app, and a Slack message showing the raw transcript with filler words removed by the Polished profile" data-ui-pause-host="" style="position: relative;">
+        <div class="app__pane app__pane--list">
+          <div class="ui ui-panel ui-win is-ui-held" data-ui="window" data-open="Held back" data-work="Inserting" data-done="Inserted" data-ui-still="">
+            <div class="ui-win__bar">
+              <span class="ui-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="ui-win__crumb">Screamer <i>/</i> <b>History</b></span>
+              <span class="ui-spacer"></span>
+              <span class="ui-win__search" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"></circle><path d="m10.5 10.5 3 3"></path></svg><span class="ui-win__ph">Search</span></span>
+            </div>
+            <div class="ui-win__body">
+              <nav class="ui-win__side" aria-hidden="true">
+                <span class="ui-win__nav is-on">All<em>38</em></span>
+                <span class="ui-win__nav">Held back<em>1</em></span>
+                <span class="ui-win__nav">Copied<em>4</em></span>
+                <span class="ui-win__label">Profiles</span>
+                <span class="ui-win__nav"><span class="ui-win__hash">#</span>Polished</span>
+                <span class="ui-win__nav"><span class="ui-win__hash">#</span>Raw</span>
+              </nav>
+              <div class="ui-win__main">
+                <div class="ui-win__cols" aria-hidden="true"><span>App</span><span>Text</span><span>Status</span><span>Age</span></div>
+                <ul class="ui-win__rows">
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="1">Sl</span><span class="ui-win__who">Slack</span><span class="ui-win__sub">The build is ready and we can ship…</span><span class="ui-win__st is-done" data-st="">Typed</span><span class="ui-win__age">2m</span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="4">Ou</span><span class="ui-win__who">Outlook</span><span class="ui-win__sub">Thanks for the invoice, I will pay…</span><span class="ui-win__st is-done" data-st="">Inserted</span><span class="ui-win__age">6m</span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="3">Te</span><span class="ui-win__who">Terminal</span><span class="ui-win__sub">git commit -m "fix hotkey release"</span><span class="ui-win__st is-done" data-st="">Typed</span><span class="ui-win__age">11m</span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="2">VS</span><span class="ui-win__who">VS Code</span><span class="ui-win__sub">Rename the helper to parse hotkey</span><span class="ui-win__st is-done" data-st="">Copied</span><span class="ui-win__age">18m</span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="5">No</span><span class="ui-win__who">Notion</span><span class="ui-win__sub">Agenda for Monday: hotkeys, history</span><span class="ui-win__st is-done" data-st="">Typed</span><span class="ui-win__age">26m</span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="1">Sl</span><span class="ui-win__who">Slack</span><span class="ui-win__sub">Running five minutes late, start…</span><span class="ui-win__st is-done" data-st="">Typed</span><span class="ui-win__age">41m</span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="3">Ch</span><span class="ui-win__who">Chrome</span><span class="ui-win__sub">Search for Speaches docker image</span><span class="ui-win__st is-done" data-st="">Typed</span><span class="ui-win__age">1h</span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="4">Ou</span><span class="ui-win__who">Outlook</span><span class="ui-win__sub">Hi Martin, the draft is attached…</span><span class="ui-win__st is-done" data-st="">Typed</span><span class="ui-win__age">2h</span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="2">VS</span><span class="ui-win__who">VS Code</span><span class="ui-win__sub">Check the DPAPI roundtrip</span><span class="ui-win__st is-done" data-st="">Copied</span><span class="ui-win__age">3h</span></li>
+                  <li class="ui-win__row" data-row=""><span class="ui-avatar" data-tone="5">No</span><span class="ui-win__who">Notion</span><span class="ui-win__sub">Release notes for version 1.9</span><span class="ui-win__st is-done" data-st="">Typed</span><span class="ui-win__age">4h</span></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="app__pane app__pane--open" data-ui-loop="">
+          <div class="ui ui-panel ui-diff is-applied" data-ui="diff-review">
+            <div class="ui-diff__head">
+              <svg class="ui-icon ui-diff__fold" viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 6.25 3.5 3.5 3.5-3.5"></path></svg>
+              <span class="ui-diff__tool" aria-hidden="true"><img data-icon="slack" src="assets/icons/slack.svg" alt=""></span>
+              <span class="ui-diff__repo">Slack</span><i class="ui-diff__slash" aria-hidden="true">/</i>
+              <span class="ui-diff__path"><span class="ui-diff__dir">#release / </span><b>Polished</b></span>
+              <span class="ui-spacer"></span>
+              <span class="ui-diff__stat"><b class="is-add"><span class="ui-diff__was">+2</span><span class="ui-diff__now">+3</span></b><b class="is-del"><span class="ui-diff__was">−2</span><span class="ui-diff__now">−3</span></b><span class="ui-diff__bar" aria-hidden="true"><i class="is-add"></i><i class="is-add"></i><i class="is-del"></i><i class="is-del"></i></span></span>
+            </div>
+            <div class="ui-diff__hunk"><span>Raw → Polished</span> <em class="ui-diff__sig">whisper-large-v3-turbo, 2 minutes ago</em></div>
+            <div class="ui-diff__lines">
+              <div class="ui-diff__ln"><i>1</i><i>1</i><span class="ui-diff__code" data-i="0">Hi team, a quick update on the 1.9 release.</span></div>
+              <div class="ui-diff__ln is-del"><i>2</i><i></i><span class="ui-diff__code" data-i="0"><mark class="ui-diff__w">So um the</mark> build is ready and we can ship on <mark class="ui-diff__w">Wednesday, no, Thursday</mark>.</span></div>
+              <div class="ui-diff__ln is-add"><i></i><i>2</i><span class="ui-diff__code" data-i="0"><mark class="ui-diff__w">The</mark> build is ready and we can ship on <mark class="ui-diff__w">Thursday</mark>.</span></div>
+              <div class="ui-diff__ln is-target" data-diff-target=""><i>3</i><i>3</i><span class="ui-diff__code" data-i="0">I still need <mark class="ui-diff__w">uh</mark> a sign-off on the installer.</span></div>
+              <div class="ui-diff__sug" data-diff-sug=""><div class="ui-diff__ln is-add"><i></i><i>3</i><span class="ui-diff__code" data-i="0">I still need a sign-off on the installer.</span></div></div>
+              <div class="ui-diff__thread">
+                <div class="ui-diff__by">
+                  <span class="ui-avatar" data-tone="4">P</span>
+                  <span class="ui-diff__name">Polished profile</span>
+                  <span class="ui-diff__time">now</span>
+                  <span class="ui-spacer"></span>
+                  <span class="ui-diff__act is-done" data-diff-act="">
+                    <button class="ui-btn ui-btn--sm ui-diff__apply" type="button" tabindex="-1" data-diff-apply="" aria-hidden="true" data-ui-ah=""><span class="ui-diff__lbl">Use result</span><i class="ui-diff__spin" aria-hidden="true"></i></button>
+                    <span class="ui-chip ui-diff__done" aria-hidden="true" data-ui-ah=""><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 8.4 2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>Inserted</span>
+                  </span>
+                </div>
+                <div class="ui-diff__msg">Drops the filler word and keeps your final version.</div>
+              </div>
+              <div class="ui-diff__ln"><i>4</i><i>4</i><span class="ui-diff__code" data-i="0">The vocabulary prompt now fits in 224 tokens.</span></div>
+              <div class="ui-diff__ln is-del"><i>5</i><i></i><span class="ui-diff__code" data-i="0"><mark class="ui-diff__w">And like</mark> the history window shows the raw text too.</span></div>
+              <div class="ui-diff__ln is-add"><i></i><i>5</i><span class="ui-diff__code" data-i="0"><mark class="ui-diff__w">The</mark> history window shows the raw text too.</span></div>
+              <div class="ui-diff__ln"><i>6</i><i>6</i><span class="ui-diff__code" data-i="0">Release notes are on the GitHub release page.</span></div>
+              <div class="ui-diff__ln"><i>7</i><i>7</i><span class="ui-diff__code" data-i="0">The zip comes with its SHA-256 file.</span></div>
+              <div class="ui-diff__ln"><i>8</i><i>8</i><span class="ui-diff__code" data-i="0">Please try Toggle mode before Thursday.</span></div>
+              <div class="ui-diff__ln"><i>9</i><i>9</i><span class="ui-diff__code" data-i="0">Press the hotkey once to start and once to stop.</span></div>
+              <div class="ui-diff__ln"><i>10</i><i>10</i><span class="ui-diff__code" data-i="0">Esc cancels, and nothing is sent.</span></div>
+              <div class="ui-diff__ln"><i>11</i><i>11</i><span class="ui-diff__code" data-i="0">Hold Shift at the end to press Enter.</span></div>
+              <div class="ui-diff__ln"><i>12</i><i>12</i><span class="ui-diff__code" data-i="0">Tell me what breaks.</span></div>
+              <div class="ui-diff__ln"><i>13</i><i>13</i><span class="ui-diff__code" data-i="0">Thanks.</span></div>
+              <div class="ui-diff__ln"><i>14</i><i>14</i><span class="ui-diff__code" data-i="0"></span></div>
+              <div class="ui-diff__ln"><i>15</i><i>15</i><span class="ui-diff__code" data-i="0">PS: the tray icon is three bars, bottom right.</span></div>
+              <div class="ui-diff__ln"><i>16</i><i>16</i><span class="ui-diff__code" data-i="0">Right-click it for Settings and History.</span></div>
+            </div>
+          </div>
+        </div>
+      <button type="button" class="ui-pause loop-pause" aria-label="Pause animation" title="Pause animation"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.25" y="3.25" width="2.75" height="9.5" rx="0.9"></rect><rect x="9" y="3.25" width="2.75" height="9.5" rx="0.9"></rect></svg></button></div>
+    </div>
+  </section>
+
+  <section class="section" id="offline" style="--hm: 2" aria-labelledby="offline-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5 stack-5">
+          <h2 id="offline-h">Offline dictation with a local server</h2>
+          <p class="t-lead">Point Screamer at Speaches on your own machine and the audio never leaves it.</p>
+          <ul class="stack-3">
+            <li>API keys are encrypted with Windows DPAPI.</li>
+            <li>History is off until you turn it on, and never keeps audio.</li>
+          </ul>
+          <a class="link" href="https://github.com/DavidHruby1/screamer/blob/main/docs/LOCAL-STT.md">Read the local setup notes</a>
+        </div>
+        <div class="frame frame--split span-6 start-7" role="img" aria-label="Screamer's speech settings pointed at a local Speaches server on 127.0.0.1, with no API key and a passing connection test">
+          <div class="stage stage--fade-br"><div class="at-corner to-edge" style="--ax:56px;--ay:56px">
+            <div class="ui ui-panel set-win" aria-hidden="true">
+              <div class="set-win__bar"><span class="ui-dots"><i></i><i></i><i></i></span><span>Screamer settings</span></div>
+              <div class="set-win__tabs"><span>General</span><span class="is-on">Speech</span><span>Rewrite</span><span>Audio</span><span>Vocabulary</span><span>Profiles</span></div>
+              <div class="set-win__body">
+                <div class="set-row"><span>Provider</span><span class="set-field set-field--ph">Local (Speaches)</span></div>
+                <div class="set-row"><span>API key</span><span class="set-field set-field--ph">Not needed for a local server</span></div>
+                <div class="set-row"><span>Base URL</span><span class="set-field">http://127.0.0.1:18000/v1</span></div>
+                <div class="set-row"><span>Model</span><span class="set-field">Systran/faster-whisper-tiny.en</span></div>
+                <div class="set-row"><span>Language</span><span class="set-field set-field--ph">English</span></div>
+                <div class="set-row"><span></span><span class="set-test"><span class="ui-btn ui-btn--sm">Test connection</span><span class="set-ok"><svg viewBox="0 0 16 16"><path d="m3.5 8.4 2.8 2.8 6.2-6.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>Server lists the model</span></span></div>
+                <div class="set-row"><span>Fallback</span><span class="set-field set-field--ph">Off</span></div>
+              </div>
+            </div>
+          </div></div>
+        </div>
+      </div>
+      <div class="grid stats" data-moment="counter-rolls" data-moment-mounted="1">
+        <div class="span-3"><p class="t-stat mo-cr is-on" aria-label="3"><span class="mo-cr__col" aria-hidden="true"><span class="mo-cr__strip"><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>0</span><span>1</span><span>2</span><span>3</span></span></span></p><p class="t-small muted">speech provider presets</p></div>
+        <div class="span-3"><p class="t-stat mo-cr is-on" aria-label="7"><span class="mo-cr__col" aria-hidden="true"><span class="mo-cr__strip"><span>7</span><span>8</span><span>9</span><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span></span></span></p><p class="t-small muted">hotkey presets, or your own</p></div>
+        <div class="span-3"><p class="t-stat mo-cr is-on" aria-label="100"><span class="mo-cr__col" aria-hidden="true"><span class="mo-cr__strip"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>0</span><span>1</span></span></span><span class="mo-cr__col" aria-hidden="true"><span class="mo-cr__strip"><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>0</span></span></span><span class="mo-cr__col" aria-hidden="true"><span class="mo-cr__strip"><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>0</span></span></span></p><p class="t-small muted">history entries at most</p></div>
+        <div class="span-3"><p class="t-stat mo-cr is-on" aria-label="224"><span class="mo-cr__col" aria-hidden="true"><span class="mo-cr__strip"><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>0</span><span>1</span><span>2</span></span></span><span class="mo-cr__col" aria-hidden="true"><span class="mo-cr__strip"><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>0</span><span>1</span><span>2</span></span></span><span class="mo-cr__col" aria-hidden="true"><span class="mo-cr__strip"><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span></span></span></p><p class="t-small muted">tokens of vocabulary for Whisper</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="faq" style="--hm: 2" aria-labelledby="faq-h">
+    <div class="wrap">
+      <div class="grid grid--top">
+        <div class="span-5 stack-5">
+          <h2 id="faq-h">Questions</h2>
+          <a class="link" href="https://github.com/DavidHruby1/screamer/issues">Open an issue on GitHub</a>
+          <div class="frame frame--lit pills" role="img" aria-label="Screamer's recording pill: orange with the microphone level while it records, blue while it transcribes and cleans up">
+            <div class="ui pills__col" aria-hidden="true">
+              <div class="pill pill--rec"><span class="pill__dot"></span><span class="pill__wave"><i style="--h:6px"></i><i style="--h:10px"></i><i style="--h:16px"></i><i style="--h:12px"></i><i style="--h:20px"></i><i style="--h:14px"></i><i style="--h:8px"></i><i style="--h:18px"></i><i style="--h:11px"></i><i style="--h:6px"></i><i style="--h:13px"></i><i style="--h:9px"></i></span><span class="pill__txt"><b>Recording</b> Default microphone</span></div>
+              <div class="pill pill--proc"><span class="pill__dot"></span><span class="pill__txt"><b>Processing</b> Transcribe, then clean up</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="faq span-6 start-7">
+          <div class="faq__item"><h3>What is the price?</h3><p>Nothing. Screamer is MIT-licensed. You pay your speech provider, or nothing on a local server.</p></div>
+          <div class="faq__item"><h3>Does history keep my recordings?</h3><p>Never audio. History is opt-in and keeps up to 100 text entries, encrypted with DPAPI.</p></div>
+          <div class="faq__item"><h3>What if I switch windows mid-dictation?</h3><p>The text is held back. Press Ctrl+Alt+Shift+V in the right app, or open History.</p></div>
+          <div class="faq__item"><h3>Is it Windows only?</h3><p>Yes. It relies on Windows keyboard hooks, SendInput and DPAPI.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer closing" id="contact" aria-labelledby="close-h">
+  <div class="wrap">
+    <div class="closing__cta close--word">
+      <div class="section-head--split">
+        <div><h2 id="close-h">Download Screamer for Windows</h2><p class="t-lead">A zip with Screamer.exe and its SHA-256 checksum. Extract it and run.</p></div>
+        <a class="btn btn--primary" href="https://github.com/DavidHruby1/screamer/releases/latest">Download for Windows<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"></path><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"></path></svg></a>
+      </div>
+      <p class="close__word" aria-hidden="true">Screamer</p>
+    </div>
+    <div class="closing__links">
+      <div class="grid">
+        <div class="span-4 stack-4">
+          <a class="nav__logo" href="#top"><span class="mark" data-mark="dots" aria-hidden="true"></span>Screamer</a>
+          <p class="footer__lede">Push-to-talk dictation for Windows, open source.</p>
+        </div>
+        <div class="span-2 start-7 footer__col"><h3>Product</h3><ul><li><a href="#features">Features</a></li><li><a href="#history">History</a></li><li><a href="#offline">Offline</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Help</h3><ul><li><a href="#faq">Questions</a></li><li><a href="https://github.com/DavidHruby1/screamer/issues">Open an issue on GitHub</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Code</h3><ul><li><a href="https://github.com/DavidHruby1/screamer">Read the source</a></li><li><a href="https://github.com/DavidHruby1/screamer/blob/main/LICENSE">MIT licence</a></li></ul></div>
+      </div>
+      <div class="footer__legal">
+        <span>© 2026 Screamer</span>
+        <span>Product names and logos are trademarks of their owners</span>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<nav class="actionbar" aria-label="Quick actions" data-bar="hidden" inert="">
+  <a class="btn btn--primary" href="https://github.com/DavidHruby1/screamer/releases/latest">Download for Windows</a>
+</nav>
+
+<script type="module" src="assets/system.js"></script>
+<script type="module" src="assets/motion/motion.js"></script>
+<script type="module" src="assets/layout/layout.js"></script>
+<script type="module" src="assets/diagrams/mount.js"></script>
+
+
+</body></html>
