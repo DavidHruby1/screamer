@@ -25,6 +25,7 @@ def _bare_app():
     app._recovery_dlg = None
     app._setup_dlg = None
     app._submit_requested = False
+    app._release_timer = QTimer(app)
     app._mute = MagicMock()
     app._armed = None
     return app

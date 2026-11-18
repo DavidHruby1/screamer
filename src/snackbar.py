@@ -221,7 +221,7 @@ class RecordingSnackbar(QWidget):
             self._fade.start()
         if not self.is_pulsing():
             self._pulse_anim.start()
-        self.update()
+        self.repaint()
 
     def hide_state(self) -> None:
         """Fade out and hide. Safe to call when already hidden."""

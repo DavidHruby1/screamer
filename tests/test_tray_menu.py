@@ -53,6 +53,9 @@ def make_tray_app():
     tray_app._retired_worker = None
     tray_app._hotkey_restart_pending = False
     tray_app._exiting = False
+    tray_app._release_timer = QTimer(tray_app)
+    tray_app._release_timer.setSingleShot(True)
+    tray_app._release_timer.timeout.connect(tray_app._finish_capture)
     tray_app._recording_timer = QTimer(tray_app)
     tray_app._level_timer = QTimer(tray_app)
     return tray_app
@@ -114,7 +117,24 @@ class TrayMenuTests(unittest.TestCase):
 
     def test_recording_limit_is_cancelled_on_manual_stop(self):
         tray, worker = self._start_limited_recording()
+        tray._apply_state = Mock()
         tray._on_hotkey_released()
+        from src.main import TrayState
+
+        tray._apply_state.assert_called_once_with(TrayState.PROCESSING)
+        tray._recorder.stop.assert_not_called()
+        tray._on_hotkey_pressed()
+        tray._on_hotkey_released()
+        tray._apply_state.assert_called_once()
+        tray._release_timer.start(0)
+        self._assert_recording_limit_cancelled(tray, worker)
+
+    def test_escape_during_release_tail_discards_capture_once(self):
+        tray, worker = self._start_limited_recording()
+        tray._on_hotkey_released()
+        self.assertTrue(tray._release_timer.isActive())
+        tray._on_escape()
+        self.assertFalse(tray._release_timer.isActive())
         self._assert_recording_limit_cancelled(tray, worker)
 
     def test_recording_limit_is_cancelled_on_disable(self):
@@ -546,7 +566,9 @@ class TrayMenuTests(unittest.TestCase):
         self.assertTrue(tray._recording)
         tray._recorder.stop.return_value = b""
         tray._on_hotkey_released()
-        tray._recorder.stop.assert_called_once()
+        tray._release_timer.start(0)
+        QApplication.processEvents()
+        tray._recorder.stop.assert_called_once_with(tail=0)
         tray._hotkey.stop.assert_called_once()
         tray._make_listener.assert_called_once()
         self.assertFalse(tray._recording)
