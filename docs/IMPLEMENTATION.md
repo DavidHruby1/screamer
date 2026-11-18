@@ -451,9 +451,15 @@ class HotkeyListener:
 
 ### stt.py
 
+The silence filter normalizes case, Unicode, whitespace and surrounding punctuation.
+It rejects subtitle credits containing JohnyX or Amara.org and the known ZDF credit.
+Common endings such as “Thank you.” match the whole transcript and require mono
+PCM16 audio with RMS at or below twice the configured silence threshold. This also
+works when the provider omits segment metadata. Discards log only the reason.
+
 ```python
 def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult: ...
-    """POST WAV to STT endpoint with verbose_json (json for Groq). Primary → fallback on failure.
+    """POST WAV to STT endpoint with verbose_json (including Groq). Primary → fallback on failure.
     Filter: keep if ANY segment no_speech_prob < 0.7. All-above → ScreamerError(AppError.NO_SPEECH).
     HTTP/network errors and malformed 200 responses (not a JSON object, or no string `text`)
     → fallback if enabled, else ScreamerError(AppError.STT_FAILED). `text: ""` is silence.
