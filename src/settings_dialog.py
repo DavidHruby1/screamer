@@ -914,6 +914,10 @@ class SettingsDialog(QDialog):
             "Insert last shortcut:",
             _button_row(self._recovery_hotkey_input, self._recovery_record_btn),
         )
+        self._fillers = ToggleSwitch("Keep filler words (uh, um, ehm…)")
+        self._fillers.setToolTip("Asks the models to preserve hesitations. Results can vary.")
+        form.addRow(self._fillers)
+        self._fillers.toggled.connect(self._refresh_prompt_estimate)
         self._sound_check = ToggleSwitch("Play recording and error sounds")
         form.addRow(self._sound_check)
 
@@ -1124,9 +1128,9 @@ class SettingsDialog(QDialog):
             terms = select_vocabulary(self._vocabulary_values(), language)
         except ValueError:
             terms = []
-        prompt, omitted = build_whisper_prompt(terms)
+        prompt, omitted = build_whisper_prompt(terms, self._fillers.isChecked())
         scope = language_label(language) if language else "all languages (Auto)"
-        if terms:
+        if terms or prompt:
             self._stt_prompt_estimate.setText(
                 f"Prompt for {scope}: ~{estimate_prompt_tokens(prompt)} / "
                 f"{WHISPER_PROMPT_TOKEN_BUDGET} tokens"
@@ -1885,6 +1889,7 @@ class SettingsDialog(QDialog):
             self._recovery_hotkey_input.show_hotkey(self._insert_hotkey)
         else:
             self._recovery_hotkey_input.clear()
+        self._fillers.setChecked(cfg.keep_filler_words)
         self._sound_check.setChecked(cfg.sound_enabled)
         self._history_check.setChecked(cfg.history_enabled)
         self._history_limit_spin.setValue(cfg.history_limit)
@@ -1938,6 +1943,7 @@ class SettingsDialog(QDialog):
         cfg.start_with_windows = self._startup_check.isChecked()
         cfg.output_mode = self._output_mode_combo.currentData()
         cfg.recovery_hotkey = self._insert_hotkey.to_canonical() if self._insert_hotkey else ""
+        cfg.keep_filler_words = self._fillers.isChecked()
         cfg.sound_enabled = self._sound_check.isChecked()
         cfg.history_enabled = self._history_check.isChecked()
         cfg.history_limit = self._history_limit_spin.value()

@@ -1023,3 +1023,8 @@ not provide a reliable insertion target. History refreshes retain the selected
 record/variant in their notice, including after insertion. Missing or malformed
 shortcuts direct the user to Settings. The shortcut is set through the existing
 HotkeyCaptureEdit.
+
+`keep_filler_words` defaults to false. When enabled, STT providers with vocabulary
+prompting enabled receive hesitation examples within the shared 224-token estimate.
+Clean and Polished request that the rewrite preserve fillers. Custom profiles retain
+their authored instructions. Model compliance varies.

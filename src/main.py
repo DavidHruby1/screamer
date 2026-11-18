@@ -493,6 +493,13 @@ class _TrayApp(QObject):
         profile = resolve_rewrite_profile(config, executable_path)
         config.llm_enabled = profile.kind != "raw"
         config.llm_system_prompt = profile.prompt or ""
+        if config.keep_filler_words and profile.kind in {"clean", "polished"}:
+            config.llm_system_prompt = config.llm_system_prompt.replace(
+                "Remove filler words, stutters", "Remove stutters"
+            )
+            config.llm_system_prompt += (
+                "\nKeep filler words and hesitations (uh, um, ehm) exactly as spoken."
+            )
         return profile.id
 
     def _start_recording(self) -> None:

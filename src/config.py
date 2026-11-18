@@ -733,6 +733,7 @@ class AppConfig:
     output_mode: str = "type"  # see OUTPUT_MODES
     history_enabled: bool = False
     history_limit: int = 100
+    keep_filler_words: bool = False
     sound_enabled: bool = True
     recovery_hotkey: str = "ctrl+alt+shift+key:0x56"
     vocabulary_entries: list[VocabularyTerm] = field(default_factory=list)

@@ -42,7 +42,9 @@ def _join_prompt(terms: list[str]) -> str:
     return ", ".join(terms) + "." if terms else ""
 
 
-def build_whisper_prompt(terms: list[VocabularyTerm]) -> tuple[str, int]:
+def build_whisper_prompt(
+    terms: list[VocabularyTerm], keep_filler_words: bool = False
+) -> tuple[str, int]:
     """Render *terms* as a bare list of prior transcript text: ``PySide6, Qt, httpx.``.
 
     Returns ``(prompt, omitted)``. Terms are taken in order (``select_vocabulary`` puts
@@ -50,7 +52,7 @@ def build_whisper_prompt(terms: list[VocabularyTerm]) -> tuple[str, int]:
     ``WHISPER_PROMPT_TOKEN_BUDGET``; the first term that does not fit stops the list, so
     the result never depends on the lengths of later terms.
     """
-    kept: list[str] = []
+    kept: list[str] = ["Umm, let me think, uh, ehm"] if keep_filler_words else []
     for index, item in enumerate(terms):
         if estimate_prompt_tokens(_join_prompt([*kept, item.term])) > WHISPER_PROMPT_TOKEN_BUDGET:
             return _join_prompt(kept), len(terms) - index
@@ -81,8 +83,8 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
         vocabulary_prompt = ""
         if config.stt_prompt_primary_enabled or config.stt_prompt_fallback_enabled:
             terms = select_vocabulary(config.vocabulary_entries, config.stt_language)
-            if terms:
-                vocabulary_prompt, omitted = build_whisper_prompt(terms)
+            if terms or config.keep_filler_words:
+                vocabulary_prompt, omitted = build_whisper_prompt(terms, config.keep_filler_words)
                 # Counts only: the terms themselves may be private.
                 log.info(
                     "STT prompt: %d terms sent, %d omitted (token budget)",
