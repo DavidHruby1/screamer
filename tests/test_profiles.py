@@ -21,7 +21,7 @@ from src.config import (
 )
 from src.settings_dialog import SettingsDialog
 from src.injector import InjectionReport, WindowIdentity
-from src.main import _WorkerThread
+from src.main import _TrayApp, _WorkerThread
 from src.utils import PipelineResult
 from tests.test_config import LEGACY_LLM_SYSTEM_PROMPT
 from tests.test_tray_menu import make_tray_app
@@ -34,6 +34,17 @@ class ProfileContractsTests(unittest.TestCase):
         directory = self.enterContext(tempfile.TemporaryDirectory())
         self.enterContext(patch("src.config.APP_DIR", directory))
         self.enterContext(patch("src.config._dpapi_available", return_value=False))
+
+    def test_builtin_filler_instructions_are_opt_in(self):
+        for profile in ("clean", "polished"):
+            with self.subTest(profile=profile):
+                cfg = AppConfig(rewrite_manual_profile_id=profile)
+                _TrayApp._apply_rewrite_profile(cfg, None)
+                self.assertEqual(cfg.llm_system_prompt, resolve_rewrite_profile(cfg, None).prompt)
+                cfg.keep_filler_words = True
+                _TrayApp._apply_rewrite_profile(cfg, None)
+                self.assertIn("Keep filler words", cfg.llm_system_prompt)
+                self.assertNotIn("Remove filler words", cfg.llm_system_prompt)
 
     def test_catalog_roundtrip_and_manual_automatic_precedence(self):
         custom = RewriteProfile("custom-1", "Coding", "custom", "Preserve identifiers.\r\n")
@@ -66,6 +77,7 @@ class ProfileContractsTests(unittest.TestCase):
         settings.setValue("llm_enabled", False)
         settings.sync()
         cfg = load_config()
+        self.assertFalse(cfg.keep_filler_words)
         profiles, mappings = decode_rewrite_catalog(cfg.rewrite_catalog)
         self.assertEqual(len(profiles), 1)
         self.assertEqual(profiles[0].id, "legacy")
