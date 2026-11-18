@@ -162,6 +162,14 @@ class PromptSettingsTests(unittest.TestCase):
         self.dlg = SettingsDialog(self.cfg, devices=[])
         self.addCleanup(self.dlg.deleteLater)
 
+    def test_fillers_persist_on_apply_and_cancel_discards_followup_edit(self):
+        self.assertFalse(self.dlg._fillers.isChecked())
+        self.dlg._fillers.setChecked(True)
+        self.dlg._on_apply()
+        self.dlg._fillers.setChecked(False)
+        self.dlg.reject()
+        self.assertTrue(load_config().keep_filler_words)
+
     def _saved_prompt(self) -> str:
         from src.config import resolve_rewrite_profile
 

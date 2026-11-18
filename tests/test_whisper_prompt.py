@@ -36,6 +36,12 @@ class BuildWhisperPromptTests(unittest.TestCase):
         self.assertEqual(prompt, "PySide6, Qt, httpx.")
         self.assertEqual(omitted, 0)
 
+    def test_filler_examples_share_the_vocabulary_budget(self):
+        prompt, omitted = build_whisper_prompt(_long_entries(), True)
+        self.assertTrue(prompt.startswith("Umm, let me think"))
+        self.assertGreater(omitted, 0)
+        self.assertLessEqual(estimate_prompt_tokens(prompt), WHISPER_PROMPT_TOKEN_BUDGET)
+
     def test_empty_selection_gives_no_prompt(self):
         self.assertEqual(build_whisper_prompt([]), ("", 0))
 
