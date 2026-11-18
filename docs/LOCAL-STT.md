@@ -127,7 +127,7 @@ is not a privacy enforcement mechanism.
 ## Request Boundary and Limits
 
 Screamer sends a multipart WAV request to the configured base URL plus
-`/audio/transcriptions`. It includes `model`, uses `verbose_json` for non-Groq providers,
+`/audio/transcriptions`. It includes `model`, uses `verbose_json`,
 adds `language` only when configured, and omits generated `Authorization: Bearer ...`
 when the key is empty. Custom headers remain separately configured and can supply
 alternative authorization. The keyless behavior belongs to STT only; LLM validation

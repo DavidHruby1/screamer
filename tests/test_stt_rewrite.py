@@ -277,7 +277,7 @@ class SttRewriteFallbackTests(unittest.TestCase):
         self.assertEqual(captured_headers["authorization"], "Bearer primary")
         self.assertEqual(captured_headers["x-test"], "yes")
 
-    def test_stt_groq_uses_json_response_format(self) -> None:
+    def test_stt_groq_uses_verbose_json_response_format(self) -> None:
         cfg = AppConfig(
             stt_api_key="groq",
             stt_base_url="https://api.groq.com/openai/v1",
@@ -294,8 +294,33 @@ class SttRewriteFallbackTests(unittest.TestCase):
             result = transcribe(b"wav", cfg)
 
         self.assertEqual(result.text, "hello")
-        self.assertEqual(captured["response_format"], "json")
+        self.assertEqual(captured["response_format"], "verbose_json")
         self.assertEqual(captured["language"], "en")
+
+    def test_groq_without_segments_filters_credits_and_weak_generic_phrases(self):
+        import io
+        import wave
+
+        cfg = AppConfig(stt_base_url="https://api.groq.com/openai/v1", stt_model="whisper")
+        for phrase, level, discard in [
+            (" TITULKY   vytvořil JohnyX. ", 900, True),
+            ("Sous-titres réalisés par la communauté d’Amara.org", 900, True),
+            ("Thank you.", 8, True),
+            ("Thank you.", 900, False),
+            ("Thank you for the report.", 8, False),
+        ]:
+            with self.subTest(phrase=phrase, level=level):
+                audio = io.BytesIO()
+                with wave.open(audio, "wb") as wav:
+                    wav.setparams((1, 2, 16000, 0, "NONE", ""))
+                    wav.writeframes(level.to_bytes(2, "little") * 16000)
+                with patch("src.http_client.post", return_value=FakeResponse({"text": phrase})):
+                    if discard:
+                        with self.assertRaises(ScreamerError) as caught:
+                            transcribe(audio.getvalue(), cfg)
+                        self.assertEqual(caught.exception.code, AppError.NO_SPEECH)
+                    else:
+                        self.assertEqual(transcribe(audio.getvalue(), cfg).text, phrase)
 
     def test_stt_non_groq_keeps_verbose_json(self) -> None:
         cfg = AppConfig(

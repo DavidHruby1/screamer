@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import math
+import unicodedata
+import wave
 from time import perf_counter
 
 import httpx
+import numpy as np
 
 from src import http_client
 from src.config import (
@@ -59,9 +63,9 @@ def build_whisper_prompt(terms: list[VocabularyTerm]) -> tuple[str, int]:
 
 
 def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
-    """POST WAV to STT endpoint. Groq uses ``response_format=json``; others keep ``verbose_json``.
+    """POST WAV to STT endpoint. Request segment metadata with ``verbose_json``.
 
-    Filter: keep if ANY segment no_speech_prob < 0.7 for non-Groq providers. All-above → ScreamerError(AppError.NO_SPEECH).
+    Filter: keep if ANY segment no_speech_prob < 0.7. All-above → ScreamerError(AppError.NO_SPEECH).
     HTTP/network errors or a malformed response → fallback, else ScreamerError(AppError.STT_FAILED).
     Fallback success → PipelineResult with AppError.STT_FALLBACK_USED in warnings.
 
@@ -112,6 +116,9 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
                     prompt=vocabulary_prompt if prompt_enabled else "",
                 )
                 if text is not None:
+                    if _hallucinated(text, audio_wav, config.rms_threshold):
+                        log.info("Discarded STT result: hallucination blocklist")
+                        raise ScreamerError(AppError.NO_SPEECH)
                     if is_fallback:
                         warnings.append(AppError.STT_FALLBACK_USED)
                     return PipelineResult(text=text, warnings=warnings)
@@ -131,6 +138,34 @@ def transcribe(audio_wav: bytes, config: AppConfig) -> PipelineResult:
         )
 
 
+def _hallucinated(text: str, audio_wav: bytes, threshold: float) -> bool:
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    normalized = " ".join(normalized.split()).strip()
+    normalized = normalized.strip(" .,!?:;…。«»“”\"'")
+    if "johnyx" in normalized or "amara.org" in normalized:
+        return True
+    if normalized == "untertitel im auftrag des zdf, 2017":
+        return True
+    if normalized not in {
+        "thank you",
+        "you",
+        "thanks for watching",
+        "thank you for watching",
+        "bye",
+    }:
+        return False
+
+    # The recorder emits mono PCM16. Preserve the transcript for other CLI inputs.
+    try:
+        with wave.open(io.BytesIO(audio_wav), "rb") as wav:
+            if wav.getsampwidth() != 2 or wav.getnchannels() != 1:
+                return False
+            samples = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2")
+    except (wave.Error, EOFError):
+        return False
+    return bool(len(samples) and np.sqrt(np.mean(samples.astype(float) ** 2)) <= 2 * threshold)
+
+
 def _call_stt(
     provider: ProviderConfig,
     language: str,
@@ -142,7 +177,7 @@ def _call_stt(
         return None
 
     url = provider.base_url.rstrip("/") + "/audio/transcriptions"
-    response_format = "json" if provider.is_groq else "verbose_json"
+    response_format = "verbose_json"
 
     headers = httpx.Headers()
     if provider.api_key:
@@ -197,7 +232,7 @@ def _call_stt(
         raise ValueError("STT response has malformed segments")
 
     # Filter: keep if ANY segment has no_speech_prob < threshold.
-    if segments and not provider.is_groq:
+    if segments:
         has_speech = any(seg.get("no_speech_prob", 0.0) < _NO_SPEECH_THRESHOLD for seg in segments)
         if not has_speech:
             log.debug("All segments above no_speech_prob threshold; filtering out")
