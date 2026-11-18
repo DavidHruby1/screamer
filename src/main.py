@@ -261,6 +261,10 @@ class _TrayApp(QObject):
         self._event_loop_stopped = False
         self._exit_complete = False
 
+        self._release_timer = QTimer(self)
+        self._release_timer.setSingleShot(True)
+        self._release_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._release_timer.timeout.connect(self._finish_capture)
         self._recording_timer = QTimer(self)
         self._recording_timer.setSingleShot(True)
         self._recording_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -575,11 +579,16 @@ class _TrayApp(QObject):
         )
 
     def _mute_if_recording(self, session_id: str) -> None:
-        if self._recording and self._session is not None and self._session.id == session_id:
+        if (
+            self._recording
+            and not self._release_timer.isActive()
+            and self._session is not None
+            and self._session.id == session_id
+        ):
             self._mute.mute()
 
     def _on_submit_requested(self) -> None:
-        if self._recording:
+        if self._recording and not self._release_timer.isActive():
             self._submit_requested = True
 
     def _finalize_recording(self, tail: float = 0.0) -> None:
@@ -587,15 +596,21 @@ class _TrayApp(QObject):
         self._finalize_started = perf_counter()
         self._recording_timer.stop()
         self._level_timer.stop()
-        self._recording = False
         self._mute.restore()
         self._apply_state(TrayState.PROCESSING)
         if self._session is not None and self._submit_requested:
             self._session = replace(self._session, submit=True)
         self._submit_requested = False
 
+        if tail:
+            self._release_timer.start(round(tail * 1000))
+        else:
+            self._finish_capture()
+
+    def _finish_capture(self) -> None:
+        self._recording = False
         try:
-            audio_wav = self._recorder.stop(tail=tail)
+            audio_wav = self._recorder.stop(tail=0)
         except ScreamerError as e:
             self._session_config = None
             self._session = None
@@ -621,6 +636,7 @@ class _TrayApp(QObject):
         """Stop and discard the in-flight recording without processing it."""
         self._recording_timer.stop()
         self._level_timer.stop()
+        self._release_timer.stop()
         self._recording = False
         self._mute.restore()
         self._session_config = None
@@ -649,7 +665,7 @@ class _TrayApp(QObject):
         if self._is_hotkey_capture_active() and not self._recording:
             return
 
-        if self._worker is not None:
+        if self._release_timer.isActive() or self._worker is not None:
             return  # Already processing; ignore.
 
         if self._recording:
@@ -662,7 +678,7 @@ class _TrayApp(QObject):
         # Hold mode: release during recording → finalize and process.
         if self._is_hotkey_capture_active() and not self._recording:
             return
-        if self._recording:
+        if self._recording and not self._release_timer.isActive():
             self._finalize_recording(tail=RELEASE_TAIL)
 
     def _is_hotkey_capture_active(self) -> bool:
@@ -1379,6 +1395,7 @@ class _TrayApp(QObject):
             self._setup_dlg.close()
         self._recording_timer.stop()
         self._level_timer.stop()
+        self._release_timer.stop()
         self._recording = False
         self._session_config = None
 
@@ -1433,6 +1450,7 @@ class _TrayApp(QObject):
         self._mute.restore()
         self._recording_timer.stop()
         self._level_timer.stop()
+        self._release_timer.stop()
         self._recording = False
         self._cancel_event.set()
 

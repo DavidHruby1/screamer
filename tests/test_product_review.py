@@ -688,6 +688,8 @@ class DictationDuringSettingsTests(_TrayTestBase):
             self.tray._on_hotkey_pressed()
         self.assertTrue(self.tray._recording)
         self.tray._on_hotkey_released()
+        self.tray._release_timer.start(0)
+        QApplication.processEvents()
         self.assertFalse(self.tray._recording)
         inject = self.run_worker("typed", target)
         inject.assert_called_once_with("typed", "tab", expected_target=target, paste=False)
