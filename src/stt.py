@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import logging
 import math
+import re
 import unicodedata
 import wave
 from time import perf_counter
@@ -142,7 +143,7 @@ def _hallucinated(text: str, audio_wav: bytes, threshold: float) -> bool:
     normalized = unicodedata.normalize("NFKC", text).casefold()
     normalized = " ".join(normalized.split()).strip()
     normalized = normalized.strip(" .,!?:;…。«»“”\"'")
-    if "johnyx" in normalized or "amara.org" in normalized:
+    if "johnyx" in normalized or re.search(r"\bamara\.org\b", normalized):
         return True
     if normalized == "untertitel im auftrag des zdf, 2017":
         return True

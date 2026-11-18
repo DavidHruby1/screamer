@@ -305,6 +305,7 @@ class SttRewriteFallbackTests(unittest.TestCase):
         for phrase, level, discard in [
             (" TITULKY   vytvořil JohnyX. ", 900, True),
             ("Sous-titres réalisés par la communauté d’Amara.org", 900, True),
+            ("Visit samara.org", 8, False),
             ("Thank you.", 8, True),
             ("Thank you.", 900, False),
             ("Thank you for the report.", 8, False),
